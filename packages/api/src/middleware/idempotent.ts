@@ -202,6 +202,9 @@ export function idempotent(opts: IdempotentOptions) {
         if (isSuccess(status)) {
           if (ctx.rowId) {
             await settleDone(ctx, status, body);
+          } else if (ctx.noop) {
+            // Answered without a write (markIdempotencyNoop): nothing to store.
+            log.debug({ component: 'idempotency', event: 'noop', route, key: keyPrefix(key) });
           } else {
             // A 2xx with no claim is a route bug: the posting happened, so send it.
             log.error({ component: 'idempotency', event: 'idempotency_unclaimed', code: 'IDEMPOTENCY_UNCLAIMED', route });

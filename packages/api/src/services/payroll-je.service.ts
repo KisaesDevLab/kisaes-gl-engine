@@ -21,9 +21,14 @@ interface GenerateJeInput {
   departmentTagMap?: DepartmentTagMap;
 }
 import { db } from '../db/index.js';
+import type { DbOrTx, Tx } from '../db/index.js';
+import { transactionWithRetry } from '../db/transaction.js';
+import { claimIdempotency } from './idempotency.service.js';
+import { createHash } from 'crypto';
 import {
   payrollImportSessions,
   payrollImportRows,
+  payrollImportErrors,
   payrollAccountMapping,
   payrollCheckRegisterRows,
   accounts,
@@ -227,12 +232,12 @@ export function previewTotals(lines: Pick<PayrollJEPreviewLine, 'debit' | 'credi
 
 // ── Get Account Map ──
 
-async function getAccountMap(tenantId: string, companyId: string | null, overrides?: Record<string, string>) {
+async function getAccountMap(tenantId: string, companyId: string | null, overrides?: Record<string, string>, executor: DbOrTx = db) {
   const map = new Map<string, { id: string; name: string; number: string | null }>();
 
   // Load saved mappings
   if (companyId) {
-    const mappings = await db.select().from(payrollAccountMapping)
+    const mappings = await executor.select().from(payrollAccountMapping)
       .where(and(
         eq(payrollAccountMapping.tenantId, tenantId),
         eq(payrollAccountMapping.companyId, companyId),
@@ -240,7 +245,7 @@ async function getAccountMap(tenantId: string, companyId: string | null, overrid
 
     const acctIds = mappings.map(m => m.accountId);
     if (acctIds.length > 0) {
-      const accts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
+      const accts = await executor.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
         .from(accounts).where(inArray(accounts.id, acctIds));
       const acctLookup = new Map(accts.map(a => [a.id, a]));
       for (const m of mappings) {
@@ -254,7 +259,7 @@ async function getAccountMap(tenantId: string, companyId: string | null, overrid
   if (overrides) {
     const overrideIds = Object.values(overrides);
     if (overrideIds.length > 0) {
-      const accts = await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
+      const accts = await executor.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
         .from(accounts).where(inArray(accounts.id, overrideIds));
       const acctLookup = new Map(accts.map(a => [a.id, a]));
       for (const [lineType, accountId] of Object.entries(overrides)) {
@@ -331,10 +336,12 @@ export async function generateJE(
   tenantId: string,
   sessionId: string,
   options: GenerateJeInput,
+  // The posting transaction (U-244): the preview is regenerated on it.
+  executor: DbOrTx = db,
 ): Promise<{ previews: PayrollJEPreview[] }> {
   const session = await importService.getSession(tenantId, sessionId);
 
-  const rows = await db.select().from(payrollImportRows)
+  const rows = await executor.select().from(payrollImportRows)
     .where(and(
       eq(payrollImportRows.sessionId, sessionId),
       eq(payrollImportRows.validationStatus, 'valid'),
@@ -342,7 +349,7 @@ export async function generateJE(
     .orderBy(payrollImportRows.rowNumber);
 
   // Also include warning rows
-  const warningRows = await db.select().from(payrollImportRows)
+  const warningRows = await executor.select().from(payrollImportRows)
     .where(and(
       eq(payrollImportRows.sessionId, sessionId),
       eq(payrollImportRows.validationStatus, 'warning'),
@@ -357,7 +364,7 @@ export async function generateJE(
     await assertTagsInTenant(tenantId, Object.values(departmentTagMap).filter((t): t is string => !!t));
   }
 
-  const accountMap = await getAccountMap(tenantId, session.companyId, options.accountMappings);
+  const accountMap = await getAccountMap(tenantId, session.companyId, options.accountMappings, executor);
   const mappedData = allRows.map(r => (r.mappedData || r.rawData) as Record<string, any>);
 
   if (options.aggregationMode === 'per_employee') {
@@ -440,6 +447,7 @@ export async function checkPayrollPeriodOverlap(
   tenantId: string,
   session: typeof payrollImportSessions.$inferSelect,
   previewDates: string[] = [],
+  executor: DbOrTx = db,
 ) {
   const conditions = [
     eq(payrollImportSessions.tenantId, tenantId),
@@ -450,7 +458,7 @@ export async function checkPayrollPeriodOverlap(
     conditions.push(eq(payrollImportSessions.companyId, session.companyId));
   }
 
-  const posted = await db.select({
+  const posted = await executor.select({
     id: payrollImportSessions.id,
     payPeriodStart: payrollImportSessions.payPeriodStart,
     payPeriodEnd: payrollImportSessions.payPeriodEnd,
@@ -464,7 +472,7 @@ export async function checkPayrollPeriodOverlap(
   // Dates of the entries each prior import still has posted.
   const entryDates = new Map<string, string[]>();
   if (posted.length > 0 && previewDates.length > 0) {
-    const txns = await db.select({ sourceId: transactions.sourceId, txnDate: transactions.txnDate })
+    const txns = await executor.select({ sourceId: transactions.sourceId, txnDate: transactions.txnDate })
       .from(transactions)
       .where(and(
         eq(transactions.tenantId, tenantId),
@@ -612,16 +620,179 @@ export async function stampPayrollHeaderTags(
   companyId: string | null | undefined,
   transactionId: string,
   lineTagIds: Array<string | null>,
+  executor: DbOrTx = db,
 ) {
   if (env.TAGS_SPLIT_LEVEL_V2) return;
   const unique = [...new Set(lineTagIds.filter((t): t is string => !!t))];
   if (unique.length === 0) return;
-  await db.insert(transactionTags).values(
+  await executor.insert(transactionTags).values(
     unique.map((tagId) => ({ tenantId, companyId: companyId ?? null, transactionId, tagId })),
   );
 }
 
-// ── Post JE ──
+// ── Preview token (U-244) ──
+
+/**
+ * sha256 of the canonical JSON of what would post:
+ * `[date, [lineType, accountId, department, debit, credit, tagId]]` per entry.
+ * generate-je returns it; POST /post with a token that no longer matches the
+ * regenerated preview is 409 PAYROLL_PREVIEW_CHANGED.
+ */
+export function previewTokenOf(previews: PayrollJEPreview[]): string {
+  const canonical = previews.map(p => [
+    p.date,
+    p.lines.map(l => [l.lineType, l.accountId ?? null, l.department ?? null, l.debit, l.credit, l.tagId ?? null]),
+  ]);
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+// ── Post (U-244 atomic, U-245 closing date, U-251 discard) ──
+
+/** Test seam: runs before each entry posts (to force a failure on entry N). */
+export const __payrollPostTestHooks: { beforeEntry?: (jeIndex: number) => Promise<void> | void } = {};
+
+type SessionRow = typeof payrollImportSessions.$inferSelect;
+
+/** Locks the session row for the rest of the posting transaction. */
+async function lockSession(tx: Tx, tenantId: string, sessionId: string): Promise<SessionRow> {
+  const [session] = await tx.select().from(payrollImportSessions)
+    .where(and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, sessionId)))
+    .for('update').limit(1);
+  if (!session) throw AppError.notFound('Import session not found');
+  return session;
+}
+
+export interface PayrollPostOptions {
+  forcePost: boolean;
+  companyId?: string;
+  tags?: PayrollPostTags;
+  previewToken?: string;
+  discardEmployeeDetail?: boolean;
+  mode: 'employee_level' | 'prebuilt_je';
+  /** Mode A refuses a session that is not validated (409 PAYROLL_NOT_READY). */
+  requireValidated: boolean;
+  /** Regenerates the previews on the posting transaction. */
+  generate: (tx: Tx) => Promise<PayrollJEPreview[]>;
+  unmappedNoun: 'mappings' | 'descriptions';
+}
+
+export type PayrollPostResult =
+  | { journalEntryIds: string[]; count: number }
+  | { overlaps: Awaited<ReturnType<typeof checkPayrollPeriodOverlap>>; requiresConfirmation: true };
+
+/**
+ * Posts every entry of a payroll import in ONE database transaction with the
+ * session row locked: either all entries post and the session is marked
+ * posted, or nothing changes. A concurrent second post waits on the lock and
+ * is then refused 409 PAYROLL_ALREADY_POSTED. Entries dated on or before the
+ * closing date take the request's closing password (lockContextMiddleware);
+ * one password covers every entry.
+ */
+export async function postPayrollSession(
+  tenantId: string,
+  sessionId: string,
+  userId: string,
+  o: PayrollPostOptions,
+): Promise<PayrollPostResult> {
+  let discardedFile: string | null = null;
+  const result = await transactionWithRetry(async (tx): Promise<PayrollPostResult> => {
+    discardedFile = null;
+    const session = await lockSession(tx, tenantId, sessionId);
+    if (session.status === 'posted') {
+      throw AppError.conflict('This payroll import is already posted.', 'PAYROLL_ALREADY_POSTED');
+    }
+    if (o.requireValidated && session.status !== 'validated') {
+      throw AppError.conflict('Session must be validated before posting', 'PAYROLL_NOT_READY', { status: session.status });
+    }
+
+    await importService.checkDuplicateFileHash(tenantId, session, tx);
+
+    const previews = await o.generate(tx);
+
+    if (!o.forcePost) {
+      const overlaps = await checkPayrollPeriodOverlap(tenantId, session, previews.map(p => p.date), tx);
+      // Nothing is written: the caller answers 200 and does not claim the key.
+      if (overlaps.length > 0) return { overlaps, requiresConfirmation: true };
+    }
+
+    if (o.previewToken && o.previewToken !== previewTokenOf(previews)) {
+      throw AppError.conflict('The payroll preview changed since it was generated. Review it again before posting.', 'PAYROLL_PREVIEW_CHANGED');
+    }
+    assertPreviewsPostable(previews, o.unmappedNoun);
+
+    if (o.discardEmployeeDetail) {
+      // Reverse and /checks/post read the check-register rows and the
+      // companion file, so a session that has them keeps its detail.
+      const [checks] = await tx.select({ id: payrollCheckRegisterRows.id }).from(payrollCheckRegisterRows)
+        .where(eq(payrollCheckRegisterRows.sessionId, sessionId)).limit(1);
+      if (checks) {
+        throw AppError.unprocessableEntity(
+          'Employee detail cannot be discarded for an import that has check-register rows.',
+          'PAYROLL_DISCARD_UNSUPPORTED',
+        );
+      }
+    }
+
+    const tagFor = await resolvePayrollPostTags(tenantId, previews, o.tags);
+    await claimIdempotency(tx);
+    const postedIds: string[] = [];
+
+    for (const [jeIndex, preview] of previews.entries()) {
+      if (__payrollPostTestHooks.beforeEntry) await __payrollPostTestHooks.beforeEntry(jeIndex);
+      const lines = preview.lines.map((l, lineIndex) => ({
+        accountId: l.accountId!,
+        debit: l.debit !== '0.00' ? l.debit : '0',
+        credit: l.credit !== '0.00' ? l.credit : '0',
+        description: l.description,
+        tagId: tagFor(jeIndex, lineIndex),
+      }));
+
+      const txn = await ledger.postTransaction(tenantId, {
+        txnType: 'journal_entry' as any,
+        txnDate: preview.date,
+        memo: preview.memo,
+        source: 'payroll_import',
+        sourceId: sessionId,
+        lines,
+      }, userId, o.companyId, tx);
+      await stampPayrollHeaderTags(tenantId, o.companyId, txn.id, lines.map(l => l.tagId), tx);
+      postedIds.push(txn.id);
+    }
+
+    const updateData: Partial<SessionRow> = { status: 'posted', updatedAt: new Date(), jeCount: postedIds.length };
+    if (o.mode === 'employee_level' && postedIds.length === 1) updateData.journalEntryId = postedIds[0]!;
+    else updateData.journalEntryIds = postedIds;
+
+    if (o.discardEmployeeDetail) {
+      // U-251: no employee rows or stored upload survive the post. Hash, key,
+      // dates, provider, counts and entry ids stay for duplicate, overlap
+      // and Reverse.
+      await tx.delete(payrollImportRows).where(eq(payrollImportRows.sessionId, sessionId));
+      await tx.delete(payrollImportErrors).where(eq(payrollImportErrors.sessionId, sessionId));
+      updateData.filePath = null;
+      updateData.detailDiscardedAt = new Date();
+      discardedFile = session.filePath;
+    }
+
+    await tx.update(payrollImportSessions).set(updateData)
+      .where(and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, sessionId)));
+
+    await auditLog(tenantId, 'create', 'payroll_import_post', sessionId, null, {
+      mode: o.mode,
+      jeCount: postedIds.length,
+      journalEntryIds: postedIds,
+      tagId: o.tags?.tagId ?? null,
+      lineTagOverrides: o.tags?.lineTags?.length ?? 0,
+      detailDiscarded: !!o.discardEmployeeDetail,
+    }, userId, tx);
+
+    return { journalEntryIds: postedIds, count: postedIds.length };
+  }, { label: 'payroll_post' });
+
+  // After the commit: the stored upload goes too (best effort).
+  if (discardedFile) await importService.discardStoredUpload(discardedFile);
+  return result;
+}
 
 export async function postJE(
   tenantId: string,
@@ -632,124 +803,90 @@ export async function postJE(
   companyId?: string,
   tags?: PayrollPostTags,
   departmentTagMap?: DepartmentTagMap,
-) {
-  const session = await importService.getSession(tenantId, sessionId);
-  if (session.status === 'posted') throw AppError.badRequest('Session already posted');
-  if (session.status !== 'validated') throw AppError.badRequest('Session must be validated before posting');
-
-  await importService.checkDuplicateFileHash(tenantId, session);
-
-  // Regenerate exactly what the preview showed (same department map, so
-  // line-tag positions line up), then check overlap on every pay date.
-  const { previews } = await generateJE(tenantId, sessionId, { aggregationMode, departmentTagMap });
-
-  if (!forcePost) {
-    const overlaps = await checkPayrollPeriodOverlap(tenantId, session, previews.map(p => p.date));
-    if (overlaps.length > 0) {
-      return { overlaps, requiresConfirmation: true };
-    }
-  }
-
-  assertPreviewsPostable(previews);
-  const tagFor = await resolvePayrollPostTags(tenantId, previews, tags);
-  const postedIds: string[] = [];
-
-  for (const [jeIndex, preview] of previews.entries()) {
-    const lines = preview.lines.map((l, lineIndex) => ({
-      accountId: l.accountId!,
-      debit: l.debit !== '0.00' ? l.debit : '0',
-      credit: l.credit !== '0.00' ? l.credit : '0',
-      description: l.description,
-      tagId: tagFor(jeIndex, lineIndex),
-    }));
-
-    const txn = await ledger.postTransaction(tenantId, {
-      txnType: 'journal_entry' as any,
-      txnDate: preview.date,
-      memo: preview.memo,
-      source: 'payroll_import',
-      sourceId: sessionId,
-      lines,
-    }, userId, companyId);
-    await stampPayrollHeaderTags(tenantId, companyId, txn.id, lines.map(l => l.tagId));
-
-    postedIds.push(txn.id);
-  }
-
-  // Update session
-  const updateData: any = {
-    status: 'posted',
-    updatedAt: new Date(),
-  };
-
-  if (postedIds.length === 1) {
-    updateData.journalEntryId = postedIds[0];
-  } else {
-    updateData.journalEntryIds = postedIds;
-  }
-  updateData.jeCount = postedIds.length;
-
-  await db.update(payrollImportSessions)
-    .set(updateData)
-    .where(eq(payrollImportSessions.id, sessionId));
-
-  await auditLog(tenantId, 'create', 'payroll_import_post', sessionId, null,
-    { mode: 'employee_level', jeCount: postedIds.length, journalEntryIds: postedIds, tagId: tags?.tagId ?? null, lineTagOverrides: tags?.lineTags?.length ?? 0 }, userId);
-
-  return { journalEntryIds: postedIds, count: postedIds.length };
+  opts: { previewToken?: string; discardEmployeeDetail?: boolean } = {},
+): Promise<PayrollPostResult> {
+  return postPayrollSession(tenantId, sessionId, userId, {
+    forcePost,
+    companyId,
+    tags,
+    previewToken: opts.previewToken,
+    discardEmployeeDetail: opts.discardEmployeeDetail,
+    mode: 'employee_level',
+    requireValidated: true,
+    // Regenerate exactly what the preview showed (same department map, so
+    // line-tag positions line up).
+    generate: async (tx) => (await generateJE(tenantId, sessionId, { aggregationMode, departmentTagMap }, tx)).previews,
+    unmappedNoun: 'mappings',
+  });
 }
 
 // ── Reverse JE ──
 
+/** Entry ids a posted session recorded (Mode A single id, Mode B / multi-date list). */
+export function sessionEntryIds(session: Pick<SessionRow, 'journalEntryId' | 'journalEntryIds'>): string[] {
+  const ids: string[] = [];
+  if (session.journalEntryId) ids.push(session.journalEntryId);
+  if (Array.isArray(session.journalEntryIds)) {
+    for (const id of session.journalEntryIds as string[]) if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * Voids every entry of a posted import in ONE database transaction with the
+ * session row locked (U-244). Not posted (including a second reverse) is 409
+ * PAYROLL_NOT_POSTED. Entries in a closed period take the closing password.
+ */
 export async function reverseJE(tenantId: string, sessionId: string, reason: string, userId: string) {
-  const session = await importService.getSession(tenantId, sessionId);
-  if (session.status !== 'posted') throw AppError.badRequest('Can only reverse posted imports');
-
-  const jeIds: string[] = [];
-  if (session.journalEntryId) jeIds.push(session.journalEntryId);
-  if (session.journalEntryIds && Array.isArray(session.journalEntryIds)) {
-    jeIds.push(...(session.journalEntryIds as string[]));
-  }
-
-  // Also collect check transaction IDs
-  const checkRows = await db.select({ transactionId: payrollCheckRegisterRows.transactionId })
-    .from(payrollCheckRegisterRows)
-    .where(and(
-      eq(payrollCheckRegisterRows.sessionId, sessionId),
-      eq(payrollCheckRegisterRows.posted, true),
-    ));
-  for (const row of checkRows) {
-    if (row.transactionId && !jeIds.includes(row.transactionId)) {
-      jeIds.push(row.transactionId);
+  return transactionWithRetry(async (tx) => {
+    const session = await lockSession(tx, tenantId, sessionId);
+    if (session.status !== 'posted') {
+      throw AppError.conflict('Only a posted payroll import can be reversed.', 'PAYROLL_NOT_POSTED', { status: session.status });
     }
-  }
 
-  if (jeIds.length === 0) throw AppError.badRequest('No journal entries to reverse');
+    const jeIds = sessionEntryIds(session);
 
-  // Void each JE that still exists and isn't already void. Transactions
-  // removed by the admin date-range delete (or voided by hand) are skipped,
-  // so a reversal can still release the import instead of failing.
-  const existing = await db.select({ id: transactions.id, status: transactions.status })
-    .from(transactions)
-    .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, jeIds)));
-  const toVoid = existing.filter((t) => t.status !== 'void' && t.status !== 'deleted').map((t) => t.id);
-  for (const jeId of toVoid) {
-    await ledger.voidTransaction(tenantId, jeId, `Reversal of payroll import: ${reason}`, userId);
-  }
+    // Also collect check transaction IDs
+    const checkRows = await tx.select({ transactionId: payrollCheckRegisterRows.transactionId })
+      .from(payrollCheckRegisterRows)
+      .where(and(
+        eq(payrollCheckRegisterRows.sessionId, sessionId),
+        eq(payrollCheckRegisterRows.posted, true),
+      ));
+    for (const row of checkRows) {
+      if (row.transactionId && !jeIds.includes(row.transactionId)) {
+        jeIds.push(row.transactionId);
+      }
+    }
 
-  // Mark checks as unposted
-  if (checkRows.length > 0) {
-    await db.update(payrollCheckRegisterRows)
-      .set({ posted: false, transactionId: null })
-      .where(eq(payrollCheckRegisterRows.sessionId, sessionId));
-  }
+    if (jeIds.length === 0) throw AppError.badRequest('No journal entries to reverse');
+    await claimIdempotency(tx);
 
-  await db.update(payrollImportSessions)
-    .set({ status: 'cancelled', updatedAt: new Date() })
-    .where(eq(payrollImportSessions.id, sessionId));
+    // Void each JE that still exists and isn't already void. Transactions
+    // removed by the admin date-range delete (or voided by hand) are skipped,
+    // so a reversal can still release the import instead of failing.
+    const existing = await tx.select({ id: transactions.id, status: transactions.status })
+      .from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, jeIds)));
+    const toVoid = existing.filter((t) => t.status !== 'void' && t.status !== 'deleted').map((t) => t.id);
+    for (const jeId of toVoid) {
+      await ledger.voidTransactionInTx(tx, tenantId, jeId, `Reversal of payroll import: ${reason}`, userId);
+    }
 
-  await auditLog(tenantId, 'update', 'payroll_import_reverse', sessionId,
-    { status: 'posted' }, { status: 'cancelled', reason, reversedCount: toVoid.length, alreadyGone: jeIds.length - toVoid.length }, userId);
+    // Mark checks as unposted
+    if (checkRows.length > 0) {
+      await tx.update(payrollCheckRegisterRows)
+        .set({ posted: false, transactionId: null })
+        .where(eq(payrollCheckRegisterRows.sessionId, sessionId));
+    }
 
-  return { reversed: toVoid.length, journalEntryIds: toVoid };
+    await tx.update(payrollImportSessions)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, sessionId)));
+
+    await auditLog(tenantId, 'update', 'payroll_import_reverse', sessionId,
+      { status: 'posted' }, { status: 'cancelled', reason, reversedCount: toVoid.length, alreadyGone: jeIds.length - toVoid.length }, userId, tx);
+
+    return { reversed: toVoid.length, journalEntryIds: toVoid };
+  }, { label: 'payroll_reverse' });
 }

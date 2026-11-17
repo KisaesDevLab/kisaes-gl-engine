@@ -23,10 +23,10 @@ import * as importService from './payroll-import.service.js';
 import {
   resolvePayrollPostTags,
   stampPayrollHeaderTags,
-  checkPayrollPeriodOverlap,
-  assertPreviewsPostable,
+  postPayrollSession,
   type PayrollPostTags,
 } from './payroll-je.service.js';
+import type { DbOrTx } from '../db/index.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
 
@@ -277,7 +277,7 @@ export async function getChecks(tenantId: string, sessionId: string): Promise<Pa
 
 // ── Generate Mode B JE Preview ──
 
-export async function generateModeBJE(tenantId: string, sessionId: string): Promise<{ previews: PayrollJEPreview[] }> {
+export async function generateModeBJE(tenantId: string, sessionId: string, executor: DbOrTx = db): Promise<{ previews: PayrollJEPreview[] }> {
   const session = await importService.getSession(tenantId, sessionId);
   const companyId = session.companyId;
   const metadata = session.metadata as any;
@@ -286,7 +286,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   const providerName = PROVIDER_DISPLAY_NAMES[providerKey] || 'Payroll';
 
   // Get all raw rows
-  const rawRows = await db.select().from(payrollImportRows)
+  const rawRows = await executor.select().from(payrollImportRows)
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
 
@@ -303,7 +303,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   const groups = groupByDate(entries);
 
   // Get description→account mappings
-  const descMappings = companyId ? await db.select()
+  const descMappings = companyId ? await executor.select()
     .from(payrollDescriptionAccountMap)
     .where(and(
       eq(payrollDescriptionAccountMap.tenantId, tenantId),
@@ -315,7 +315,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   // Get account details
   const accountIds = [...new Set(descMappings.map(m => m.accountId))];
   const accts = accountIds.length > 0
-    ? await db.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
+    ? await executor.select({ id: accounts.id, name: accounts.name, accountNumber: accounts.accountNumber })
         .from(accounts).where(inArray(accounts.id, accountIds))
     : [];
   const acctMap = new Map(accts.map(a => [a.id, a]));
@@ -324,7 +324,7 @@ export async function generateModeBJE(tenantId: string, sessionId: string): Prom
   // mapping was saved leaves its lines untagged rather than dangling).
   const mappedTagIds = [...new Set(descMappings.flatMap(m => (m.tagId ? [m.tagId] : [])))];
   const liveTagIds = new Set(mappedTagIds.length > 0
-    ? (await db.select({ id: tags.id }).from(tags)
+    ? (await executor.select({ id: tags.id }).from(tags)
         .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, mappedTagIds)))).map(t => t.id)
     : []);
 
@@ -377,65 +377,22 @@ export async function postModeBJE(
   forcePost = false,
   companyId?: string,
   tags?: PayrollPostTags,
+  opts: { previewToken?: string; discardEmployeeDetail?: boolean } = {},
 ) {
-  const session = await importService.getSession(tenantId, sessionId);
-  if (session.status === 'posted') throw AppError.badRequest('Session already posted');
-
-  await importService.checkDuplicateFileHash(tenantId, session);
-
-  const { previews } = await generateModeBJE(tenantId, sessionId);
-
-  if (!forcePost) {
-    const overlaps = await checkPayrollPeriodOverlap(tenantId, session, previews.map(p => p.date));
-    if (overlaps.length > 0) {
-      return { overlaps, requiresConfirmation: true };
-    }
-  }
-
-  // Every description mapped and every date balanced, before anything posts.
-  assertPreviewsPostable(previews, 'descriptions');
-
-  const tagFor = await resolvePayrollPostTags(tenantId, previews, tags);
-  const postedIds: string[] = [];
-
-  for (const [jeIndex, preview] of previews.entries()) {
-    const lines = preview.lines.map((l, lineIndex) => ({
-      accountId: l.accountId!,
-      debit: l.debit !== '0.00' ? l.debit : '0',
-      credit: l.credit !== '0.00' ? l.credit : '0',
-      description: l.description,
-      tagId: tagFor(jeIndex, lineIndex),
-    }));
-
-    const txn = await ledger.postTransaction(tenantId, {
-      txnType: 'journal_entry' as any,
-      txnDate: preview.date,
-      memo: preview.memo,
-      source: 'payroll_import',
-      sourceId: sessionId,
-      lines,
-    }, userId, companyId);
-    await stampPayrollHeaderTags(tenantId, companyId, txn.id, lines.map(l => l.tagId));
-
-    postedIds.push(txn.id);
-  }
-
-  // Update session
-  await db.update(payrollImportSessions)
-    .set({
-      status: 'posted',
-      journalEntryIds: postedIds,
-      jeCount: postedIds.length,
-      updatedAt: new Date(),
-    })
-    .where(eq(payrollImportSessions.id, sessionId));
-
-  await auditLog(tenantId, 'create', 'payroll_import_post', sessionId, null,
-    { mode: 'prebuilt_je', jeCount: postedIds.length, journalEntryIds: postedIds, tagId: tags?.tagId ?? null, lineTagOverrides: tags?.lineTags?.length ?? 0 }, userId);
-
-  return { journalEntryIds: postedIds, count: postedIds.length };
+  // One database transaction with the session locked (U-244); see
+  // postPayrollSession. Mode B keeps its old rule: no validated status needed.
+  return postPayrollSession(tenantId, sessionId, userId, {
+    forcePost,
+    companyId,
+    tags,
+    previewToken: opts.previewToken,
+    discardEmployeeDetail: opts.discardEmployeeDetail,
+    mode: 'prebuilt_je',
+    requireValidated: false,
+    generate: async (tx) => (await generateModeBJE(tenantId, sessionId, tx)).previews,
+    unmappedNoun: 'descriptions',
+  });
 }
-
 // ── Post Checks ──
 
 export async function postChecks(

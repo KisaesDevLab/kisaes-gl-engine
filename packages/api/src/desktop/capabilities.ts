@@ -1562,5 +1562,24 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * expense lines split per department (line `department`, `tagId`), liability and net-pay lines stay one per date.
    */
   'payroll-import-exact-v1',
+  /**
+   * U-244, U-245, U-251 (ClientLedger P30; migration 0281). POST /payroll-import/sessions/:id/post and /reverse run in
+   * ONE database transaction with the session row locked (SELECT … FOR UPDATE): all entries post (or void) and the
+   * session updates, or nothing changes. Both take Idempotency-Key (idempotency-v1; replay {journalEntryIds, count} /
+   * {reversed, journalEntryIds}) and the closing password (closingPassword, overrideConfirmed; 423 TB_PERIOD_LOCKED,
+   * 403 CLOSING_PASSWORD_INVALID, 429 from the limiter; one password covers every entry, each writes its own
+   * closing-date exception audit row). Refusals are 409: PAYROLL_ALREADY_POSTED, PAYROLL_NOT_READY {status} (Mode A
+   * not validated), PAYROLL_DUPLICATE_FILE / PAYROLL_DUPLICATE_RUN {priorSessionId, postedAt} (were 400; the file
+   * check is now scoped to the session's company), PAYROLL_PREVIEW_CHANGED (body previewToken ≠ the regenerated
+   * preview's), PAYROLL_NOT_POSTED {status} on reverse. The overlap prompt stays 200 {overlaps, requiresConfirmation}
+   * and writes nothing; it does not claim the Idempotency-Key (the forcePost retry may reuse it or send a new one).
+   * generate-je returns `previewToken` (sha256 of [date, [lineType, accountId, department, debit, credit, tagId]]).
+   * Post body `discardEmployeeDetail: true` deletes the session's payroll_import_rows and payroll_import_errors and
+   * the stored upload (file_path NULL, detail_discarded_at set) in the same transaction; refused 422
+   * PAYROLL_DISCARD_UNSUPPORTED when the session has check-register rows. GET /sessions/:id/preview then answers
+   * rows [] with `detailDiscarded: true`. Hash, key, dates, provider and entry ids stay, so duplicate, overlap and
+   * Reverse still work.
+   */
+  'payroll-import-post-v1',
 ];
 

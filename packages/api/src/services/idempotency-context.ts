@@ -46,6 +46,13 @@ export interface IdemCtx {
    * the outcome is stored as the error, never replayed as a success.
    */
   failed?: IdemRouteBug;
+  /**
+   * Set by markIdempotencyNoop(): the request answers 2xx without writing
+   * anything (a confirmation prompt). The key is not claimed, nothing is
+   * stored, and it is not an unclaimed-success route bug; a retry with the
+   * key runs again.
+   */
+  noop?: boolean;
 }
 
 export type IdemRouteBug = 'IDEMPOTENCY_MULTI_TX' | 'IDEMPOTENCY_SAVEPOINT';
@@ -81,6 +88,17 @@ export function releaseRolledBackClaim(tx: Tx): void {
   delete ctx.claimTx;
   delete ctx.rowId;
   delete ctx.entity;
+}
+
+/**
+ * Marks the current request as answering without a write (for example a
+ * 200 that asks the user to confirm and posts nothing). Only valid before
+ * any claim: a request that already claimed its key keeps its claim.
+ */
+export function markIdempotencyNoop(): void {
+  const ctx = storage.getStore();
+  if (!ctx || ctx.rowId) return;
+  ctx.noop = true;
 }
 
 /** True when the request's claims already failed as a route bug (never retried). */

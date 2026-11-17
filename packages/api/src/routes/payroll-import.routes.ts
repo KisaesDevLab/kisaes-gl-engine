@@ -2,7 +2,14 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { Router } from 'express';
+import { Router, type Request } from 'express';
+import { and, eq, inArray } from 'drizzle-orm';
+import { db } from '../db/index.js';
+import { transactions } from '../db/schema/index.js';
+import { idempotent } from '../middleware/idempotent.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware } from '../services/lock-context.js';
+import { markIdempotencyNoop } from '../services/idempotency-context.js';
 import { z } from 'zod';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
@@ -240,35 +247,60 @@ payrollImportRouter.post('/sessions/:id/generate-je', validate(generateJeSchema)
   } else {
     result = await jeService.generateJE(req.tenantId, sessionId, req.body);
   }
-  res.json(result);
+  // previewToken (U-244): send it back on POST /post to refuse a changed preview.
+  res.json({ ...result, previewToken: jeService.previewTokenOf(result.previews) });
 });
 
 // ── Post JE ──
-payrollImportRouter.post('/sessions/:id/post', validate(postPayrollSchema), async (req, res) => {
-  const sessionId = uuidParam.parse(req.params['id']);
-  const session = await importService.getSession(req.tenantId, sessionId);
-  if (session.importMode === 'check_register') {
-    throw AppError.badRequest('Check-register imports post as checks — use the check register step');
-  }
-  const { forcePost, aggregationMode, tagId, lineTags, departmentTagMap } = req.body;
-  const tags = { tagId, lineTags };
-  let result;
-  if (session.importMode === 'prebuilt_je') {
-    // Mode B already carries a tag per description; departmentTagMap is ignored.
-    result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost, req.companyId, tags);
-  } else {
-    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId, tags, departmentTagMap);
-  }
-  res.json(result);
-});
+// U-244/U-245 (payroll-import-post-v1): Idempotency-Key, then the closing
+// password (closingPassword / overrideConfirmed, U-15), in the order the
+// checks routes use. A replay without a stored body reads the session.
+const readPosted = async (req: Request) => {
+  const session = await importService.getSession(req.tenantId, uuidParam.parse(req.params['id']));
+  const journalEntryIds = jeService.sessionEntryIds(session);
+  return { journalEntryIds, count: journalEntryIds.length };
+};
+
+payrollImportRouter.post('/sessions/:id/post', idempotent({ successStatus: 200, replay: readPosted }),
+  closingPasswordLimiter, lockContextMiddleware, validate(postPayrollSchema), async (req, res) => {
+    const sessionId = uuidParam.parse(req.params['id']);
+    const session = await importService.getSession(req.tenantId, sessionId);
+    if (session.importMode === 'check_register') {
+      throw AppError.badRequest('Check-register imports post as checks — use the check register step');
+    }
+    const { forcePost, aggregationMode, tagId, lineTags, departmentTagMap, previewToken, discardEmployeeDetail } = req.body;
+    const tags = { tagId, lineTags };
+    const opts = { previewToken, discardEmployeeDetail };
+    let result;
+    if (session.importMode === 'prebuilt_je') {
+      // Mode B already carries a tag per description; departmentTagMap is ignored.
+      result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost, req.companyId, tags, opts);
+    } else {
+      result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId, tags, departmentTagMap, opts);
+    }
+    // The overlap prompt writes nothing: the key is not claimed, so the
+    // confirmed retry (forcePost) may use a new key or the same one.
+    if ('requiresConfirmation' in result) markIdempotencyNoop();
+    res.json(result);
+  });
 
 // ── Reverse ──
-payrollImportRouter.post('/sessions/:id/reverse', validate(reversePayrollSchema), async (req, res) => {
-  const sessionId = uuidParam.parse(req.params['id']);
-  const result = await jeService.reverseJE(req.tenantId, sessionId, req.body.reason, req.userId);
-  res.json(result);
-});
+const readReversed = async (req: Request) => {
+  const session = await importService.getSession(req.tenantId, uuidParam.parse(req.params['id']));
+  const ids = jeService.sessionEntryIds(session);
+  const voided = ids.length > 0
+    ? (await db.select({ id: transactions.id }).from(transactions)
+        .where(and(eq(transactions.tenantId, req.tenantId), inArray(transactions.id, ids), eq(transactions.status, 'void')))).map(t => t.id)
+    : [];
+  return { reversed: voided.length, journalEntryIds: voided };
+};
 
+payrollImportRouter.post('/sessions/:id/reverse', idempotent({ successStatus: 200, replay: readReversed }),
+  closingPasswordLimiter, lockContextMiddleware, validate(reversePayrollSchema), async (req, res) => {
+    const sessionId = uuidParam.parse(req.params['id']);
+    const result = await jeService.reverseJE(req.tenantId, sessionId, req.body.reason, req.userId);
+    res.json(result);
+  });
 // ── Check Register (Mode B) ──
 payrollImportRouter.get('/sessions/:id/checks', async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);

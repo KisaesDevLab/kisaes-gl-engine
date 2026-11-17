@@ -17,6 +17,8 @@ import {
   PayrollLineType,
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
+import type { DbOrTx } from '../db/index.js';
+import { log } from '../utils/logger.js';
 import {
   payrollImportSessions,
   payrollImportRows,
@@ -289,6 +291,8 @@ export async function getPreview(tenantId: string, sessionId: string) {
     session,
     headers: (session.metadata as any)?.headers || [],
     rows: rows.map(r => ({ rowNumber: r.rowNumber, rawData: r.rawData, mappedData: r.mappedData })),
+    // U-251: the employee rows were discarded when the import posted.
+    detailDiscarded: !!session.detailDiscardedAt,
   };
 }
 
@@ -439,6 +443,21 @@ export async function deleteSession(tenantId: string, sessionId: string, userId:
   }
 
   await auditLog(tenantId, 'delete', 'payroll_import_session', sessionId, { status: session.status }, null, userId);
+}
+
+/**
+ * Deletes a stored payroll upload after its session discarded it (U-251).
+ * Only a regular file inside UPLOAD_DIR/payroll is unlinked; a failure is
+ * logged, never thrown (the database no longer points at it).
+ */
+export async function discardStoredUpload(filePath: string | null): Promise<void> {
+  const safe = resolveInside(path.join(UPLOAD_DIR, 'payroll'), filePath);
+  if (!safe) return;
+  try {
+    await fs.promises.unlink(safe);
+  } catch (err) {
+    log.warn({ component: 'payroll_import', event: 'upload_discard_failed', code: (err as NodeJS.ErrnoException)?.code ?? 'unknown' });
+  }
 }
 
 // ── Template CRUD ──
@@ -769,11 +788,11 @@ export async function autoMapAccounts(tenantId: string, companyId: string) {
 // ── Duplicate File Guard (shared by Mode A + Mode B posting) ──
 
 /** Every ledger transaction a posted import created (JEs + check rows). */
-export async function sessionTransactionIds(sessionId: string, session: Pick<typeof payrollImportSessions.$inferSelect, 'journalEntryId' | 'journalEntryIds'>): Promise<string[]> {
+export async function sessionTransactionIds(sessionId: string, session: Pick<typeof payrollImportSessions.$inferSelect, 'journalEntryId' | 'journalEntryIds'>, executor: DbOrTx = db): Promise<string[]> {
   const ids = new Set<string>();
   if (session.journalEntryId) ids.add(session.journalEntryId);
   if (Array.isArray(session.journalEntryIds)) for (const id of session.journalEntryIds as string[]) ids.add(id);
-  const rows = await db.select({ transactionId: payrollCheckRegisterRows.transactionId })
+  const rows = await executor.select({ transactionId: payrollCheckRegisterRows.transactionId })
     .from(payrollCheckRegisterRows)
     .where(and(eq(payrollCheckRegisterRows.sessionId, sessionId), eq(payrollCheckRegisterRows.posted, true)));
   for (const r of rows) if (r.transactionId) ids.add(r.transactionId);
@@ -787,32 +806,38 @@ export async function sessionTransactionIds(sessionId: string, session: Pick<typ
  * it (status cancelled, check rows unposted, audited) and report that it was
  * stale. Returns true when the prior import still has live transactions.
  */
-async function priorImportStillLive(tenantId: string, priorId: string): Promise<boolean> {
-  const prior = await db.query.payrollImportSessions.findFirst({
+async function priorImportStillLive(tenantId: string, priorId: string, executor: DbOrTx = db): Promise<boolean> {
+  const prior = await executor.query.payrollImportSessions.findFirst({
     where: and(eq(payrollImportSessions.tenantId, tenantId), eq(payrollImportSessions.id, priorId)),
   });
   if (!prior) return false;
-  const ids = await sessionTransactionIds(prior.id, prior);
+  const ids = await sessionTransactionIds(prior.id, prior, executor);
   if (ids.length > 0) {
-    const [live] = await db.select({ n: count() }).from(transactions)
+    const [live] = await executor.select({ n: count() }).from(transactions)
       .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, ids), notInArray(transactions.status, ['void', 'deleted'])));
     if ((live?.n ?? 0) > 0) return true;
   }
-  await db.update(payrollCheckRegisterRows)
+  await executor.update(payrollCheckRegisterRows)
     .set({ posted: false, transactionId: null })
     .where(eq(payrollCheckRegisterRows.sessionId, prior.id));
-  await db.update(payrollImportSessions)
+  await executor.update(payrollImportSessions)
     .set({ status: 'cancelled', updatedAt: new Date() })
     .where(and(eq(payrollImportSessions.id, prior.id), eq(payrollImportSessions.status, 'posted')));
   await auditLog(tenantId, 'update', 'payroll_import_reverse', prior.id, { status: 'posted' }, {
     status: 'cancelled',
     reason: 'Its transactions were already removed from the books; released so the file can be posted again',
     missingTransactions: ids.length,
-  });
+  }, undefined, executor);
   return false;
 }
 
-export async function checkDuplicateFileHash(tenantId: string, session: typeof payrollImportSessions.$inferSelect) {
+/**
+ * Refuses a second post of the same payroll (U-244): the same provider run
+ * (409 PAYROLL_DUPLICATE_RUN) or the same file (409 PAYROLL_DUPLICATE_FILE),
+ * details {priorSessionId, postedAt}. Scoped to the session's company when it
+ * has one. Runs on the posting transaction after the session row lock.
+ */
+export async function checkDuplicateFileHash(tenantId: string, session: typeof payrollImportSessions.$inferSelect, executor: DbOrTx = db) {
   // Check idempotency key first (provider-specific composite key)
   if (session.idempotencyKey && session.detectedProvider) {
     const conditions = [
@@ -826,7 +851,7 @@ export async function checkDuplicateFileHash(tenantId: string, session: typeof p
     if (session.companyId) {
       conditions.push(eq(payrollImportSessions.companyId, session.companyId));
     }
-    const [priorByKey] = await db.select({
+    const [priorByKey] = await executor.select({
       id: payrollImportSessions.id,
       createdAt: payrollImportSessions.createdAt,
       originalFilename: payrollImportSessions.originalFilename,
@@ -835,35 +860,41 @@ export async function checkDuplicateFileHash(tenantId: string, session: typeof p
       .where(and(...conditions))
       .limit(1);
 
-    if (priorByKey && await priorImportStillLive(tenantId, priorByKey.id)) {
+    if (priorByKey && await priorImportStillLive(tenantId, priorByKey.id, executor)) {
       const date = priorByKey.createdAt ? new Date(priorByKey.createdAt).toLocaleDateString() : 'unknown date';
-      throw AppError.badRequest(
+      throw AppError.conflict(
         `A payroll import with matching data was already posted on ${date} (file "${priorByKey.originalFilename}"). ` +
-        `Reverse that import first if you need to re-post.`
+        `Reverse that import first if you need to re-post.`,
+        'PAYROLL_DUPLICATE_RUN',
+        { priorSessionId: priorByKey.id, postedAt: priorByKey.createdAt ? new Date(priorByKey.createdAt).toISOString() : null },
       );
     }
   }
 
   // Fall back to file hash check (backward compat for Payroll Relief and unknown providers)
-  const [priorPosted] = await db.select({
+  const hashConditions = [
+    eq(payrollImportSessions.tenantId, tenantId),
+    eq(payrollImportSessions.fileHash, session.fileHash),
+    eq(payrollImportSessions.status, 'posted'),
+    ne(payrollImportSessions.id, session.id),
+  ];
+  if (session.companyId) hashConditions.push(eq(payrollImportSessions.companyId, session.companyId));
+  const [priorPosted] = await executor.select({
     id: payrollImportSessions.id,
     createdAt: payrollImportSessions.createdAt,
     originalFilename: payrollImportSessions.originalFilename,
   })
     .from(payrollImportSessions)
-    .where(and(
-      eq(payrollImportSessions.tenantId, tenantId),
-      eq(payrollImportSessions.fileHash, session.fileHash),
-      eq(payrollImportSessions.status, 'posted'),
-      ne(payrollImportSessions.id, session.id),
-    ))
+    .where(and(...hashConditions))
     .limit(1);
 
-  if (priorPosted && await priorImportStillLive(tenantId, priorPosted.id)) {
+  if (priorPosted && await priorImportStillLive(tenantId, priorPosted.id, executor)) {
     const date = priorPosted.createdAt ? new Date(priorPosted.createdAt).toLocaleDateString() : 'unknown date';
-    throw AppError.badRequest(
+    throw AppError.conflict(
       `This payroll file was already posted on ${date} (file "${priorPosted.originalFilename}"). ` +
-      `Reverse that import first if you need to re-post.`
+      `Reverse that import first if you need to re-post.`,
+      'PAYROLL_DUPLICATE_FILE',
+      { priorSessionId: priorPosted.id, postedAt: priorPosted.createdAt ? new Date(priorPosted.createdAt).toISOString() : null },
     );
   }
 }
