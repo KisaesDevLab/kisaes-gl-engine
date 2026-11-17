@@ -234,7 +234,7 @@ describe('U-252 rows skipped at mapping', () => {
     const before = await validation.validateSession(tenantId, s.id);
     expect(before.totalRows).toBe(4);
     // Without the rule the Total row is data and doubles the entry.
-    expect(amountsOf((await generate(s.id)).json.previews[0]).gross_wages_expense).toBe('9042.30');
+    expect(amountsOf((await generate(s.id)).json.previews[0])['gross_wages_expense']).toBe('9042.30');
 
     await importService.applyMapping(tenantId, s.id,
       { header_row: 0, data_start_row: 1, mappings: QB_MAPPINGS, skip_rules: TOTAL_RULES } as any);
