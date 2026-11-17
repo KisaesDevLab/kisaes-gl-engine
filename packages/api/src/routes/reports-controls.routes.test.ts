@@ -29,7 +29,7 @@ import 'express-async-errors';
 import bcrypt from 'bcrypt';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { auditLog as auditLogTable, companies } from '../db/schema/index.js';
+import { auditLog as auditLogTable, companies, transactions } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
 import { transactionsRouter } from './transactions.routes.js';
 import { reportsRouter } from './reports.routes.js';
@@ -197,6 +197,38 @@ describe('Closing Date Exceptions (closing-exceptions-v1)', () => {
       ['create', null, '12.3400'],
       ['update', '12.3400', '15.0000'],
     ]);
+  });
+
+  it('a numbered check shows its check number, else the document number (sensitive-accounts-grant-v1, U-209 precedence)', async () => {
+    expect(DESKTOP_CAPABILITIES).toContain('sensitive-accounts-grant-v1');
+    const chk = await expense('2026-02-10', '40.00');
+    const gone = await expense('2026-02-11', '41.00');
+    const doc = await expense('2026-02-12', '42.00');
+    await db.update(transactions).set({ checkNumber: 1042, txnNumber: null }).where(eq(transactions.id, chk));
+    await db.update(transactions).set({ checkNumber: 1043, txnNumber: 'EXP-9' }).where(eq(transactions.id, gone));
+    await db.update(transactions).set({ checkNumber: null, txnNumber: 'EXP-7' }).where(eq(transactions.id, doc));
+    await tbClosingDate('2026-03-31');
+    await db.update(companies).set({ closingPasswordHash: await bcrypt.hash(PASSWORD, 4) }).where(eq(companies.id, c.companyId));
+    for (const [id, date, amount] of [[chk, '2026-02-10', '45.00'], [doc, '2026-02-12', '46.00']] as const) {
+      const r = await h.request('PUT', `/api/v1/transactions/${id}`, c.token, { ...expenseBody(date, amount), closingPassword: PASSWORD });
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+    }
+    const r = await h.request('DELETE', `/api/v1/transactions/${gone}`, c.token, { reason: 'dup', closingPassword: PASSWORD });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const numbers = Object.fromEntries((await exceptions()).data.map((x: any) => [x.transactionId, x.txnNumber]));
+    expect(numbers).toEqual({ [chk]: '1042', [gone]: '1043', [doc]: 'EXP-7' });
+  });
+
+  it('a removed transaction takes the check number of its last before-image', async () => {
+    await tbClosingDate('2026-03-31');
+    const ghost = '00000000-0000-4000-8000-0000000000c1';
+    await auditLog(c.tenantId, 'delete', 'transaction', ghost,
+      { txnDate: '2026-02-02', total: '9.00', txnType: 'expense', txnNumber: 'EXP-1', checkNumber: 2001, companyId: c.companyId }, null, c.userId);
+    const ghost2 = '00000000-0000-4000-8000-0000000000c2';
+    await auditLog(c.tenantId, 'delete', 'transaction', ghost2,
+      { txnDate: '2026-02-03', total: '8.00', txnType: 'expense', txnNumber: 'EXP-2', checkNumber: null, companyId: c.companyId }, null, c.userId);
+    const numbers = Object.fromEntries((await exceptions()).data.map((x: any) => [x.transactionId, x.txnNumber]));
+    expect(numbers).toEqual({ [ghost]: '2001', [ghost2]: 'EXP-2' });
   });
 
   it('an override row with no transaction row is listed on its own', async () => {

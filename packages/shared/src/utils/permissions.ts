@@ -52,8 +52,10 @@ export interface ResolvePermissionsInput {
 
 // Role defaults. `elevated` resources (U-33 sensitive accounts) are granted
 // by default only when `withElevated` is true (super admin, owner,
-// accountant); everyone else resolves them to `none` until a template or
-// override grants them.
+// accountant, and a bookkeeper with no permission row since
+// sensitive-accounts-grant-v1); everyone else resolves them to `none` until a
+// template or override grants them. The template path below never consults
+// `elevated`: a template or override that lists the key grants it.
 function fillAll(level: AccessLevel, withElevated: boolean): EffectivePermissions {
   const out = {} as EffectivePermissions;
   for (const r of PERMISSION_RESOURCES as readonly ResourceDef[]) {
@@ -66,8 +68,9 @@ function fillAll(level: AccessLevel, withElevated: boolean): EffectivePermission
 // place the role→permission policy lives.
 //
 //   super-admin / owner / accountant → full (capped per resource)
-//   readonly                         → view
-//   bookkeeper, no permission row     → full (legacy, no regression)
+//   readonly                         → view (elevated: none)
+//   bookkeeper, no permission row     → full (legacy, no regression; elevated
+//                                       included since sensitive-accounts-grant-v1)
 //   customizable + permission row     → template ?? none, then overrides
 //   unknown / missing role            → none (deny-by-default)
 //
@@ -112,9 +115,12 @@ export function resolveEffectivePermissions(input: ResolvePermissionsInput): Eff
       return fillAll('view', false);
     case 'bookkeeper':
       // Legacy compatibility: a bookkeeper who has never been given a
-      // permission row behaves exactly as today (full access), except for
-      // elevated resources, which nobody held before they existed.
-      return fillAll('full', false);
+      // permission row keeps full access. Since sensitive-accounts-grant-v1
+      // (owner decision 2026-11-17) that includes elevated resources: the
+      // built-in Bookkeeper sees sensitive accounts. A restricted bookkeeper
+      // (one with a permission row) sees them only when the template or an
+      // override lists `sensitive_accounts`.
+      return fillAll('full', true);
     default:
       return fillAll('none', false);
   }

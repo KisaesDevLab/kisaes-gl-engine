@@ -1131,7 +1131,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * the closing date in effect at that moment (timeline = closing_date and company lockDate audit rows plus the current setting), and
    * every closing_date_override row; nothing before the first closing date. Rows oldest first {auditId, at, userId, userName, action,
    * transactionId, txnType, txnNumber, txnDateBefore, txnDateAfter, closingDate, method (password|confirmed|null), amountBeforeExact,
-   * amountAfterExact}. The ledger's create audit row now carries txnDate. Read-only; no migration.
+   * amountAfterExact}. The ledger's create audit row now carries txnDate. Read-only; no migration. Since
+   * sensitive-accounts-grant-v1, txnNumber is a check's check number when it has one (U-209 precedence), else the
+   * document number; a deleted transaction's comes from its last before-image.
    */
   'closing-exceptions-v1',
   /**
@@ -1533,5 +1535,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * or the year table when the tenant has several.
    */
   '1099-thresholds-v1',
+  /**
+   * Grantable sensitive accounts (U-33, ClientLedger P29 owner decision 2026-11-17, Q-P29c; no migration). Changes the
+   * sensitive-accounts-v1 role defaults: a bookkeeper with no permission row (legacy full access) now holds
+   * `sensitive_accounts` view, as owner, accountant and super admin do. Unchanged: readonly and unknown roles never hold
+   * it by default; a user with a permission row (a bookkeeper on a template, or a client user) holds it only when the
+   * template or an override lists `sensitive_accounts: view` (an override wins; `full` is capped to view; a template that
+   * leaves the key out resolves to none, it has no parent). Marking an account stays owner or super admin only (PUT
+   * /accounts/:id/sensitive, 403 OWNER_REQUIRED). Nothing changes until an account is marked.
+   */
+  'sensitive-accounts-grant-v1',
 ];
 
