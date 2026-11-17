@@ -1545,5 +1545,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * /accounts/:id/sensitive, 403 OWNER_REQUIRED). Nothing changes until an account is marked.
    */
   'sensitive-accounts-grant-v1',
+  /**
+   * U-250, U-242, U-243, U-246 (ClientLedger P30; no migration). Payroll import money is exact: every money cell is
+   * parsed with decimal.js (`$`, commas, spaces, `(x)`, trailing `-`, bare `-` = 0); more than 2 places is row error
+   * AMOUNT_PRECISION, anything else non-numeric AMOUNT_INVALID (validation messages carry {field, code, rowNumber}, no
+   * cell text; Mode B generate-je answers 422 PAYROLL_AMOUNT_INVALID {rows[{rowNumber, code}]}). Mapped money is stored
+   * as decimal strings ("1234.50"). Sums are exact; previews gain `difference` (totalDebits − totalCredits, "0.00" when
+   * balanced) and `isBalanced` is exact equality. The < $0.10 plug is gone: POST /post refuses 422 PAYROLL_UNBALANCED
+   * {date, totalDebits, totalCredits, difference} and 422 PAYROLL_UNMAPPED {lineTypes[]} before anything posts.
+   * Employee-level summary mode posts one entry per pay date (a row without a date takes the upload's checkDate),
+   * ascending, memo "Payroll <start>–<end> — <provider> — pay date <date>"; overlap checks every pay date against
+   * prior imports' posted entries (±3 days) and each overlap gains `matchingDates[]`; validation warns
+   * CHECK_DATE_NOT_IN_FILE. New line type other_tax_payable (other EE + ER tax); dental/vision EE credits
+   * health_ins_payable. Square's duplicate key is start|end|checkDate|netTotal|rowCount. generate-je and post accept
+   * `departmentTagMap` {department: tagId | null} (≤ 200 keys, ≤ 100 chars; unknown tag 400): employee-level summary
+   * expense lines split per department (line `department`, `tagId`), liability and net-pay lines stay one per date.
+   */
+  'payroll-import-exact-v1',
 ];
 

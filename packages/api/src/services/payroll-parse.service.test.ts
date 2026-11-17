@@ -292,7 +292,7 @@ describe('Column Mapping', () => {
     const { mappedRows, skippedCount, originalIndices } = applyColumnMapping(rows, rows[0]!, config);
     expect(mappedRows.length).toBe(2);
     expect(mappedRows[0]!['employee_name']).toBe('John Doe');
-    expect(mappedRows[0]!['gross_pay']).toBe(5000);
+    expect(mappedRows[0]!['gross_pay']).toBe('5000.00');
     expect(skippedCount).toBe(0);
     expect(originalIndices).toEqual([0, 1]);
   });
@@ -337,7 +337,7 @@ describe('Column Mapping', () => {
       },
     };
     const { mappedRows } = applyColumnMapping(rows, rows[0]!, config);
-    expect(mappedRows[0]!['gross_pay']).toBe(5000);
+    expect(mappedRows[0]!['gross_pay']).toBe('5000.00');
   });
 });
 
@@ -413,11 +413,11 @@ describe('pivotLongFormat (Toast)', () => {
     expect(result.length).toBe(2);
     const john = result.find(r => r['employee_name'] === 'John Doe');
     expect(john).toBeTruthy();
-    expect(john!['regular_wages']).toBe(5000);
-    expect(john!['overtime']).toBe(1000);
+    expect(john!['regular_wages']).toBe('5000.00');
+    expect(john!['overtime']).toBe('1000.00');
     const jane = result.find(r => r['employee_name'] === 'Jane Smith');
     expect(jane).toBeTruthy();
-    expect(jane!['regular_wages']).toBe(4000);
+    expect(jane!['regular_wages']).toBe('4000.00');
   });
 
   it('aggregates amounts for same employee + earning', () => {
@@ -432,7 +432,7 @@ describe('pivotLongFormat (Toast)', () => {
       dateField: 'Check Date',
     });
     expect(result.length).toBe(1);
-    expect(result[0]!['tips']).toBe(150);
+    expect(result[0]!['tips']).toBe('150.00');
   });
 
   it('skips rows with blank employee name', () => {
@@ -459,7 +459,7 @@ describe('pivotLongFormat (Toast)', () => {
       dateField: 'Check Date',
     });
     expect(result.length).toBe(1);
-    expect(result[0]!['wages']).toBe(5000);
+    expect(result[0]!['wages']).toBe('5000.00');
   });
 
   it('keeps separate entries for different dates', () => {
