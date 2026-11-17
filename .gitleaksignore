@@ -22,3 +22,8 @@ a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engin
 a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/owner-deductions.test.ts:generic-api-key:21
 a0edab8f4f10377626012c112f406eb88928eede:packages/shared/src/tax-estimator/engine/parameters.test.ts:generic-api-key:15
 fef404e2807d632d8d04c3245ea43a041bf3bcae:packages/api/src/routes/reports-controls.routes.test.ts:generic-api-key:42
+# - payroll-idempotency-key.test.ts (ClientLedger P30, U-250): pinned sha256 prefixes of payroll duplicate-key
+#   material from synthetic fixtures, in a field named key (renamed digest in d3c2f750).
+0749fcfe3022a1284100945a02494f79896d2b39:packages/api/src/services/payroll-idempotency-key.test.ts:generic-api-key:30
+0749fcfe3022a1284100945a02494f79896d2b39:packages/api/src/services/payroll-idempotency-key.test.ts:generic-api-key:34
+0749fcfe3022a1284100945a02494f79896d2b39:packages/api/src/services/payroll-idempotency-key.test.ts:generic-api-key:37
