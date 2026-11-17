@@ -41,19 +41,23 @@ import {
   storePayrollFile,
   hashBuffer,
   applyColumnMapping,
-  parseCurrency,
   pivotLongFormat,
 } from './payroll-parse.service.js';
+import { glRowAmounts } from './payroll-modeb.service.js';
+import DecimalLib from 'decimal.js';
 import { env } from '../config/env.js';
 
 const UPLOAD_DIR = env.UPLOAD_DIR || '/data/uploads';
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalValue = InstanceType<typeof Decimal>;
 
 // ── Idempotency Key Computation ──
 
-function computeIdempotencyKey(
+export function computeIdempotencyKey(
   provider: string | null,
   rows: string[][],
   headers: string[],
+  checkDate?: string | null,
 ): string | null {
   if (!provider || !rows.length) return null;
 
@@ -65,43 +69,52 @@ function computeIdempotencyKey(
     return idx !== undefined ? (row[idx] || '').trim() : '';
   }
 
-  function getAmount(row: string[], colName: string): number {
+  // The key material must stay byte-identical to the float-era keys stored
+  // on posted sessions (U-250): each cell is read the way parseFloat read it
+  // (so "(12.30)" still counts as 0), but the sum is exact.
+  function getAmount(row: string[], colName: string): DecimalValue {
     const val = getCol(row, colName);
-    return parseFloat(val.replace(/[$,]/g, '')) || 0;
+    const f = parseFloat(val.replace(/[$,]/g, ''));
+    return Number.isFinite(f) && f !== 0 ? new Decimal(String(f)) : new Decimal(0);
   }
+  const sum = (vals: DecimalValue[]) => vals.reduce((s, v) => s.plus(v), new Decimal(0));
 
   switch (provider) {
     case 'gusto': {
       const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
       const ppStart = rows.map(r => getCol(r, 'Pay Period Start')).filter(Boolean);
       const ppEnd = rows.map(r => getCol(r, 'Pay Period End')).filter(Boolean);
-      const totalGross = rows.reduce((sum, r) => sum + getAmount(r, 'Gross Pay'), 0);
+      const totalGross = sum(rows.map(r => getAmount(r, 'Gross Pay')));
       const material = `${dates[0] || ''}|${ppStart[0] || ''}|${ppEnd[0] || ''}|${totalGross.toFixed(2)}|${rows.length}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'adp_run_gli': {
       const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
-      const totalDebit = rows.reduce((sum, r) => sum + getAmount(r, 'Debit Amount'), 0);
+      const totalDebit = sum(rows.map(r => getAmount(r, 'Debit Amount')));
       const material = `${dates[0] || ''}|${totalDebit.toFixed(2)}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'paychex_flex_gls': {
       const dates = rows.map(r => getCol(r, 'Check Date')).filter(Boolean);
-      const totalDebit = rows.reduce((sum, r) => sum + getAmount(r, 'Debit'), 0);
-      const totalCredit = rows.reduce((sum, r) => sum + getAmount(r, 'Credit'), 0);
+      const totalDebit = sum(rows.map(r => getAmount(r, 'Debit')));
+      const totalCredit = sum(rows.map(r => getAmount(r, 'Credit')));
       const material = `${dates[0] || ''}|${totalDebit.toFixed(2)}|${totalCredit.toFixed(2)}|${rows.length}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'onpay_gl_summary': {
       const dates = rows.map(r => getCol(r, 'Pay Date')).filter(Boolean);
-      const totalAmount = rows.reduce((sum, r) => sum + getAmount(r, 'Amount'), 0);
+      const totalAmount = sum(rows.map(r => getAmount(r, 'Amount')));
       const material = `${dates[0] || ''}|${totalAmount.toFixed(2)}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'square_payroll': {
       const dates = rows.map(r => getCol(r, 'Pay Period Start')).filter(Boolean);
       const endDates = rows.map(r => getCol(r, 'Pay Period End')).filter(Boolean);
-      const material = `${dates[0] || ''}|${endDates[0] || ''}`;
+      // Period, pay date, net total and row count (U-243): an off-cycle run in
+      // the same period is a different run. Square could never balance before
+      // U-243, so no posted Square session carries the old period-only key.
+      const netTotal = sum(rows.map(r => getAmount(r, 'Net Pay')));
+      const material = `${dates[0] || ''}|${endDates[0] || ''}|${checkDate || ''}|${netTotal.toFixed(2)}|${rows.length}`;
       return crypto.createHash('sha256').update(material).digest('hex').slice(0, 32);
     }
     case 'toast_je_report': {
@@ -164,7 +177,7 @@ export async function uploadPayrollFile(
 
   // Compute idempotency key
   const dataRows = rows.slice(headerRowIdx + 1);
-  const idempotencyKey = computeIdempotencyKey(detection?.provider || null, dataRows, headers);
+  const idempotencyKey = computeIdempotencyKey(detection?.provider || null, dataRows, headers, options.checkDate);
 
   // Check idempotency key duplicate (in addition to file hash check)
   let isDuplicateByKey = false;
@@ -507,7 +520,7 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
     .where(eq(payrollImportRows.sessionId, sessionId))
     .orderBy(payrollImportRows.rowNumber);
 
-  const descriptionEntries = new Map<string, { debit: number; credit: number; sampleAmount: string }>();
+  const descriptionEntries = new Map<string, { debit: boolean; credit: boolean; sampleAmount: string }>();
 
   for (const row of rows) {
     const raw = row.rawData as Record<string, string>;
@@ -520,33 +533,15 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
     const desc = (raw[descCol] || raw[descCol.toLowerCase()] || raw['Description'] || raw['description'] || '').trim();
     if (!desc) continue;
 
-    let debit = 0;
-    let credit = 0;
-
-    if (columnConfig.amountConvention === 'separate_dr_cr') {
-      const drCol = columnConfig.debitColumn || 'Debit';
-      const crCol = columnConfig.creditColumn || 'Credit';
-      debit = parseCurrency(raw[drCol] || raw[drCol.toLowerCase()]);
-      credit = parseCurrency(raw[crCol] || raw[crCol.toLowerCase()]);
-    } else if (columnConfig.amountConvention === 'signed_single') {
-      const amtCol = columnConfig.amountColumn || 'Amount';
-      const val = parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]);
-      if (val >= 0) debit = val;
-      else credit = Math.abs(val);
-    } else if (columnConfig.amountConvention === 'category_derived') {
-      const amtCol = columnConfig.amountColumn || 'Amount';
-      const catCol = columnConfig.accountCategoryColumn || 'Category';
-      const amount = Math.abs(parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]));
-      const category = (raw[catCol] || raw[catCol.toLowerCase()] || '').toLowerCase().trim();
-      if (category.startsWith('expense') || category.startsWith('cost')) debit = amount;
-      else credit = amount;
-    }
+    // Exact amounts (U-250); a bad cell shows as 0.00 here and is refused
+    // by validation and generate-je.
+    const { debit, credit } = glRowAmounts(raw, columnConfig);
 
     if (!descriptionEntries.has(desc)) {
       descriptionEntries.set(desc, {
-        debit: debit > 0 ? debit : 0,
-        credit: credit > 0 ? credit : 0,
-        sampleAmount: debit > 0 ? debit.toFixed(2) : credit.toFixed(2),
+        debit: debit.gt(0),
+        credit: credit.gt(0),
+        sampleAmount: debit.gt(0) ? debit.toFixed(2) : credit.toFixed(2),
       });
     }
   }
@@ -592,7 +587,7 @@ export async function getDescriptionMap(tenantId: string, sessionId: string) {
   const result = Array.from(descriptionEntries.entries()).map(([description, info]) => {
     const existing = existingMap.get(description);
     const acct = existing ? accts.find(a => a.id === existing.accountId) : null;
-    const debitOrCredit = info.debit > 0 ? 'debit' : 'credit';
+    const debitOrCredit = info.debit ? 'debit' : 'credit';
 
     // Try auto-suggestion
     let suggestedAccountId: string | null = null;

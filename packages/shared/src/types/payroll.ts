@@ -202,6 +202,8 @@ export enum PayrollLineType {
   MEDICARE_PAYABLE = 'medicare_payable',
   FUTA_PAYABLE = 'futa_payable',
   SUTA_PAYABLE = 'suta_payable',
+  /** Square's employee-tax total and any other employee or employer tax without its own column (U-243). */
+  OTHER_TAX_PAYABLE = 'other_tax_payable',
   HEALTH_INS_PAYABLE = 'health_ins_payable',
   RETIREMENT_PAYABLE = 'retirement_payable',
   OTHER_DEDUCTION_PAYABLE = 'other_deduction_payable',
@@ -224,6 +226,7 @@ export const PAYROLL_LINE_TYPE_LABELS: Record<PayrollLineType, string> = {
   [PayrollLineType.MEDICARE_PAYABLE]: 'Medicare Payable',
   [PayrollLineType.FUTA_PAYABLE]: 'FUTA Payable',
   [PayrollLineType.SUTA_PAYABLE]: 'SUTA Payable',
+  [PayrollLineType.OTHER_TAX_PAYABLE]: 'Other Payroll Taxes Payable',
   [PayrollLineType.HEALTH_INS_PAYABLE]: 'Health Insurance Payable',
   [PayrollLineType.RETIREMENT_PAYABLE]: 'Retirement (401k) Payable',
   [PayrollLineType.OTHER_DEDUCTION_PAYABLE]: 'Other Deductions Payable',
@@ -246,6 +249,7 @@ export const DEFAULT_ACCOUNT_SEARCH: Record<string, string[]> = {
   [PayrollLineType.MEDICARE_PAYABLE]: ['2160', 'Medicare Payable'],
   [PayrollLineType.FUTA_PAYABLE]: ['2170', 'FUTA Payable', 'Federal Unemployment'],
   [PayrollLineType.SUTA_PAYABLE]: ['2180', 'SUTA Payable', 'State Unemployment'],
+  [PayrollLineType.OTHER_TAX_PAYABLE]: ['Payroll Liabilities', 'Payroll Tax Payable', 'Payroll Taxes Payable', 'Other Payroll Tax'],
   [PayrollLineType.HEALTH_INS_PAYABLE]: ['2190', 'Health Insurance Payable'],
   [PayrollLineType.RETIREMENT_PAYABLE]: ['2200', '401k Payable', 'Retirement Payable'],
   [PayrollLineType.OTHER_DEDUCTION_PAYABLE]: ['2210', 'Other Payroll Payable', 'Other Deductions'],
@@ -497,6 +501,8 @@ export interface PayrollValidationMessage {
   code: string;
   message: string;
   severity: 'error' | 'warning';
+  /** The data row the message is about (row-level messages only). */
+  rowNumber?: number;
 }
 
 export interface PayrollValidationSummary {
@@ -517,6 +523,8 @@ export interface PayrollJEPreviewLine {
   credit: string;
   /** Tag from the description mapping (Mode B); the default for this line. */
   tagId?: string | null;
+  /** Department this expense line is split for (departmentTagMap, U-246); null for a blank department. Absent when no map was sent. */
+  department?: string | null;
 }
 
 export interface PayrollJEPreview {
@@ -525,6 +533,8 @@ export interface PayrollJEPreview {
   lines: PayrollJEPreviewLine[];
   totalDebits: string;
   totalCredits: string;
+  /** totalDebits minus totalCredits, exact (U-250); "0.00" when balanced. */
+  difference: string;
   isBalanced: boolean;
 }
 

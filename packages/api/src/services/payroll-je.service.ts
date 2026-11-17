@@ -3,11 +3,22 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { eq, and, ne, inArray } from 'drizzle-orm';
-import { PayrollLineType, type PayrollJEPreview, type PayrollJEPreviewLine, type PayrollLineTagInput } from '@kis-books/shared';
+import DecimalLib from 'decimal.js';
+import {
+  PayrollLineType,
+  PROVIDER_DISPLAY_NAMES,
+  type PayrollJEPreview,
+  type PayrollJEPreviewLine,
+  type PayrollLineTagInput,
+} from '@kis-books/shared';
+
+/** Department name (as in the file) → tag id or null (U-246). */
+export type DepartmentTagMap = Record<string, string | null>;
 
 interface GenerateJeInput {
   aggregationMode?: 'summary' | 'per_employee';
   accountMappings?: Record<string, string>;
+  departmentTagMap?: DepartmentTagMap;
 }
 import { db } from '../db/index.js';
 import {
@@ -25,78 +36,95 @@ import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as importService from './payroll-import.service.js';
 import { assertTagsInTenant } from './tags.service.js';
+import { readPayrollMoney } from './payroll-parse.service.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
+type Dec = InstanceType<typeof Decimal>;
 
 // ── Aggregate payroll rows into JE lines ──
+//
+// Every amount is an exact Decimal from the file cell to the ledger line
+// (U-250). Nothing is rounded or plugged: an entry that does not balance is
+// refused at post time with its date and difference.
 
 interface AggregatedAmounts {
-  gross_wages: number;
-  employer_tax: number;
-  employer_benefits: number;
-  fit: number;
-  sit: number;
-  local_tax: number;
-  ss: number;          // EE + ER
-  medicare: number;    // EE + ER
-  futa: number;
-  suta: number;
-  health_ins: number;  // EE + ER
-  retirement: number;  // EE + ER (all 401k)
-  other_deduction: number;
-  reimbursement: number;
-  net_pay: number;
-  contractor_expense: number;
-  contractor_payable: number;
+  gross_wages: Dec;
+  employer_tax: Dec;
+  employer_benefits: Dec;
+  fit: Dec;
+  sit: Dec;
+  local_tax: Dec;
+  ss: Dec;          // EE + ER
+  medicare: Dec;    // EE + ER
+  futa: Dec;
+  suta: Dec;
+  other_tax: Dec;   // other EE tax + other ER tax (U-243)
+  health_ins: Dec;  // EE + ER (+ dental/vision EE)
+  retirement: Dec;  // EE + ER (all 401k)
+  other_deduction: Dec;
+  reimbursement: Dec;
+  net_pay: Dec;
+  contractor_expense: Dec;
+  contractor_payable: Dec;
 }
 
-function n(row: Record<string, any>, key: string): number {
-  return Number(row[key] ?? 0);
+function n(row: Record<string, any>, key: string): Dec {
+  return readPayrollMoney(row[key]);
 }
 
 /** Gross pay is optional: a file that carries only net pay (a check
  *  register, say) books gross = net with no withholdings. */
-export function grossOf(row: Record<string, any>): number {
+export function grossOf(row: Record<string, any>): Dec {
   const g = row['gross_pay'];
   return g === undefined || g === null || g === '' ? n(row, 'net_pay') : n(row, 'gross_pay');
 }
 
-function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
-  const agg: AggregatedAmounts = {
-    gross_wages: 0, employer_tax: 0, employer_benefits: 0,
-    fit: 0, sit: 0, local_tax: 0,
-    ss: 0, medicare: 0, futa: 0, suta: 0,
-    health_ins: 0, retirement: 0, other_deduction: 0,
-    reimbursement: 0,
-    net_pay: 0, contractor_expense: 0, contractor_payable: 0,
+function emptyAgg(): AggregatedAmounts {
+  const z = () => new Decimal(0);
+  return {
+    gross_wages: z(), employer_tax: z(), employer_benefits: z(),
+    fit: z(), sit: z(), local_tax: z(),
+    ss: z(), medicare: z(), futa: z(), suta: z(), other_tax: z(),
+    health_ins: z(), retirement: z(), other_deduction: z(),
+    reimbursement: z(),
+    net_pay: z(), contractor_expense: z(), contractor_payable: z(),
   };
+}
+
+function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
+  const agg = emptyAgg();
 
   for (const row of mappedRows) {
     const isContractor = row['is_contractor'] === true;
 
     if (isContractor) {
-      const pay = n(row, 'contractor_pay') || grossOf(row);
-      agg.contractor_expense += pay;
-      agg.contractor_payable += pay;
+      const contractorPay = n(row, 'contractor_pay');
+      const pay = contractorPay.isZero() ? grossOf(row) : contractorPay;
+      agg.contractor_expense = agg.contractor_expense.plus(pay);
+      agg.contractor_payable = agg.contractor_payable.plus(pay);
       continue;
     }
 
-    agg.gross_wages += grossOf(row);
-    agg.fit += n(row, 'federal_income_tax');
-    agg.sit += n(row, 'state_income_tax');
-    agg.local_tax += n(row, 'local_income_tax');
-    agg.ss += n(row, 'social_security_ee') + n(row, 'social_security_er');
-    agg.medicare += n(row, 'medicare_ee') + n(row, 'medicare_er');
-    agg.futa += n(row, 'futa_er');
-    agg.suta += n(row, 'suta_er');
-    agg.other_deduction += n(row, 'hsa_ee') + n(row, 'other_deduction_ee') + n(row, 'other_benefit_er');
-    agg.health_ins += n(row, 'health_insurance_ee') + n(row, 'health_insurance_er');
-    agg.retirement += n(row, 'retirement_401k_ee') + n(row, 'roth_401k_ee') + n(row, 'retirement_401k_er');
-    agg.reimbursement += n(row, 'reimbursement_ee');
-    agg.net_pay += n(row, 'net_pay');
+    agg.gross_wages = agg.gross_wages.plus(grossOf(row));
+    agg.fit = agg.fit.plus(n(row, 'federal_income_tax'));
+    agg.sit = agg.sit.plus(n(row, 'state_income_tax'));
+    agg.local_tax = agg.local_tax.plus(n(row, 'local_income_tax'));
+    agg.ss = agg.ss.plus(n(row, 'social_security_ee')).plus(n(row, 'social_security_er'));
+    agg.medicare = agg.medicare.plus(n(row, 'medicare_ee')).plus(n(row, 'medicare_er'));
+    agg.futa = agg.futa.plus(n(row, 'futa_er'));
+    agg.suta = agg.suta.plus(n(row, 'suta_er'));
+    agg.other_tax = agg.other_tax.plus(n(row, 'other_ee_tax')).plus(n(row, 'other_er_tax'));
+    agg.other_deduction = agg.other_deduction.plus(n(row, 'hsa_ee')).plus(n(row, 'other_deduction_ee')).plus(n(row, 'other_benefit_er'));
+    agg.health_ins = agg.health_ins.plus(n(row, 'health_insurance_ee')).plus(n(row, 'health_insurance_er')).plus(n(row, 'dental_vision_ee'));
+    agg.retirement = agg.retirement.plus(n(row, 'retirement_401k_ee')).plus(n(row, 'roth_401k_ee')).plus(n(row, 'retirement_401k_er'));
+    agg.reimbursement = agg.reimbursement.plus(n(row, 'reimbursement_ee'));
+    agg.net_pay = agg.net_pay.plus(n(row, 'net_pay'));
 
-    agg.employer_tax += n(row, 'social_security_er') + n(row, 'medicare_er') +
-      n(row, 'futa_er') + n(row, 'suta_er') + n(row, 'other_er_tax');
-    agg.employer_benefits += n(row, 'health_insurance_er') + n(row, 'retirement_401k_er') +
-      n(row, 'other_benefit_er');
+    agg.employer_tax = agg.employer_tax
+      .plus(n(row, 'social_security_er')).plus(n(row, 'medicare_er'))
+      .plus(n(row, 'futa_er')).plus(n(row, 'suta_er')).plus(n(row, 'other_er_tax'));
+    agg.employer_benefits = agg.employer_benefits
+      .plus(n(row, 'health_insurance_er')).plus(n(row, 'retirement_401k_er')).plus(n(row, 'other_benefit_er'));
   }
 
   return agg;
@@ -104,48 +132,97 @@ function aggregateRows(mappedRows: Record<string, any>[]): AggregatedAmounts {
 
 // ── Build JE Lines from Aggregated Amounts ──
 
+/** One department's share of a date's rows (U-246). */
+interface DepartmentAgg {
+  department: string | null;
+  tagId: string | null;
+  agg: AggregatedAmounts;
+}
+
 function buildJELines(
   agg: AggregatedAmounts,
   accountMap: Map<string, { id: string; name: string; number: string | null }>,
+  departments?: DepartmentAgg[],
 ): PayrollJEPreviewLine[] {
   const lines: PayrollJEPreviewLine[] = [];
-  const r = (n: number) => Math.round(n * 100) / 100;
 
-  const addLine = (lineType: string, desc: string, debit: number, credit: number) => {
-    if (r(debit) === 0 && r(credit) === 0) return;
+  const addLine = (
+    lineType: string,
+    desc: string,
+    debit: Dec,
+    credit: Dec,
+    split?: { department: string | null; tagId: string | null },
+  ) => {
+    if (debit.isZero() && credit.isZero()) return;
     const acct = accountMap.get(lineType);
-    lines.push({
+    const line: PayrollJEPreviewLine = {
       lineType,
       description: desc,
       accountId: acct?.id || null,
       accountName: acct?.name || null,
       accountNumber: acct?.number || null,
-      debit: r(debit).toFixed(2),
-      credit: r(credit).toFixed(2),
-    });
+      debit: debit.toFixed(2),
+      credit: credit.toFixed(2),
+    };
+    if (split) {
+      line.department = split.department;
+      line.tagId = split.tagId;
+    }
+    lines.push(line);
   };
 
+  // Expense lines split by department when a department map was sent;
+  // liability, clearing and contractor-payable lines never split, so net pay
+  // stays one bank line per date (the exact per-line bank match needs it).
+  const addExpense = (lineType: string, desc: string, pick: (a: AggregatedAmounts) => Dec) => {
+    if (!departments) {
+      addLine(lineType, desc, pick(agg), new Decimal(0));
+      return;
+    }
+    for (const d of departments) {
+      addLine(lineType, desc, pick(d.agg), new Decimal(0), { department: d.department, tagId: d.tagId });
+    }
+  };
+  const zero = new Decimal(0);
+
   // DEBITS — subtract reimbursements from gross wages (they're non-taxable pass-through, not wage expense)
-  addLine(PayrollLineType.GROSS_WAGES_EXPENSE, 'Gross Wages Expense', agg.gross_wages - agg.reimbursement, 0);
-  addLine(PayrollLineType.EMPLOYER_TAX_EXPENSE, 'Employer Payroll Tax Expense', agg.employer_tax, 0);
-  if (agg.employer_benefits > 0) addLine(PayrollLineType.EMPLOYER_BENEFITS_EXPENSE, 'Employer Benefits Expense', agg.employer_benefits, 0);
-  if (agg.reimbursement > 0) addLine(PayrollLineType.REIMBURSEMENT_EXPENSE, 'Employee Reimbursements', agg.reimbursement, 0);
-  if (agg.contractor_expense > 0) addLine(PayrollLineType.CONTRACTOR_EXPENSE, 'Contractor Expense', agg.contractor_expense, 0);
+  addExpense(PayrollLineType.GROSS_WAGES_EXPENSE, 'Gross Wages Expense', a => a.gross_wages.minus(a.reimbursement));
+  addExpense(PayrollLineType.EMPLOYER_TAX_EXPENSE, 'Employer Payroll Tax Expense', a => a.employer_tax);
+  if (agg.employer_benefits.gt(0)) addExpense(PayrollLineType.EMPLOYER_BENEFITS_EXPENSE, 'Employer Benefits Expense', a => a.employer_benefits);
+  if (agg.reimbursement.gt(0)) addExpense(PayrollLineType.REIMBURSEMENT_EXPENSE, 'Employee Reimbursements', a => a.reimbursement);
+  if (agg.contractor_expense.gt(0)) addExpense(PayrollLineType.CONTRACTOR_EXPENSE, 'Contractor Expense', a => a.contractor_expense);
 
   // CREDITS
-  if (agg.fit > 0) addLine(PayrollLineType.FIT_PAYABLE, 'Federal Income Tax Payable', 0, agg.fit);
-  if (agg.sit > 0 || agg.local_tax > 0) addLine(PayrollLineType.SIT_PAYABLE, 'State/Local Tax Payable', 0, agg.sit + agg.local_tax);
-  if (agg.ss > 0) addLine(PayrollLineType.SS_PAYABLE, 'Social Security Payable', 0, agg.ss);
-  if (agg.medicare > 0) addLine(PayrollLineType.MEDICARE_PAYABLE, 'Medicare Payable', 0, agg.medicare);
-  if (agg.futa > 0) addLine(PayrollLineType.FUTA_PAYABLE, 'FUTA Payable', 0, agg.futa);
-  if (agg.suta > 0) addLine(PayrollLineType.SUTA_PAYABLE, 'SUTA Payable', 0, agg.suta);
-  if (agg.health_ins > 0) addLine(PayrollLineType.HEALTH_INS_PAYABLE, 'Health Insurance Payable', 0, agg.health_ins);
-  if (agg.retirement > 0) addLine(PayrollLineType.RETIREMENT_PAYABLE, 'Retirement (401k) Payable', 0, agg.retirement);
-  if (agg.other_deduction > 0) addLine(PayrollLineType.OTHER_DEDUCTION_PAYABLE, 'Other Deductions Payable', 0, agg.other_deduction);
-  addLine(PayrollLineType.PAYROLL_CLEARING, 'Payroll Clearing / Cash', 0, agg.net_pay);
-  if (agg.contractor_payable > 0) addLine(PayrollLineType.CONTRACTOR_PAYABLE, 'Contractor Payable / Cash', 0, agg.contractor_payable);
+  if (agg.fit.gt(0)) addLine(PayrollLineType.FIT_PAYABLE, 'Federal Income Tax Payable', zero, agg.fit);
+  if (agg.sit.gt(0) || agg.local_tax.gt(0)) addLine(PayrollLineType.SIT_PAYABLE, 'State/Local Tax Payable', zero, agg.sit.plus(agg.local_tax));
+  if (agg.ss.gt(0)) addLine(PayrollLineType.SS_PAYABLE, 'Social Security Payable', zero, agg.ss);
+  if (agg.medicare.gt(0)) addLine(PayrollLineType.MEDICARE_PAYABLE, 'Medicare Payable', zero, agg.medicare);
+  if (agg.futa.gt(0)) addLine(PayrollLineType.FUTA_PAYABLE, 'FUTA Payable', zero, agg.futa);
+  if (agg.suta.gt(0)) addLine(PayrollLineType.SUTA_PAYABLE, 'SUTA Payable', zero, agg.suta);
+  if (agg.other_tax.gt(0)) addLine(PayrollLineType.OTHER_TAX_PAYABLE, 'Other Payroll Taxes Payable', zero, agg.other_tax);
+  if (agg.health_ins.gt(0)) addLine(PayrollLineType.HEALTH_INS_PAYABLE, 'Health Insurance Payable', zero, agg.health_ins);
+  if (agg.retirement.gt(0)) addLine(PayrollLineType.RETIREMENT_PAYABLE, 'Retirement (401k) Payable', zero, agg.retirement);
+  if (agg.other_deduction.gt(0)) addLine(PayrollLineType.OTHER_DEDUCTION_PAYABLE, 'Other Deductions Payable', zero, agg.other_deduction);
+  addLine(PayrollLineType.PAYROLL_CLEARING, 'Payroll Clearing / Cash', zero, agg.net_pay);
+  if (agg.contractor_payable.gt(0)) addLine(PayrollLineType.CONTRACTOR_PAYABLE, 'Contractor Payable / Cash', zero, agg.contractor_payable);
 
   return lines;
+}
+
+/** Totals, exact difference and balance flag for a set of preview lines. */
+export function previewTotals(lines: Pick<PayrollJEPreviewLine, 'debit' | 'credit'>[]) {
+  let debits = new Decimal(0);
+  let credits = new Decimal(0);
+  for (const l of lines) {
+    debits = debits.plus(l.debit);
+    credits = credits.plus(l.credit);
+  }
+  return {
+    totalDebits: debits.toFixed(2),
+    totalCredits: credits.toFixed(2),
+    difference: debits.minus(credits).toFixed(2),
+    isBalanced: debits.eq(credits),
+  };
 }
 
 // ── Get Account Map ──
@@ -190,6 +267,64 @@ async function getAccountMap(tenantId: string, companyId: string | null, overrid
   return map;
 }
 
+// ── Grouping helpers (U-242, U-246) ──
+
+/** A row's pay date: its own check date, else the date given at upload. */
+export function rowPayDate(row: Record<string, any>, sessionCheckDate: string | null | undefined): string {
+  const own = row['check_date'];
+  if (own !== undefined && own !== null && String(own).trim() !== '') return String(own).trim();
+  return sessionCheckDate || '';
+}
+
+function departmentOf(row: Record<string, any>): string | null {
+  const d = row['department'];
+  if (d === undefined || d === null) return null;
+  const s = String(d).trim();
+  return s === '' ? null : s;
+}
+
+function splitByDepartment(rows: Record<string, any>[], map: DepartmentTagMap): DepartmentAgg[] {
+  const groups = new Map<string | null, Record<string, any>[]>();
+  for (const row of rows) {
+    const dept = departmentOf(row);
+    const list = groups.get(dept) ?? [];
+    list.push(row);
+    groups.set(dept, list);
+  }
+  // Department ascending (code-unit order, deterministic), blank last.
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (a === b) return 0;
+    if (a === null) return 1;
+    if (b === null) return -1;
+    return a < b ? -1 : 1;
+  });
+  return keys.map((department) => ({
+    department,
+    tagId: department !== null && Object.prototype.hasOwnProperty.call(map, department) ? map[department] ?? null : null,
+    agg: aggregateRows(groups.get(department)!),
+  }));
+}
+
+function summaryMemo(
+  session: typeof payrollImportSessions.$inferSelect,
+  date: string,
+  rows: Record<string, any>[],
+): string {
+  const provider = session.detectedProvider || (session.metadata as any)?.detectedProvider || null;
+  const label = (provider && PROVIDER_DISPLAY_NAMES[provider]) || 'Import';
+  let start = session.payPeriodStart || '';
+  let end = session.payPeriodEnd || '';
+  if (!start || !end) {
+    // Fall back to the period the rows of this pay date carry.
+    const starts = rows.map(r => String(r['pay_period_start'] ?? '').trim()).filter(Boolean).sort();
+    const ends = rows.map(r => String(r['pay_period_end'] ?? '').trim()).filter(Boolean).sort();
+    start = starts[0] ?? '';
+    end = ends[ends.length - 1] ?? '';
+  }
+  const period = start && end ? ` ${start}–${end}` : '';
+  return `Payroll${period} — ${label} — pay date ${date}`;
+}
+
 // ── Generate JE Preview ──
 
 export async function generateJE(
@@ -217,6 +352,11 @@ export async function generateJE(
   const allRows = [...rows, ...warningRows];
   if (allRows.length === 0) throw AppError.badRequest('No valid rows to generate JE from');
 
+  const departmentTagMap = options.departmentTagMap;
+  if (departmentTagMap) {
+    await assertTagsInTenant(tenantId, Object.values(departmentTagMap).filter((t): t is string => !!t));
+  }
+
   const accountMap = await getAccountMap(tenantId, session.companyId, options.accountMappings);
   const mappedData = allRows.map(r => (r.mappedData || r.rawData) as Record<string, any>);
 
@@ -234,56 +374,73 @@ export async function generateJE(
     for (const [empName, empRows] of byEmployee) {
       const agg = aggregateRows(empRows);
       const lines = buildJELines(agg, accountMap);
-      const checkDate = (empRows[0] as any)?.check_date || session.checkDate || '';
-      const totalDebits = lines.reduce((s, l) => s + parseFloat(l.debit), 0);
-      const totalCredits = lines.reduce((s, l) => s + parseFloat(l.credit), 0);
+      const checkDate = rowPayDate(empRows[0] ?? {}, session.checkDate);
 
       previews.push({
         date: checkDate,
         memo: `Payroll — ${empName} — ${session.payPeriodStart || ''} to ${session.payPeriodEnd || ''}`,
         lines,
-        totalDebits: totalDebits.toFixed(2),
-        totalCredits: totalCredits.toFixed(2),
-        isBalanced: Math.abs(totalDebits - totalCredits) < 0.01,
+        ...previewTotals(lines),
       });
     }
     return { previews };
   }
 
-  // Summary mode (default)
-  const agg = aggregateRows(mappedData);
-  const lines = buildJELines(agg, accountMap);
-  const checkDate = (mappedData[0] as any)?.check_date || session.checkDate || '';
-  const totalDebits = lines.reduce((s, l) => s + parseFloat(l.debit), 0);
-  const totalCredits = lines.reduce((s, l) => s + parseFloat(l.credit), 0);
-
-  // Rounding reconciliation — adjust payroll clearing to force balance
-  if (Math.abs(totalDebits - totalCredits) > 0 && Math.abs(totalDebits - totalCredits) < 0.10) {
-    const clearingLine = lines.find(l => l.lineType === PayrollLineType.PAYROLL_CLEARING);
-    if (clearingLine) {
-      const diff = totalDebits - totalCredits;
-      clearingLine.credit = (parseFloat(clearingLine.credit) + diff).toFixed(2);
-    }
+  // Summary mode (default): one entry per pay date, ascending (U-242). A
+  // row without a date takes the check date given at upload.
+  const byDate = new Map<string, Record<string, any>[]>();
+  for (const row of mappedData) {
+    const date = rowPayDate(row, session.checkDate);
+    const list = byDate.get(date) ?? [];
+    list.push(row);
+    byDate.set(date, list);
   }
+  const dates = [...byDate.keys()].sort();
 
-  const finalDebits = lines.reduce((s, l) => s + parseFloat(l.debit), 0);
-  const finalCredits = lines.reduce((s, l) => s + parseFloat(l.credit), 0);
+  const previews: PayrollJEPreview[] = dates.map((date) => {
+    const dateRows = byDate.get(date)!;
+    const agg = aggregateRows(dateRows);
+    const departments = departmentTagMap ? splitByDepartment(dateRows, departmentTagMap) : undefined;
+    const lines = buildJELines(agg, accountMap, departments);
+    return {
+      date,
+      memo: summaryMemo(session, date, dateRows),
+      lines,
+      ...previewTotals(lines),
+    };
+  });
 
-  const preview: PayrollJEPreview = {
-    date: checkDate,
-    memo: `Payroll — ${session.payPeriodStart || ''} to ${session.payPeriodEnd || ''} — ${(session.metadata as any)?.detectedProvider || 'Import'}`,
-    lines,
-    totalDebits: finalDebits.toFixed(2),
-    totalCredits: finalCredits.toFixed(2),
-    isBalanced: Math.abs(finalDebits - finalCredits) < 0.01,
-  };
-
-  return { previews: [preview] };
+  return { previews };
 }
 
 // ── Pay Period Overlap Check ──
 
-export async function checkPayrollPeriodOverlap(tenantId: string, session: typeof payrollImportSessions.$inferSelect) {
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function dayNumber(isoDate: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+  if (!m) return null;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / DAY_MS;
+}
+
+function withinDays(a: string, b: string, days: number): boolean {
+  const x = dayNumber(a);
+  const y = dayNumber(b);
+  return x !== null && y !== null && Math.abs(x - y) <= days;
+}
+
+/**
+ * Prior posted imports (same company) this one may duplicate. A prior import
+ * overlaps when any of its posted entries falls on, or within ±3 days of, any
+ * pay date this import would post (`previewDates`, U-242), when the pay
+ * periods overlap, or when the upload check dates match within ±3 days.
+ * `matchingDates` lists this import's pay dates that hit a prior entry.
+ */
+export async function checkPayrollPeriodOverlap(
+  tenantId: string,
+  session: typeof payrollImportSessions.$inferSelect,
+  previewDates: string[] = [],
+) {
   const conditions = [
     eq(payrollImportSessions.tenantId, tenantId),
     eq(payrollImportSessions.status, 'posted'),
@@ -304,11 +461,31 @@ export async function checkPayrollPeriodOverlap(tenantId: string, session: typeo
     .from(payrollImportSessions)
     .where(and(...conditions));
 
+  // Dates of the entries each prior import still has posted.
+  const entryDates = new Map<string, string[]>();
+  if (posted.length > 0 && previewDates.length > 0) {
+    const txns = await db.select({ sourceId: transactions.sourceId, txnDate: transactions.txnDate })
+      .from(transactions)
+      .where(and(
+        eq(transactions.tenantId, tenantId),
+        eq(transactions.source, 'payroll_import'),
+        eq(transactions.status, 'posted'),
+        inArray(transactions.sourceId, posted.map(p => p.id)),
+      ));
+    for (const t of txns) {
+      if (!t.sourceId || !t.txnDate) continue;
+      const list = entryDates.get(t.sourceId) ?? [];
+      list.push(String(t.txnDate));
+      entryDates.set(t.sourceId, list);
+    }
+  }
+
   const overlaps: Array<{
     sessionId: string;
     filename: string;
     payPeriod: string;
     postedDate: string;
+    matchingDates: string[];
   }> = [];
 
   for (const prior of posted) {
@@ -325,12 +502,14 @@ export async function checkPayrollPeriodOverlap(tenantId: string, session: typeo
       }
     }
     // If no pay period set, fall back to check date within ±3 days
-    if (!isOverlap && session.checkDate && prior.checkDate) {
-      const daysDiff = Math.abs(
-        (new Date(session.checkDate).getTime() - new Date(prior.checkDate).getTime()) / (1000 * 60 * 60 * 24)
-      );
-      if (daysDiff <= 3) isOverlap = true;
+    if (!isOverlap && session.checkDate && prior.checkDate && withinDays(session.checkDate, prior.checkDate, 3)) {
+      isOverlap = true;
     }
+    // Every pay date this import would post against the prior's posted entries.
+    const priorDates = entryDates.get(prior.id) ?? [];
+    const matchingDates = [...new Set(previewDates)].sort()
+      .filter(d => priorDates.some(p => withinDays(d, p, 3)));
+    if (matchingDates.length > 0) isOverlap = true;
 
     if (isOverlap) {
       overlaps.push({
@@ -340,11 +519,44 @@ export async function checkPayrollPeriodOverlap(tenantId: string, session: typeo
           ? `${prior.payPeriodStart} to ${prior.payPeriodEnd}`
           : prior.checkDate || 'unknown',
         postedDate: prior.createdAt ? new Date(prior.createdAt).toLocaleDateString() : 'unknown',
+        matchingDates,
       });
     }
   }
 
   return overlaps;
+}
+
+// ── Refusals shared by Mode A and Mode B posting (U-250) ──
+
+/**
+ * Refuse before anything posts: every line needs an account (422
+ * PAYROLL_UNMAPPED, details.lineTypes) and every entry must balance exactly
+ * (422 PAYROLL_UNBALANCED, details {date, totalDebits, totalCredits,
+ * difference}). Nothing is ever plugged.
+ */
+export function assertPreviewsPostable(previews: PayrollJEPreview[], unmappedNoun: 'mappings' | 'descriptions' = 'mappings') {
+  const unmapped = previews.flatMap(p => p.lines.filter(l => !l.accountId));
+  if (unmapped.length > 0) {
+    const lineTypes = [...new Set(unmapped.map(l => l.lineType))];
+    const names = [...new Set(unmapped.map(l => l.description))].join(', ');
+    throw AppError.unprocessableEntity(
+      unmappedNoun === 'descriptions'
+        ? `Unmapped descriptions: ${names}. Map all descriptions before posting.`
+        : `Missing account mappings for: ${names}. Configure payroll account mappings first.`,
+      'PAYROLL_UNMAPPED',
+      { lineTypes },
+    );
+  }
+  for (const p of previews) {
+    if (!p.isBalanced) {
+      throw AppError.unprocessableEntity(
+        `The payroll entry for ${p.date} does not balance: debits ${p.totalDebits}, credits ${p.totalCredits} (difference ${p.difference}). Check that every amount column in the file is mapped.`,
+        'PAYROLL_UNBALANCED',
+        { date: p.date, totalDebits: p.totalDebits, totalCredits: p.totalCredits, difference: p.difference },
+      );
+    }
+  }
 }
 
 // ── Tags on posted JEs ──
@@ -419,6 +631,7 @@ export async function postJE(
   aggregationMode: 'summary' | 'per_employee' = 'summary',
   companyId?: string,
   tags?: PayrollPostTags,
+  departmentTagMap?: DepartmentTagMap,
 ) {
   const session = await importService.getSession(tenantId, sessionId);
   if (session.status === 'posted') throw AppError.badRequest('Session already posted');
@@ -426,30 +639,22 @@ export async function postJE(
 
   await importService.checkDuplicateFileHash(tenantId, session);
 
+  // Regenerate exactly what the preview showed (same department map, so
+  // line-tag positions line up), then check overlap on every pay date.
+  const { previews } = await generateJE(tenantId, sessionId, { aggregationMode, departmentTagMap });
+
   if (!forcePost) {
-    const overlaps = await checkPayrollPeriodOverlap(tenantId, session);
+    const overlaps = await checkPayrollPeriodOverlap(tenantId, session, previews.map(p => p.date));
     if (overlaps.length > 0) {
       return { overlaps, requiresConfirmation: true };
     }
   }
 
-  const { previews } = await generateJE(tenantId, sessionId, { aggregationMode });
+  assertPreviewsPostable(previews);
   const tagFor = await resolvePayrollPostTags(tenantId, previews, tags);
   const postedIds: string[] = [];
 
   for (const [jeIndex, preview] of previews.entries()) {
-    // Verify all lines have account mappings
-    const unmapped = preview.lines.filter(l => !l.accountId);
-    if (unmapped.length > 0) {
-      throw AppError.badRequest(
-        `Missing account mappings for: ${unmapped.map(l => l.description).join(', ')}. Configure payroll account mappings first.`
-      );
-    }
-
-    if (!preview.isBalanced) {
-      throw AppError.badRequest(`JE does not balance: debits ${preview.totalDebits} ≠ credits ${preview.totalCredits}`);
-    }
-
     const lines = preview.lines.map((l, lineIndex) => ({
       accountId: l.accountId!,
       debit: l.debit !== '0.00' ? l.debit : '0',

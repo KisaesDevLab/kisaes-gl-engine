@@ -250,13 +250,14 @@ payrollImportRouter.post('/sessions/:id/post', validate(postPayrollSchema), asyn
   if (session.importMode === 'check_register') {
     throw AppError.badRequest('Check-register imports post as checks — use the check register step');
   }
-  const { forcePost, aggregationMode, tagId, lineTags } = req.body;
+  const { forcePost, aggregationMode, tagId, lineTags, departmentTagMap } = req.body;
   const tags = { tagId, lineTags };
   let result;
   if (session.importMode === 'prebuilt_je') {
+    // Mode B already carries a tag per description; departmentTagMap is ignored.
     result = await modeBService.postModeBJE(req.tenantId, sessionId, req.userId, forcePost, req.companyId, tags);
   } else {
-    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId, tags);
+    result = await jeService.postJE(req.tenantId, sessionId, req.userId, forcePost, aggregationMode, req.companyId, tags, departmentTagMap);
   }
   res.json(result);
 });

@@ -187,7 +187,7 @@ describe('reversing an import whose checks were already deleted', () => {
 
 describe('payroll JE post tags', () => {
   const previews: PayrollJEPreview[] = [{
-    date: '2026-07-10', memo: 'Payroll', totalDebits: '10.00', totalCredits: '10.00', isBalanced: true,
+    date: '2026-07-10', memo: 'Payroll', totalDebits: '10.00', totalCredits: '10.00', difference: '0.00', isBalanced: true,
     lines: [
       { lineType: 'w', description: 'Wages', accountId: null, accountName: null, accountNumber: null, debit: '10.00', credit: '0.00' },
       { lineType: 'n', description: 'Net', accountId: null, accountName: null, accountNumber: null, debit: '0.00', credit: '10.00' },

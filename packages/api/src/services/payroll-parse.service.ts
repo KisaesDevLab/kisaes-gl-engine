@@ -7,7 +7,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ColumnMapConfig, PayrollImportRow } from '@kis-books/shared';
 import { PROVIDER_SIGNATURES, MODE_B_PROVIDERS, CHECK_REGISTER_PROVIDERS } from '@kis-books/shared';
+import DecimalLib from 'decimal.js';
 import { AppError } from '../utils/errors.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
+type DecimalValue = InstanceType<typeof Decimal>;
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_ROW_COUNT = 10_000;
@@ -115,10 +119,12 @@ export async function parseXlsxBuffer(
         } else if (obj.text !== undefined) {
           out.push(String(obj.text));
         } else if (obj.result !== undefined) {
-          out.push(String(obj.result));
+          out.push(typeof obj.result === 'number' ? numericCellText(obj.result) : String(obj.result));
         } else {
           out.push('');
         }
+      } else if (typeof v === 'number') {
+        out.push(numericCellText(v));
       } else {
         out.push(String(v));
       }
@@ -297,7 +303,96 @@ export async function parseFile(
   return { rows, fileType };
 }
 
-// ── Currency Parsing ──
+// ── Money Parsing (U-250: exact, no floats) ──
+
+export type PayrollMoneyErrorCode = 'AMOUNT_INVALID' | 'AMOUNT_PRECISION';
+export type PayrollMoneyResult =
+  | { ok: true; value: string }
+  | { ok: false; code: PayrollMoneyErrorCode };
+
+/** Mapped payroll fields that hold money. Stored as canonical decimal strings. */
+export const PAYROLL_MONEY_FIELDS = [
+  'gross_pay', 'regular_pay', 'overtime_pay', 'bonus_pay', 'commission_pay', 'other_pay',
+  'federal_income_tax', 'state_income_tax', 'local_income_tax',
+  'social_security_ee', 'medicare_ee', 'other_ee_tax',
+  'health_insurance_ee', 'dental_vision_ee', 'retirement_401k_ee', 'roth_401k_ee',
+  'hsa_ee', 'other_deduction_ee',
+  'net_pay',
+  'social_security_er', 'medicare_er', 'futa_er', 'suta_er', 'other_er_tax',
+  'health_insurance_er', 'retirement_401k_er', 'other_benefit_er',
+  'reimbursement_ee',
+  'contractor_pay',
+] as const;
+
+/** Key on a mapped row listing the money cells that did not parse:
+ *  `[{ field, code }]`, never the cell text. */
+export const PAYROLL_AMOUNT_ERRORS_KEY = '_amountErrors';
+
+const MONEY_DIGITS = /^(\d+(\.\d*)?|\.\d+)$/;
+const MONEY_LIMIT = new Decimal('1e13');
+
+/** Text for a numeric spreadsheet cell. Binary floating point noise from a
+ *  formula (0.1 + 0.2 = 0.30000000000000004) is removed by rounding to 15
+ *  significant digits, which is what the spreadsheet itself shows; a value
+ *  that really has more places (1.005) keeps them. */
+export function numericCellText(n: number): string {
+  if (!Number.isFinite(n)) return String(n);
+  return String(Number(n.toPrecision(15)));
+}
+
+/**
+ * Parse a payroll money cell exactly. Accepts `$`, thousands commas, spaces,
+ * `(x)` and a trailing `-` for negatives, and a bare `-` (accounting zero).
+ * Empty is zero. More than 2 decimal places (after trailing zeros) is
+ * AMOUNT_PRECISION; anything else that is not a number is AMOUNT_INVALID.
+ */
+export function parsePayrollMoney(v: unknown): PayrollMoneyResult {
+  if (v === null || v === undefined) return { ok: true, value: '0.00' };
+  let d: DecimalValue;
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) return { ok: false, code: 'AMOUNT_INVALID' };
+    d = new Decimal(numericCellText(v));
+  } else {
+    let s = String(v).trim();
+    let neg = false;
+    if (s.startsWith('(') && s.endsWith(')')) {
+      neg = true;
+      s = s.slice(1, -1);
+    } else if (s.endsWith('-')) {
+      neg = true;
+      s = s.slice(0, -1);
+    }
+    s = s.replace(/[$,\s]/g, '');
+    if (s.startsWith('-') || s.startsWith('+')) {
+      if (neg) return { ok: false, code: 'AMOUNT_INVALID' };
+      neg = s.startsWith('-');
+      s = s.slice(1).replace(/^\$/, '');
+    }
+    if (s === '') return { ok: true, value: '0.00' };
+    if (!MONEY_DIGITS.test(s)) return { ok: false, code: 'AMOUNT_INVALID' };
+    d = new Decimal(s);
+    if (neg) d = d.neg();
+  }
+  if (d.abs().gte(MONEY_LIMIT)) return { ok: false, code: 'AMOUNT_INVALID' };
+  if (d.decimalPlaces() > 2) return { ok: false, code: 'AMOUNT_PRECISION' };
+  if (d.isZero()) return { ok: true, value: '0.00' };
+  return { ok: true, value: d.toFixed(2) };
+}
+
+/**
+ * Read a stored payroll amount as an exact Decimal. New rows hold canonical
+ * strings; rows mapped before U-250 hold JSON numbers, read through
+ * `Decimal(String(n))`. Missing, empty or unparseable is zero (a cell that
+ * failed to parse is already a row error, so its row never posts).
+ */
+export function readPayrollMoney(v: unknown): DecimalValue {
+  if (v === null || v === undefined || v === '') return new Decimal(0);
+  if (typeof v === 'number') return Number.isFinite(v) ? new Decimal(String(v)) : new Decimal(0);
+  const parsed = parsePayrollMoney(v);
+  return parsed.ok ? new Decimal(parsed.value) : new Decimal(0);
+}
+
+// ── Currency Parsing (non-money fields only, e.g. hours) ──
 
 export function parseCurrency(value: string | number | null | undefined): number {
   if (value == null || value === '') return 0;
@@ -435,24 +530,22 @@ export function applyColumnMapping(
       }
     }
 
-    // Normalize currency fields
-    const currencyFields = [
-      'gross_pay', 'regular_pay', 'overtime_pay', 'bonus_pay', 'commission_pay', 'other_pay',
-      'federal_income_tax', 'state_income_tax', 'local_income_tax',
-      'social_security_ee', 'medicare_ee', 'other_ee_tax',
-      'health_insurance_ee', 'dental_vision_ee', 'retirement_401k_ee', 'roth_401k_ee',
-      'hsa_ee', 'other_deduction_ee',
-      'net_pay',
-      'social_security_er', 'medicare_er', 'futa_er', 'suta_er', 'other_er_tax',
-      'health_insurance_er', 'retirement_401k_er', 'other_benefit_er',
-      'reimbursement_ee',
-      'contractor_pay',
-    ];
-    for (const field of currencyFields) {
+    // Normalize money fields to exact decimal strings (U-250). A cell that
+    // is not a number, or has more than 2 places, is kept as a row error
+    // (field and code only, never the cell text) instead of becoming 0.
+    const amountErrors: Array<{ field: string; code: PayrollMoneyErrorCode }> = [];
+    for (const field of PAYROLL_MONEY_FIELDS) {
       if (mapped[field] !== undefined) {
-        mapped[field] = parseCurrency(mapped[field]);
+        const parsed = parsePayrollMoney(mapped[field]);
+        if (parsed.ok) {
+          mapped[field] = parsed.value;
+        } else {
+          mapped[field] = null;
+          amountErrors.push({ field, code: parsed.code });
+        }
       }
     }
+    if (amountErrors.length > 0) mapped[PAYROLL_AMOUNT_ERRORS_KEY] = amountErrors;
 
     // Boolean fields
     if (mapped['is_contractor'] !== undefined) {
@@ -540,7 +633,15 @@ export function pivotLongFormat(
     const amount = row[amountField];
 
     if (name && amount !== undefined) {
-      entry[name] = (entry[name] || 0) + (typeof amount === 'number' ? amount : parseFloat(String(amount).replace(/[$,]/g, '')) || 0);
+      // Exact sums (U-250); a cell that is not a whole-cent number is kept
+      // as a row error by field name, never silently 0.
+      const parsed = parsePayrollMoney(amount);
+      if (parsed.ok) {
+        entry[name] = readPayrollMoney(entry[name]).plus(parsed.value).toFixed(2);
+      } else {
+        const errs = (entry[PAYROLL_AMOUNT_ERRORS_KEY] ??= []) as Array<{ field: string; code: string }>;
+        errs.push({ field: name, code: parsed.code });
+      }
     }
   }
 

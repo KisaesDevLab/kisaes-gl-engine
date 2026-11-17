@@ -8,9 +8,13 @@ import { MODE_B_COLUMN_CONFIGS } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { payrollImportSessions, payrollImportRows, payrollImportErrors, accounts } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
-import { parseCurrency } from './payroll-parse.service.js';
+import { readPayrollMoney, PAYROLL_AMOUNT_ERRORS_KEY } from './payroll-parse.service.js';
 import * as importService from './payroll-import.service.js';
-import { grossOf } from './payroll-je.service.js';
+import { grossOf, rowPayDate } from './payroll-je.service.js';
+import { glRowAmounts } from './payroll-modeb.service.js';
+import DecimalLib from 'decimal.js';
+
+const Decimal = DecimalLib.default || DecimalLib;
 
 // ── SSN Pattern Scanner ──
 
@@ -25,14 +29,36 @@ function scanForSSN(rawData: Record<string, any>): boolean {
 
 // ── Validation Rules ──
 
-function validateRow(mapped: Record<string, any>, rowNumber: number): PayrollValidationMessage[] {
+const AMOUNT_ERROR_TEXT: Record<string, string> = {
+  AMOUNT_INVALID: 'is not a number',
+  AMOUNT_PRECISION: 'has more than 2 decimal places',
+};
+
+function validateRow(mapped: Record<string, any>, rowNumber: number, sessionCheckDate?: string | null): PayrollValidationMessage[] {
   const r = mapped as any;
   const msgs: PayrollValidationMessage[] = [];
+
+  // Money cells that did not parse (U-250): field and code only, never the
+  // cell text. The field is then missing rather than silently 0.
+  const amountErrors = (Array.isArray(mapped[PAYROLL_AMOUNT_ERRORS_KEY]) ? mapped[PAYROLL_AMOUNT_ERRORS_KEY] : []) as Array<{ field: string; code: string }>;
+  for (const e of amountErrors) {
+    msgs.push({
+      field: e.field,
+      code: e.code,
+      message: `The amount in "${e.field}" ${AMOUNT_ERROR_TEXT[e.code] ?? 'is not valid'} (row ${rowNumber})`,
+      severity: 'error',
+    });
+  }
+  const badAmount = new Set(amountErrors.map(e => e.field));
+
+  // A row without its own check date takes the date given at upload (U-242).
+  const checkDate = rowPayDate(r, sessionCheckDate);
 
   // MISSING_REQUIRED — gross pay is optional (it defaults to net pay, see
   // grossOf in payroll-je.service), so net pay is the only amount required.
   for (const field of ['employee_name', 'check_date', 'net_pay']) {
-    const val = mapped[field];
+    if (badAmount.has(field)) continue;
+    const val = field === 'check_date' ? checkDate : mapped[field];
     if (val === undefined || val === null || val === '' || (typeof val === 'number' && isNaN(val))) {
       msgs.push({
         field,
@@ -44,7 +70,6 @@ function validateRow(mapped: Record<string, any>, rowNumber: number): PayrollVal
   }
 
   // INVALID_DATE
-  const checkDate = String(r.check_date || '');
   if (checkDate && !/^\d{4}-\d{2}-\d{2}$/.test(checkDate)) {
     msgs.push({ field: 'check_date', code: 'INVALID_DATE', message: `Invalid date format: "${checkDate}" (row ${rowNumber})`, severity: 'error' });
   } else if (checkDate) {
@@ -63,45 +88,38 @@ function validateRow(mapped: Record<string, any>, rowNumber: number): PayrollVal
     }
   }
 
+  const m = (key: string) => readPayrollMoney(r[key]);
   const grossPay = grossOf(r);
-  const netPay = Number(r.net_pay ?? 0);
+  const netPay = m('net_pay');
   const isContractor = r.is_contractor === true;
 
   // NEGATIVE_GROSS
-  if (grossPay < 0) {
-    msgs.push({ field: 'gross_pay', code: 'NEGATIVE_GROSS', message: `Negative gross pay: ${grossPay} (row ${rowNumber})`, severity: 'error' });
+  if (grossPay.lt(0)) {
+    msgs.push({ field: 'gross_pay', code: 'NEGATIVE_GROSS', message: `Negative gross pay: ${grossPay.toFixed(2)} (row ${rowNumber})`, severity: 'error' });
   }
 
   // NET_EXCEEDS_GROSS
-  if (!isContractor && netPay > grossPay && grossPay > 0) {
-    msgs.push({ field: 'net_pay', code: 'NET_EXCEEDS_GROSS', message: `Net pay (${netPay}) exceeds gross pay (${grossPay}) (row ${rowNumber})`, severity: 'error' });
+  if (!isContractor && netPay.gt(grossPay) && grossPay.gt(0)) {
+    msgs.push({ field: 'net_pay', code: 'NET_EXCEEDS_GROSS', message: `Net pay (${netPay.toFixed(2)}) exceeds gross pay (${grossPay.toFixed(2)}) (row ${rowNumber})`, severity: 'error' });
   }
 
   // ZERO_NET_PAY
-  if (netPay === 0 && grossPay > 0) {
+  if (netPay.isZero() && grossPay.gt(0)) {
     msgs.push({ field: 'net_pay', code: 'ZERO_NET_PAY', message: `Net pay is $0 (row ${rowNumber})`, severity: 'warning' });
   }
 
-  // BALANCE_MISMATCH
-  if (grossPay > 0 && !isContractor) {
-    const withholdings = (Number(r.federal_income_tax ?? 0)) +
-      (Number(r.state_income_tax ?? 0)) +
-      (Number(r.local_income_tax ?? 0)) +
-      (Number(r.social_security_ee ?? 0)) +
-      (Number(r.medicare_ee ?? 0)) +
-      (Number(r.other_ee_tax ?? 0));
-    const deductions = (Number(r.health_insurance_ee ?? 0)) +
-      (Number(r.dental_vision_ee ?? 0)) +
-      (Number(r.retirement_401k_ee ?? 0)) +
-      (Number(r.roth_401k_ee ?? 0)) +
-      (Number(r.hsa_ee ?? 0)) +
-      (Number(r.other_deduction_ee ?? 0));
-    const expected = grossPay - withholdings - deductions;
-    if (Math.abs(expected - netPay) > 0.05) {
+  // BALANCE_MISMATCH — exact (U-250); still a warning.
+  if (grossPay.gt(0) && !isContractor) {
+    const withholdings = m('federal_income_tax').plus(m('state_income_tax')).plus(m('local_income_tax'))
+      .plus(m('social_security_ee')).plus(m('medicare_ee')).plus(m('other_ee_tax'));
+    const deductions = m('health_insurance_ee').plus(m('dental_vision_ee')).plus(m('retirement_401k_ee'))
+      .plus(m('roth_401k_ee')).plus(m('hsa_ee')).plus(m('other_deduction_ee'));
+    const expected = grossPay.minus(withholdings).minus(deductions);
+    if (!expected.eq(netPay)) {
       msgs.push({
         field: 'net_pay',
         code: 'BALANCE_MISMATCH',
-        message: `Gross (${grossPay}) − withholdings (${withholdings.toFixed(2)}) − deductions (${deductions.toFixed(2)}) = ${expected.toFixed(2)}, but net is ${netPay} (row ${rowNumber})`,
+        message: `Gross (${grossPay.toFixed(2)}) − withholdings (${withholdings.toFixed(2)}) − deductions (${deductions.toFixed(2)}) = ${expected.toFixed(2)}, but net is ${netPay.toFixed(2)} (row ${rowNumber})`,
         severity: 'warning',
       });
     }
@@ -113,15 +131,14 @@ function validateRow(mapped: Record<string, any>, rowNumber: number): PayrollVal
     'social_security_ee', 'medicare_ee', 'social_security_er', 'medicare_er',
   ];
   for (const f of amountFields) {
-    const v = Number(mapped[f] ?? 0);
-    if (Math.abs(v) > 50000) {
-      msgs.push({ field: f, code: 'LARGE_AMOUNT', message: `${f} is ${v} — unusually large (row ${rowNumber})`, severity: 'warning' });
+    const v = m(f);
+    if (v.abs().gt(50000)) {
+      msgs.push({ field: f, code: 'LARGE_AMOUNT', message: `${f} is ${v.toFixed(2)} — unusually large (row ${rowNumber})`, severity: 'warning' });
     }
   }
 
-  return msgs;
+  return msgs.map(msg => ({ ...msg, rowNumber }));
 }
-
 // ── Dispatch: validate based on import mode ──
 
 export async function dispatchValidation(tenantId: string, sessionId: string): Promise<PayrollValidationSummary> {
@@ -154,13 +171,16 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
   const allMessages: PayrollValidationMessage[] = [];
   const employeeNames = new Map<string, number>();
   let ssnDetected = false;
+  const rowDates = new Set<string>();
 
   // Gusto missing column tracking
   let gustoTaxColumnsAllZero = true;
 
   for (const row of rows) {
     const mapped = (row.mappedData || row.rawData) as Record<string, any>;
-    const msgs = validateRow(mapped, row.rowNumber);
+    const msgs = validateRow(mapped, row.rowNumber, session.checkDate);
+    const ownDate = mapped['check_date'];
+    if (ownDate !== undefined && ownDate !== null && String(ownDate).trim() !== '') rowDates.add(String(ownDate).trim());
 
     // SSN scan
     if (!ssnDetected) {
@@ -172,7 +192,7 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
     if (provider === 'gusto' && gustoTaxColumnsAllZero) {
       const taxFields = ['federal_income_tax', 'social_security_ee', 'medicare_ee'];
       for (const f of taxFields) {
-        if (Number(mapped[f] ?? 0) !== 0) { gustoTaxColumnsAllZero = false; break; }
+        if (!readPayrollMoney(mapped[f]).isZero()) { gustoTaxColumnsAllZero = false; break; }
       }
     }
 
@@ -227,6 +247,17 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
       field: 'file',
       code: 'GUSTO_MISSING_COLUMNS',
       message: 'Tax withholding columns appear empty. When exporting from Gusto, check all boxes under "Extra Details" (Earnings, Employee taxes, Employer taxes, Deductions, Benefits, Reimbursements).',
+      severity: 'warning',
+    });
+  }
+
+  // CHECK_DATE_NOT_IN_FILE: the rows carry their own pay dates and the date
+  // given at upload is none of them (U-242). Each date posts its own entry.
+  if (session.checkDate && rowDates.size > 0 && !rowDates.has(session.checkDate)) {
+    allMessages.push({
+      field: 'check_date',
+      code: 'CHECK_DATE_NOT_IN_FILE',
+      message: `The pay date given at upload (${session.checkDate}) is not one of the pay dates in the file. Each pay date in the file posts its own entry.`,
       severity: 'warning',
     });
   }
@@ -296,7 +327,8 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
     });
   }
 
-  const dateGroups = new Map<string, { debits: number; credits: number }>();
+  const dateGroups = new Map<string, { debits: InstanceType<typeof Decimal>; credits: InstanceType<typeof Decimal> }>();
+  let amountErrors = 0;
   let toastSaasFeeDetected = false;
   let adpClearingDetected = false;
   let toastAccountIdBlank = true;
@@ -311,32 +343,24 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
     const dateCol = columnConfig.dateColumn;
     const date = raw[dateCol] || raw[dateCol.toLowerCase()] || raw['Date'] || raw['date'] || '';
 
-    let debit = 0;
-    let credit = 0;
-
-    if (columnConfig.amountConvention === 'separate_dr_cr') {
-      const drCol = columnConfig.debitColumn || 'Debit';
-      const crCol = columnConfig.creditColumn || 'Credit';
-      debit = parseCurrency(raw[drCol] || raw[drCol.toLowerCase()]);
-      credit = parseCurrency(raw[crCol] || raw[crCol.toLowerCase()]);
-    } else if (columnConfig.amountConvention === 'signed_single') {
-      const amtCol = columnConfig.amountColumn || 'Amount';
-      const val = parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]);
-      if (val >= 0) debit = val;
-      else credit = Math.abs(val);
-    } else if (columnConfig.amountConvention === 'category_derived') {
-      const amtCol = columnConfig.amountColumn || 'Amount';
-      const catCol = columnConfig.accountCategoryColumn || 'Category';
-      const amount = Math.abs(parseCurrency(raw[amtCol] || raw[amtCol.toLowerCase()]));
-      const category = (raw[catCol] || raw[catCol.toLowerCase()] || '').toLowerCase().trim();
-      if (category.startsWith('expense') || category.startsWith('cost')) debit = amount;
-      else credit = amount;
+    // Exact amounts (U-250); a cell that is not a whole-cent number is a row
+    // error naming the row, never the cell text.
+    const { debit, credit, error } = glRowAmounts(raw, columnConfig);
+    if (error) {
+      amountErrors++;
+      messages.push({
+        field: 'amount',
+        code: error,
+        message: `The amount on row ${row.rowNumber} ${AMOUNT_ERROR_TEXT[error] ?? 'is not valid'}`,
+        severity: 'error',
+        rowNumber: row.rowNumber,
+      });
     }
 
     if (date) {
-      const group = dateGroups.get(date) || { debits: 0, credits: 0 };
-      group.debits += debit;
-      group.credits += credit;
+      const group = dateGroups.get(date) || { debits: new Decimal(0), credits: new Decimal(0) };
+      group.debits = group.debits.plus(debit);
+      group.credits = group.credits.plus(credit);
       dateGroups.set(date, group);
     }
 
@@ -370,11 +394,12 @@ export async function validateModeBSession(tenantId: string, sessionId: string):
   let errorCount = 0;
   if (ssnDetected) errorCount++;
   if (rows.length < 2) errorCount++;
+  errorCount += amountErrors;
 
-  // Balance check per date group
+  // Balance check per date group — exact (U-250)
   let balanceErrors = 0;
   for (const [date, group] of dateGroups) {
-    if (Math.abs(group.debits - group.credits) > 0.01) {
+    if (!group.debits.eq(group.credits)) {
       messages.push({
         field: 'balance',
         code: 'BALANCE_MISMATCH',
