@@ -170,7 +170,7 @@ describe('temporary passwords (desktop)', () => {
       expect(rows).toHaveLength(2);
       for (const row of rows) {
         expect(row).toMatchObject({ action: 'update', entityId: ids['member'], userId: ids['member'], beforeData: null });
-        expect(JSON.parse(row.afterData as string)).toEqual({ sessionsRevoked: true });
+        expect(typeof row.afterData === 'string' ? JSON.parse(row.afterData) : row.afterData).toEqual({ sessionsRevoked: true });
       }
       const [hashNow] = await db.select({ h: users.passwordHash }).from(users).where(eq(users.id, ids['member']!));
       const listed = await call('/api/v1/audit-log?company=current&entity_type=user_password_change', { jwt: jwts['owner'] });
