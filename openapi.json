@@ -44800,6 +44800,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -44832,6 +44842,10 @@
                       "maxLength": 100
                     },
                     "type": "object"
+                  },
+                  "discardEmployeeDetail": {
+                    "default": false,
+                    "type": "boolean"
                   },
                   "forcePost": {
                     "default": false,
@@ -44877,6 +44891,13 @@
                     "maxItems": 10000,
                     "type": "array"
                   },
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
+                  "previewToken": {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
                   "tagId": {
                     "anyOf": [
                       {
@@ -44910,7 +44931,8 @@
         ],
         "tags": [
           "payroll-import"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/payroll-import/sessions/{id}/preview": {
@@ -44955,6 +44977,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -44963,6 +44995,9 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "overrideConfirmed": {
+                    "type": "boolean"
+                  },
                   "reason": {
                     "default": "Payroll import reversal",
                     "maxLength": 500,
@@ -44991,7 +45026,8 @@
         ],
         "tags": [
           "payroll-import"
-        ]
+        ],
+        "x-idempotency": true
       }
     },
     "/api/v1/payroll-import/sessions/{id}/validate": {

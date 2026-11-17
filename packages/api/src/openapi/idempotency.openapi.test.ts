@@ -213,7 +213,14 @@ export const IDEMPOTENCY_REPORTS_EMAIL_V1_ROUTES = [
   'post /api/v1/reports/email',
 ].sort();
 
+/** Keyed by payroll-import-post-v1 (U-244): a payroll import posted or reversed once per key. */
+export const IDEMPOTENCY_PAYROLL_POST_V1_ROUTES = [
+  'post /api/v1/payroll-import/sessions/{id}/post',
+  'post /api/v1/payroll-import/sessions/{id}/reverse',
+].sort();
+
 const ALL_KEYED_ROUTES = [
+  ...IDEMPOTENCY_PAYROLL_POST_V1_ROUTES,
   ...IDEMPOTENCY_REPORTS_EMAIL_V1_ROUTES,
   ...IDEMPOTENCY_BUDGETS_EXACT_V1_ROUTES,
   ...IDEMPOTENCY_REPORT_DEFS_V1_ROUTES,
