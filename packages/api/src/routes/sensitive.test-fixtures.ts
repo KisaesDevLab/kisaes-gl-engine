@@ -3,10 +3,13 @@
 // See LICENSE and NOTICE.md for terms.
 
 // Test-only harness for sensitive accounts (U-33): one tenant with an owner
-// (sees everything) and a legacy bookkeeper with no permission row (full
-// access except `sensitive_accounts`), served by the REAL app so the viewer
-// store in `authenticate` and the reports refusal table run as in
-// production. Not imported by any production module.
+// (sees everything) and a restricted bookkeeper `bk` assigned a permission
+// template that grants every right at its highest level except
+// `sensitive_accounts` (sensitive-accounts-grant-v1: a bookkeeper with no
+// permission row now sees sensitive accounts, so the viewer that must not see
+// them is an explicitly restricted one). Served by the REAL app so the viewer
+// store in `authenticate` and the reports refusal table run as in production.
+// Not imported by any production module.
 
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -14,7 +17,8 @@ import type { Express } from 'express';
 import jwt from 'jsonwebtoken';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { budgetLines, budgets, contacts, items, tags, tenants, users } from '../db/schema/index.js';
+import { PERMISSION_RESOURCES, type PermissionMap, type ResourceDef, type ResourceKey } from '@kis-books/shared';
+import { budgetLines, budgets, contacts, items, permissionTemplates, tags, tenants, userPermissions, users } from '../db/schema/index.js';
 import { createCompanyForTenant } from '../services/company.service.js';
 import * as accountsService from '../services/accounts.service.js';
 import * as ledger from '../services/ledger.service.js';
@@ -32,6 +36,8 @@ export interface SensitiveHarness {
   companyId: string;
   ownerId: string;
   bookkeeperId: string;
+  /** The template `bk` is assigned: every right but `sensitive_accounts`. */
+  bkTemplateId: string;
   /** Accounts every fixture has. `wages` is marked sensitive by `markWages`. */
   acct: { bank: string; wages: string; wagesSub: string; supplies: string; sales: string; ar: string; ap: string };
   call: (who: Who, method: string, path: string, body?: unknown) => Promise<CallResult>;
@@ -71,6 +77,14 @@ export async function startSensitiveHarness(slugPrefix: string): Promise<Sensiti
   const [bk] = await db.insert(users).values({
     tenantId, email: `${slug}-bk@example.com`, passwordHash: 'x', displayName: 'Bookkeeper', role: 'bookkeeper',
   }).returning();
+  // The restricted viewer: every right at its highest level but `sensitive_accounts`.
+  const bkMap: PermissionMap = {};
+  for (const r of PERMISSION_RESOURCES as readonly ResourceDef[]) {
+    if (r.key === 'sensitive_accounts') continue;
+    bkMap[r.key as ResourceKey] = r.writable ? 'full' : 'view';
+  }
+  const [bkTpl] = await db.insert(permissionTemplates).values({ tenantId, name: 'Everything but sensitive', permissions: bkMap }).returning();
+  await db.insert(userPermissions).values({ tenantId, userId: bk!.id, templateId: bkTpl!.id });
   const tokens: Record<Who, string> = {
     owner: jwt.sign({ userId: owner!.id, tenantId, role: 'owner', isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '10m' }),
     bk: jwt.sign({ userId: bk!.id, tenantId, role: 'bookkeeper', isSuperAdmin: false }, process.env['JWT_SECRET']!, { expiresIn: '10m' }),
@@ -123,6 +137,7 @@ export async function startSensitiveHarness(slugPrefix: string): Promise<Sensiti
     companyId: company.id,
     ownerId: owner!.id,
     bookkeeperId: bk!.id,
+    bkTemplateId: bkTpl!.id,
     acct: { bank, wages, wagesSub, supplies, sales, ar, ap },
     call,
     raw: (who: Who, method: string, path: string, body: string, contentType: string) => raw(who, method, path, body, contentType),

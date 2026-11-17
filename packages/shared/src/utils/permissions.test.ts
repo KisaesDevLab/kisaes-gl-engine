@@ -6,7 +6,8 @@
 // place the role→permission policy lives, so the matrix is pinned
 // here: owner/accountant → full, readonly → view, a client with no
 // permission row → resolves by role, bookkeeper with no row → full
-// (legacy, no regression), and any customizable principal (bookkeeper
+// (legacy, no regression; sensitive accounts included since
+// sensitive-accounts-grant-v1), and any customizable principal (bookkeeper
 // or client) with a row → template ?? none, then overrides. Read-only
 // resources are capped at view. can() maps CRUD verbs onto the level ladder.
 
@@ -155,10 +156,27 @@ describe('resolveEffectivePermissions — sensitive_accounts truth table (U-33)'
     expect(level({ role: 'accountant' })).toBe('view');
   });
 
-  it('a bookkeeper with no permission row does not (legacy full access stops here)', () => {
+  it('a bookkeeper with no permission row does too (sensitive-accounts-grant-v1: legacy full access includes it)', () => {
     const perms = resolveEffectivePermissions({ role: 'bookkeeper', hasPermissionRow: false });
-    expect(perms.sensitive_accounts).toBe('none');
+    expect(perms.sensitive_accounts).toBe('view');
     expect(perms.accounts).toBe('full');
+    expect(level({ role: 'bookkeeper' })).toBe('view');
+    // A client-type user with the bookkeeper role and no row resolves by role, like every other key.
+    expect(level({ role: 'bookkeeper', userType: 'client' })).toBe('view');
+  });
+
+  it('a restricted bookkeeper (any permission row) sees them only when the template or an override lists the key', () => {
+    const bk = { role: 'bookkeeper', hasPermissionRow: true } as const;
+    // The ClientLedger "Bookkeeper" template: lists the key.
+    expect(level({ ...bk, templateMap: { accounts: 'full', sensitive_accounts: 'view' } })).toBe('view');
+    // A/R, A/P or any other template that does not list it: none (no parent, no role default).
+    expect(level({ ...bk, templateMap: { invoices: 'full', receive_payment: 'full', accounts: 'view' } })).toBe('none');
+    expect(level({ ...bk, templateMap: { bills: 'full', pay_bills: 'full', accounts: 'view' } })).toBe('none');
+    expect(level({ ...bk, templateMap: {} })).toBe('none');
+    expect(level({ ...bk, templateMap: null, overrides: null })).toBe('none');
+    // An override grants it on top of a template without it, or takes it away.
+    expect(level({ ...bk, templateMap: { invoices: 'full' }, overrides: { sensitive_accounts: 'view' } })).toBe('view');
+    expect(level({ ...bk, templateMap: { sensitive_accounts: 'view' }, overrides: { sensitive_accounts: 'none' } })).toBe('none');
   });
 
   it('a bookkeeper or client user with a row: override, else template, else none', () => {
@@ -176,6 +194,9 @@ describe('resolveEffectivePermissions — sensitive_accounts truth table (U-33)'
 
   it('readonly never sees them by default; unknown roles see nothing', () => {
     expect(level({ role: 'readonly' })).toBe('none');
+    expect(level({ role: 'readonly', userType: 'client' })).toBe('none');
+    expect(level({ role: '' })).toBe('none');
+    expect(level({ role: null })).toBe('none');
     expect(level({ role: 'weird' })).toBe('none');
     expect(level({ role: undefined })).toBe('none');
   });

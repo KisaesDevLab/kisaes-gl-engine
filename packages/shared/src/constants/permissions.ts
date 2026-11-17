@@ -13,8 +13,10 @@ import type { AccessLevel, ResourceDef } from '../types/permissions.js';
 //   - the `requireResource(<key>)` guards on each domain router
 //
 // `writable: false` = read-only surface (only none/view apply).
-// `elevated: true` = role defaults grant it only to super admin, owner and
-// accountant (see resolveEffectivePermissions).
+// `elevated: true` = role defaults grant it only to super admin, owner,
+// accountant and a bookkeeper with no permission row; readonly and unknown
+// roles never hold it by default (see resolveEffectivePermissions). A
+// template or override that lists the key grants it.
 export const PERMISSION_GROUPS = [
   'Transactions',
   'Sales',

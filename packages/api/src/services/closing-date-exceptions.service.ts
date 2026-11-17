@@ -29,6 +29,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { exactStr } from './report-exact.js';
+import { docNumberSql } from './report.service.js';
 
 export const CLOSING_EXCEPTIONS_MAX_ROWS = 10_000;
 
@@ -181,7 +182,7 @@ export async function buildClosingDateExceptions(
            -- no total (a journal entry).
            CASE WHEN j.b ? 'txnDate' OR a.entity_type = 'closing_date_override' THEN jsonb_build_object(
              'txnDate', j.b->>'txnDate', 'total', j.b->>'total', 'txnType', j.b->>'txnType',
-             'txnNumber', j.b->>'txnNumber', 'lockDate', j.b->>'lockDate',
+             'txnNumber', COALESCE(NULLIF(j.b->>'checkNumber', ''), j.b->>'txnNumber'), 'lockDate', j.b->>'lockDate',
              'debits', (SELECT SUM((l->>'debit')::numeric)::text
                         FROM jsonb_array_elements(CASE WHEN jsonb_typeof(j.b->'lines') = 'array' THEN j.b->'lines' ELSE '[]'::jsonb END) l
                         WHERE l->>'debit' ~ '^-?[0-9]+(\\.[0-9]+)?$'
@@ -195,7 +196,8 @@ export async function buildClosingDateExceptions(
            COALESCE(t.total::text, CASE WHEN t.id IS NOT NULL THEN (SELECT SUM(jl.debit)::text FROM journal_lines jl
              WHERE jl.tenant_id = a.tenant_id AND jl.transaction_id = t.id AND jl.is_void_reversal = false) END) AS live_total,
            t.txn_type AS live_type,
-           t.txn_number AS live_number, t.status AS live_status
+           -- A check's check number, else the document number (U-209 docNumberSql precedence).
+           ${docNumberSql('t')} AS live_number, t.status AS live_status
     FROM audit_log a
     CROSS JOIN LATERAL (SELECT ${doc('a.before_data')} AS b, ${doc('a.after_data')} AS x) j
     LEFT JOIN transactions t ON t.tenant_id = a.tenant_id AND t.id = COALESCE(

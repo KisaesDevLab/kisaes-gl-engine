@@ -158,6 +158,29 @@ describe('temporary passwords (desktop)', () => {
       const fresh = changed.json.tokens.accessToken as string;
       expect((await call('/api/v1/company/users', { jwt: fresh })).status).toBe(200);
       expect((await db.select().from(users).where(eq(users.id, ids['member']!)))[0]!.passwordChangeRequired).toBe(false);
+
+      // Owner decision 2026-11-17 (P29 follow-up): the forced change, and a later ordinary change, each leave an audit
+      // row update user_password_change by the member ({sessionsRevoked: true}; never the password or its hash), which
+      // the owner sees in the company's audit trail.
+      const again = await call('/api/v1/auth/change-password', {
+        method: 'POST', jwt: fresh, body: { currentPassword: 'member-chose-this-one-7', newPassword: 'member-second-choice-8' },
+      });
+      expect(again.status, again.text).toBe(200);
+      const rows = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, tenantId), eq(auditLog.entityType, 'user_password_change')));
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row).toMatchObject({ action: 'update', entityId: ids['member'], userId: ids['member'], beforeData: null });
+        expect(JSON.parse(row.afterData as string)).toEqual({ sessionsRevoked: true });
+      }
+      const [hashNow] = await db.select({ h: users.passwordHash }).from(users).where(eq(users.id, ids['member']!));
+      const listed = await call('/api/v1/audit-log?company=current&entity_type=user_password_change', { jwt: jwts['owner'] });
+      expect(listed.status, listed.text).toBe(200);
+      expect(listed.json.total).toBe(2);
+      expect(listed.json.data.every((x: { user_id: string; userName: string }) => x.user_id === ids['member'] && x.userName === 'member')).toBe(true);
+      for (const secret of [temp, 'member-chose-this-one-7', 'member-second-choice-8', hashNow!.h]) {
+        expect(JSON.stringify(rows)).not.toContain(secret);
+        expect(listed.text).not.toContain(secret);
+      }
     });
   });
 
