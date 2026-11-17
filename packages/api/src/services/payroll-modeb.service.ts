@@ -66,39 +66,49 @@ export interface GLEntryRow {
   index: number;
   /** Set when an amount cell is not a whole-cent number (U-250). */
   amountError?: PayrollMoneyErrorCode;
+  /** Set when the row's date is missing or does not parse (payroll-import-review-v1). */
+  dateError?: 'DATE_INVALID';
 }
 
 /** Exact debit/credit for one GL row under a provider's amount convention.
- *  An unparseable cell is reported, never read as 0 (U-250). */
+ *  An unparseable cell is reported, never read as 0 (U-250). Both results
+ *  are never negative: a negative debit is a credit and a negative credit
+ *  is a debit, so a correction row posts the other way rather than being
+ *  dropped (payroll-import-review-v1). */
 export function glRowAmounts(
   r: Record<string, string>,
   c: ModeBColumnConfig,
 ): { debit: Dec; credit: Dec; error?: PayrollMoneyErrorCode } {
   const zero = new Decimal(0);
   const read = (v: string) => parsePayrollMoney(v);
+  const pos = (v: Dec) => (v.gt(0) ? v : zero);
+  const neg = (v: Dec) => (v.lt(0) ? v.negated() : zero);
   switch (c.amountConvention) {
     case 'separate_dr_cr': {
       const d = read(col(r, c.debitColumn || 'Debit'));
       const cr = read(col(r, c.creditColumn || 'Credit'));
       if (!d.ok) return { debit: zero, credit: zero, error: d.code };
       if (!cr.ok) return { debit: zero, credit: zero, error: cr.code };
-      return { debit: new Decimal(d.value), credit: new Decimal(cr.value) };
+      const dv = new Decimal(d.value);
+      const cv = new Decimal(cr.value);
+      return { debit: pos(dv).plus(neg(cv)), credit: pos(cv).plus(neg(dv)) };
     }
     case 'signed_single': {
       const a = read(col(r, c.amountColumn || 'Amount'));
       if (!a.ok) return { debit: zero, credit: zero, error: a.code };
       const amount = new Decimal(a.value);
-      return amount.gte(0) ? { debit: amount, credit: zero } : { debit: zero, credit: amount.abs() };
+      return { debit: pos(amount), credit: neg(amount) };
     }
     case 'category_derived': {
       const a = read(col(r, c.amountColumn || 'Amount'));
       if (!a.ok) return { debit: zero, credit: zero, error: a.code };
-      const amount = new Decimal(a.value).abs();
+      // The sign is kept: a negative amount is the reverse of its category's side.
+      const amount = new Decimal(a.value);
       const category = col(r, c.accountCategoryColumn || 'Category').toLowerCase().trim();
       // Expenses are debits; Liabilities and Assets (net pay) are credits
       return category.startsWith('expense') || category.startsWith('cost')
-        ? { debit: amount, credit: zero }
-        : { debit: zero, credit: amount };
+        ? { debit: pos(amount), credit: neg(amount) }
+        : { debit: neg(amount), credit: pos(amount) };
     }
     default:
       return { debit: zero, credit: zero };
@@ -130,6 +140,7 @@ export function parseGLEntries(rows: Record<string, string>[], config?: ModeBCol
         index,
       };
       if (error) entry.amountError = error;
+      if (!entry.date) entry.dateError = 'DATE_INVALID';
       return entry;
     })
     .filter(r => r.description && (r.amountError || r.debit.gt(0) || r.credit.gt(0)));
@@ -137,6 +148,8 @@ export function parseGLEntries(rows: Record<string, string>[], config?: ModeBCol
 
 // ── Group by Date ──
 
+/** Groups entries by date. Undated entries are refused before this runs
+ *  (generateModeBJE, 422 PAYROLL_DATE_INVALID); they are never grouped. */
 export function groupByDate(entries: GLEntryRow[]): Map<string, GLEntryRow[]> {
   const groups = new Map<string, GLEntryRow[]>();
   for (const entry of entries) {
@@ -278,7 +291,8 @@ export async function getChecks(tenantId: string, sessionId: string): Promise<Pa
 // ── Generate Mode B JE Preview ──
 
 export async function generateModeBJE(tenantId: string, sessionId: string, executor: DbOrTx = db): Promise<{ previews: PayrollJEPreview[] }> {
-  const session = await importService.getSession(tenantId, sessionId);
+  // On the posting transaction when called from post (M5).
+  const session = await importService.getSession(tenantId, sessionId, executor);
   const companyId = session.companyId;
   const metadata = session.metadata as any;
   const providerKey = metadata?.detectedProvider || 'payroll_relief_gl';
@@ -292,12 +306,28 @@ export async function generateModeBJE(tenantId: string, sessionId: string, execu
 
   const entries = parseGLEntries(rawRows.map(r => r.rawData as Record<string, string>), columnConfig);
   const badAmounts = entries.filter(e => e.amountError);
+  // An entry row whose date is missing or does not parse is refused, never
+  // silently left out (payroll-import-review-v1).
+  const badDates = entries.filter(e => !e.amountError && e.dateError);
+  const rowNumberOf = (e: GLEntryRow) => rawRows[e.index]?.rowNumber ?? e.index + 1;
+  const dateRows = badDates.map(e => ({ rowNumber: rowNumberOf(e), code: e.dateError }));
   if (badAmounts.length > 0) {
     // Never read a bad cell as 0 (U-250): name the rows, never the cell text.
+    // Rows with a bad date are listed too, so one answer names every row.
     throw AppError.unprocessableEntity(
       `${badAmounts.length} row(s) have an amount that is not a whole-cent number. Fix the file and upload it again.`,
       'PAYROLL_AMOUNT_INVALID',
-      { rows: badAmounts.map(e => ({ rowNumber: rawRows[e.index]?.rowNumber ?? e.index + 1, code: e.amountError })) },
+      {
+        rows: [...badAmounts.map(e => ({ rowNumber: rowNumberOf(e), code: e.amountError })), ...dateRows]
+          .sort((a, b) => a.rowNumber - b.rowNumber),
+      },
+    );
+  }
+  if (badDates.length > 0) {
+    throw AppError.unprocessableEntity(
+      `${badDates.length} row(s) have no date or a date that cannot be read. Fix the file and upload it again.`,
+      'PAYROLL_DATE_INVALID',
+      { rows: dateRows },
     );
   }
   const groups = groupByDate(entries);

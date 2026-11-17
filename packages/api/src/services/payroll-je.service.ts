@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { eq, and, ne, inArray } from 'drizzle-orm';
+import { eq, and, ne, inArray, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import {
   PayrollLineType,
@@ -339,7 +339,8 @@ export async function generateJE(
   // The posting transaction (U-244): the preview is regenerated on it.
   executor: DbOrTx = db,
 ): Promise<{ previews: PayrollJEPreview[] }> {
-  const session = await importService.getSession(tenantId, sessionId);
+  // On the posting transaction when called from post (M5).
+  const session = await importService.getSession(tenantId, sessionId, executor);
 
   const rows = await executor.select().from(payrollImportRows)
     .where(and(
@@ -705,6 +706,12 @@ export async function postPayrollSession(
       throw AppError.conflict('Session must be validated before posting', 'PAYROLL_NOT_READY', { status: session.status });
     }
 
+    // Two sessions of the same file (or the same provider run) posted at once
+    // must not both pass the duplicate check (payroll-import-review-v1): posts
+    // in one company take turns from here to the commit, so the second one's
+    // duplicate check sees the first one posted (read committed) and is
+    // refused 409. Keyed on the session's company, which the check scopes on.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`payroll-post:${tenantId}:${session.companyId ?? ''}`}, 0))`);
     await importService.checkDuplicateFileHash(tenantId, session, tx);
 
     const previews = await o.generate(tx);
