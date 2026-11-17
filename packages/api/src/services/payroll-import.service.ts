@@ -53,6 +53,25 @@ const UPLOAD_DIR = env.UPLOAD_DIR || '/data/uploads';
 const Decimal = DecimalLib.default || DecimalLib;
 type DecimalValue = InstanceType<typeof Decimal>;
 
+/**
+ * validation_status of a row that apply-mapping dropped on purpose (a skip
+ * rule such as a Total row, or skip_footer_rows), U-252. Such a row is not
+ * data: validation, the entry preview and posting ignore it.
+ */
+export const PAYROLL_ROW_SKIPPED = 'skipped';
+
+/**
+ * True when a Mode A row was dropped by the column mapping. Sessions mapped
+ * before U-252 carry no marker; there a mapped session's row with no mapped
+ * data is the same thing (every kept row gets mapped data).
+ */
+export function isSkippedPayrollRow(
+  row: { validationStatus: string | null; mappedData: unknown },
+  sessionMapped: boolean,
+): boolean {
+  return row.validationStatus === PAYROLL_ROW_SKIPPED || (sessionMapped && row.mappedData == null);
+}
+
 // ── Idempotency Key Computation ──
 
 export function computeIdempotencyKey(
@@ -349,6 +368,18 @@ export async function applyMapping(tenantId: string, sessionId: string, config: 
     data_start_row: 1,
   };
   const { mappedRows, skippedCount, originalIndices } = applyColumnMapping(allRows, headers, mappingConfig);
+
+  // Rows the mapping dropped on purpose (skip rules such as a Total row,
+  // skip_footer_rows) are marked 'skipped' (U-252): validation and the
+  // entry ignore them. Written on every map so a re-map with new skip rules
+  // clears data and status left by an earlier mapping.
+  const kept = new Set(originalIndices);
+  for (let i = 0; i < rawRows.length; i++) {
+    if (kept.has(i)) continue;
+    await db.update(payrollImportRows)
+      .set({ mappedData: null, validationStatus: PAYROLL_ROW_SKIPPED, validationMessages: null })
+      .where(eq(payrollImportRows.id, rawRows[i]!.id));
+  }
 
   // Update rows with mapped data — use originalIndices to align correctly after skips
   for (let i = 0; i < mappedRows.length; i++) {

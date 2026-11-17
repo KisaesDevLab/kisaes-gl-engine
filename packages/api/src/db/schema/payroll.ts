@@ -77,7 +77,7 @@ export const payrollImportRows = pgTable('payroll_import_rows', {
   rowNumber: integer('row_number').notNull(),
   rawData: jsonb('raw_data'),
   mappedData: jsonb('mapped_data'),
-  validationStatus: varchar('validation_status', { length: 20 }).default('pending'), // pending, valid, warning, error
+  validationStatus: varchar('validation_status', { length: 20 }).default('pending'), // pending, valid, warning, error, skipped (dropped by the column mapping, U-252)
   validationMessages: jsonb('validation_messages'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

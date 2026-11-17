@@ -168,6 +168,7 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
   let validRows = 0;
   let warningRows = 0;
   let errorRows = 0;
+  let consideredRows = 0;
   const allMessages: PayrollValidationMessage[] = [];
   const employeeNames = new Map<string, number>();
   let ssnDetected = false;
@@ -176,7 +177,22 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
   // Gusto missing column tracking
   let gustoTaxColumnsAllZero = true;
 
+  // Rows the mapping dropped (a Total row, skip_footer_rows, skip_rules) are
+  // not data (U-252): only the SSN scan, which guards the stored raw cells,
+  // still reads them. The rawData fallback stays for a never-mapped session.
+  const sessionMapped = session.columnMapSnapshot != null;
   for (const row of rows) {
+    if (importService.isSkippedPayrollRow(row, sessionMapped)) {
+      if (!ssnDetected && scanForSSN(row.rawData as Record<string, any>)) ssnDetected = true;
+      if (row.validationStatus !== importService.PAYROLL_ROW_SKIPPED) {
+        // A draft mapped before U-252: give it the marker, drop the old error.
+        await db.update(payrollImportRows)
+          .set({ validationStatus: importService.PAYROLL_ROW_SKIPPED, validationMessages: null })
+          .where(eq(payrollImportRows.id, row.id));
+      }
+      continue;
+    }
+    consideredRows++;
     const mapped = (row.mappedData || row.rawData) as Record<string, any>;
     const msgs = validateRow(mapped, row.rowNumber, session.checkDate);
     const ownDate = mapped['check_date'];
@@ -242,7 +258,7 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
   }
 
   // Gusto: missing tax columns warning
-  if (provider === 'gusto' && gustoTaxColumnsAllZero && rows.length > 0) {
+  if (provider === 'gusto' && gustoTaxColumnsAllZero && consideredRows > 0) {
     allMessages.push({
       field: 'file',
       code: 'GUSTO_MISSING_COLUMNS',
@@ -293,7 +309,8 @@ export async function validateSession(tenantId: string, sessionId: string): Prom
     .where(eq(payrollImportSessions.id, sessionId));
 
   return {
-    totalRows: rows.length,
+    // Rows that are data: the rows the mapping dropped are not counted (U-252).
+    totalRows: consideredRows,
     validRows,
     warningRows,
     errorRows,
