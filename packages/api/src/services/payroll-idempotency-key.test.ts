@@ -21,20 +21,20 @@ async function keyFor(file: string, checkDate?: string) {
   const headerRowIdx = detectHeaderRow(rows);
   const headers = rows[headerRowIdx] || [];
   const provider = detectProvider(headers)?.provider ?? null;
-  return { provider, key: computeIdempotencyKey(provider, rows.slice(headerRowIdx + 1), headers, checkDate) };
+  return { provider, digest: computeIdempotencyKey(provider, rows.slice(headerRowIdx + 1), headers, checkDate) };
 }
 
 describe('payroll provider duplicate key is byte-stable', () => {
   // Captured from the float-era implementation (engine 5cce402d) before U-250.
-  const PINNED: Record<string, { provider: string | null; key: string | null }> = {
-    'adp-run-gli.csv': { provider: 'adp_run_gli', key: '859ae31a621e322414fc599b86e7a5d6' },
-    'gusto-payroll.csv': { provider: 'gusto', key: 'e74ee1515a304545e7ac5e9eb1027b3d' },
-    'onpay-gl-summary.csv': { provider: 'onpay_gl_summary', key: 'd673a02107a3a120d81ee514eb07e0e2' },
-    'onpay-listing.csv': { provider: 'onpay_listing', key: null },
-    'paychex-flex-gls.csv': { provider: 'paychex_flex_gls', key: '52a5d65660477893fba480781d360fe1' },
-    'payroll-relief-gl.csv': { provider: 'payroll_relief_gl', key: null },
-    'toast-custom-report.csv': { provider: 'toast_payroll_detail', key: null },
-    'toast-je-report.csv': { provider: 'toast_je_report', key: '7685002ede88fc6f1065e0b3df723903' },
+  const PINNED: Record<string, { provider: string | null; digest: string | null }> = {
+    'adp-run-gli.csv': { provider: 'adp_run_gli', digest: '859ae31a621e322414fc599b86e7a5d6' },
+    'gusto-payroll.csv': { provider: 'gusto', digest: 'e74ee1515a304545e7ac5e9eb1027b3d' },
+    'onpay-gl-summary.csv': { provider: 'onpay_gl_summary', digest: 'd673a02107a3a120d81ee514eb07e0e2' },
+    'onpay-listing.csv': { provider: 'onpay_listing', digest: null },
+    'paychex-flex-gls.csv': { provider: 'paychex_flex_gls', digest: '52a5d65660477893fba480781d360fe1' },
+    'payroll-relief-gl.csv': { provider: 'payroll_relief_gl', digest: null },
+    'toast-custom-report.csv': { provider: 'toast_payroll_detail', digest: null },
+    'toast-je-report.csv': { provider: 'toast_je_report', digest: '7685002ede88fc6f1065e0b3df723903' },
   };
 
   it.each(Object.keys(PINNED))('%s', async (file) => {
