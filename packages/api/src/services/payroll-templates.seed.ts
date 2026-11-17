@@ -6,7 +6,7 @@ import { db } from '../db/index.js';
 import { payrollProviderTemplates } from '../db/schema/index.js';
 import { eq, and } from 'drizzle-orm';
 
-const SYSTEM_TEMPLATES = [
+export const SYSTEM_TEMPLATES = [
   {
     name: 'Gusto — Payroll Journal',
     providerKey: 'gusto',

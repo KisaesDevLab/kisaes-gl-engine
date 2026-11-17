@@ -214,7 +214,8 @@ describe('payroll JE post tags', () => {
   });
 
   it('gross pay defaults to net pay when the file has none', () => {
-    expect(grossOf({ net_pay: 759.21 })).toBe(759.21);
-    expect(grossOf({ net_pay: 700, gross_pay: 900 })).toBe(900);
+    expect(grossOf({ net_pay: 759.21 }).toFixed(2)).toBe('759.21');
+    expect(grossOf({ net_pay: '759.21', gross_pay: '' }).toFixed(2)).toBe('759.21');
+    expect(grossOf({ net_pay: 700, gross_pay: 900 }).toFixed(2)).toBe('900.00');
   });
 });

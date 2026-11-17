@@ -44746,6 +44746,23 @@
                       "per_employee"
                     ],
                     "type": "string"
+                  },
+                  "departmentTagMap": {
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "propertyNames": {
+                      "maxLength": 100
+                    },
+                    "type": "object"
                   }
                 },
                 "type": "object"
@@ -44798,6 +44815,23 @@
                       "per_employee"
                     ],
                     "type": "string"
+                  },
+                  "departmentTagMap": {
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "propertyNames": {
+                      "maxLength": 100
+                    },
+                    "type": "object"
                   },
                   "forcePost": {
                     "default": false,
