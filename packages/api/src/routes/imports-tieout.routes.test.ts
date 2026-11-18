@@ -18,14 +18,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { importRows, importSessions } from '../db/schema/index.js';
+import { accounts, importRows, importSessions } from '../db/schema/index.js';
 import { importsRouter } from './imports.routes.js';
 import * as importsService from '../services/imports/imports.service.js';
 import * as batchService from '../services/imports/import-batch.service.js';
 import { buildTrialBalance } from '../services/report.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
-import { cleanImports, batchRow } from './imports-batch.test-support.js';
+import { cleanImports, batchRow, companySnapshot } from './imports-batch.test-support.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Body = any;
@@ -167,15 +167,20 @@ async function upload(
   return out.session.id;
 }
 
-async function qbdSet(alter: { supplies?: string; birch?: string } = {}) {
+/** U-272: the same files with QuickBooks' Retained Earnings numbered (in the chart and both trial balances). */
+const numberedRe = (text: string, n: string) => text.replace('"Retained Earnings"', `"${n} · Retained Earnings"`);
+const coaWithRe = (n: string) => `${COA},"${n} · Retained Earnings",Equity,,,${n},\n`;
+
+async function qbdSet(alter: { supplies?: string; birch?: string; retainedNumber?: string } = {}) {
+  const n = alter.retainedNumber;
   return [
-    await upload('accounts.csv', COA, 'coa'),
+    await upload('accounts.csv', n ? coaWithRe(n) : COA, 'coa'),
     await upload('customers.csv', CUSTOMERS, 'contacts', { options: { contactKind: 'customer' } }),
     await upload('vendors.csv', VENDORS, 'contacts', { options: { contactKind: 'vendor' } }),
-    await upload('tb-2024-12-31.csv', TB_OPENING, 'trial_balance'),
+    await upload('tb-2024-12-31.csv', n ? numberedRe(TB_OPENING, n) : TB_OPENING, 'trial_balance'),
     await upload('journal-2025.csv', JOURNAL_2025, 'gl_transactions'),
     await upload('journal-2026.csv', journal2026(alter.supplies), 'gl_transactions'),
-    await upload('tb-2026-10-31.csv', TB_REFERENCE, 'trial_balance', { role: 'reference' }),
+    await upload('tb-2026-10-31.csv', n ? numberedRe(TB_REFERENCE, n) : TB_REFERENCE, 'trial_balance', { role: 'reference' }),
     await upload('open-invoices.csv', openInvoices(alter.birch), 'open_invoices'),
     await upload('unpaid-bills.csv', UNPAID_BILLS, 'unpaid_bills'),
   ];
@@ -460,6 +465,74 @@ describe('U-267 batch books across a year end', () => {
     expect(t.books).toBe('batch');
     expect(nonzero(t), JSON.stringify(t.accounts)).toEqual(NONE);
     expect(t.accounts.find((a: Body) => a.sourceKeys.includes('Retained Earnings'))).toMatchObject({ sourceExact: '-300.00', booksExact: '-300.00' });
+  });
+});
+
+describe('U-272 QuickBooks Desktop retained earnings merge (qbd-retained-earnings-v1)', () => {
+  const RE_NO = '32000';
+  const reRows = () => db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'retained_earnings')));
+
+  it('advertises the capability; the chart row carries systemRole retained_earnings', async () => {
+    expect(DESKTOP_CAPABILITIES).toContain('qbd-retained-earnings-v1');
+    const s = await importsService.createSession({
+      tenantId: c.tenantId, companyId: c.companyId, userId: c.userId,
+      file: { originalname: 'accounts.csv', buffer: Buffer.from(coaWithRe(RE_NO), 'latin1') },
+      kind: 'coa', sourceSystem: 'quickbooks_desktop', options: {} as never, role: 'post',
+    });
+    const m = (s.preview as Body).accountMatches.find((a: Body) => a.sourceKey === RE_NO);
+    expect(m).toMatchObject({ systemRole: 'retained_earnings', name: 'Retained Earnings' });
+    // An equity account of another name is not it.
+    expect((s.preview as Body).accountMatches.find((a: Body) => a.sourceKey === '30000').systemRole).toBeUndefined();
+  });
+
+  it('a numbered chart with prior-year history ties to exactly zero; the source row is the system account; undo is exact', async () => {
+    const [sys] = await reRows();
+    expect(sys, 'the test company has a retained earnings account').toBeTruthy();
+    const before = await companySnapshot(c);
+    const id = await commit(await qbdSet({ retainedNumber: RE_NO }));
+
+    // Not created: no account 32000; the trial balance's lines went to the system account.
+    expect(await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountNumber, RE_NO)))).toHaveLength(0);
+    expect((await reRows()).map((a) => a.id)).toEqual([sys!.id]);
+
+    const t = await tieout(id);
+    expect(nonzero(t), JSON.stringify(t.accounts)).toEqual(NONE);
+    expect(t.allZero).toBe(true);
+    const re = t.accounts.find((a: Body) => a.sourceKeys.includes(RE_NO));
+    expect(re).toMatchObject({ accountId: sys!.id, sourceExact: '-850.00', booksExact: '-850.00', diffExact: '0.00' });
+    expect(t.accounts.filter((a: Body) => a.accountId === sys!.id)).toHaveLength(1);
+    expect((await post(`/batches/${id}/verify`, {})).status).toBe(200);
+
+    const u = await h.request('POST', `/api/v1/imports/batches/${id}/undo`, c.token, { backupRef: 'before-undo.clb' }, { 'Idempotency-Key': key() });
+    expect(u.status, JSON.stringify(u.json)).toBe(202);
+    await batchService.__batchJobs.last;
+    expect((await batchRow(id)).status).toBe('undone');
+    expect(await companySnapshot(c)).toEqual(before);
+  });
+
+  it('accountMap "create" keeps a separate account (the old behaviour: +/- prior years\' income on two rows)', async () => {
+    const id = await commit(await qbdSet({ retainedNumber: RE_NO }), 'quickbooks_desktop', { conversionDate: CONV, accountMap: { [RE_NO]: 'create' } });
+    const [made] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountNumber, RE_NO)));
+    expect(made?.systemTag ?? null).toBeNull();
+    const t = await tieout(id);
+    expect(t.allZero).toBe(false);
+    const diffs = nonzero(t).accounts.map(([, d]: [string, string]) => d).sort();
+    expect(diffs).toEqual(['-550.00', '550.00']);
+  });
+
+  it('with no tagged retained earnings account, the QuickBooks row becomes it; undo gives the company its old chart', async () => {
+    await db.update(accounts).set({ systemTag: null, isSystem: false })
+      .where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'retained_earnings')));
+    const before = await companySnapshot(c);
+    const id = await commit(await qbdSet({ retainedNumber: RE_NO }));
+    const tagged = await reRows();
+    expect(tagged.map((a) => a.accountNumber)).toEqual([RE_NO]);
+    const t = await tieout(id);
+    expect(nonzero(t), JSON.stringify(t.accounts)).toEqual(NONE);
+    const u = await h.request('POST', `/api/v1/imports/batches/${id}/undo`, c.token, { backupRef: 'before-undo.clb' }, { 'Idempotency-Key': key() });
+    expect(u.status, JSON.stringify(u.json)).toBe(202);
+    await batchService.__batchJobs.last;
+    expect(await companySnapshot(c)).toEqual(before);
   });
 });
 
