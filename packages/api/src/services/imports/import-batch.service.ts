@@ -693,11 +693,12 @@ export async function startCommit(req: CommitRequest): Promise<{ batchId: string
   await precheckCommit(req.tenantId, req.companyId, b, sessions);
   req.override = await closedPeriodCheck(req, earliestPostingDate(sessions, ((b.options as BatchOptions | null) ?? {}).historyFrom));
   // Marked running before the claim commits, so no moment shows it 'committing' with no job here (S6).
+  const mine = !progressByBatch.has(req.batchId);
   setProgress(req.batchId, 'queued', 0, sessions.length);
   try {
     await claimForCommit(req);
   } catch (e) {
-    progressByBatch.delete(req.batchId);
+    if (mine) progressByBatch.delete(req.batchId);
     throw e;
   }
   scheduleCommitJob(req);
@@ -974,6 +975,7 @@ export async function startUndo(req: CommitRequest): Promise<{ batchId: string }
     const { blockers } = await findUndoBlockers(tx, req.tenantId, req.batchId, created, stamps);
     if (blockers.length > 0) throw undoBlocked(blockers);
   });
+  const mine = !progressByBatch.has(req.batchId);
   setProgress(req.batchId, 'undo queued', 0, 1);
   try {
     await db.transaction(async (tx) => {
@@ -989,7 +991,7 @@ export async function startUndo(req: CommitRequest): Promise<{ batchId: string }
       await claimAndRecord(tx, 'import_batch', req.batchId);
     });
   } catch (e) {
-    progressByBatch.delete(req.batchId);
+    if (mine) progressByBatch.delete(req.batchId);
     throw e;
   }
   __batchJobs.last = runWithoutIdempotency(() => new Promise<void>((resolve) => {

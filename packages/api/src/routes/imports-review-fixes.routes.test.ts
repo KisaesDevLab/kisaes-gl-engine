@@ -90,7 +90,13 @@ describe('S5: the undo locks the master records the batch created', () => {
         lines: [{ accountId: made!.id, debit: '10', credit: '0' }, { accountId: c.roles['checking']!, debit: '0', credit: '10' }],
       }, c.userId, c.companyId);
       posting.catch(() => undefined);
-      await new Promise((r) => setTimeout(r, 400));
+      // Wait until the posting is blocked on the account row this transaction locked.
+      for (let i = 0; i < 100; i++) {
+        const w = await db.execute(sql`SELECT count(*)::int AS n FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE 'update "accounts"%'`);
+        if ((w.rows[0] as { n: number }).n > 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
     });
     await expect(posting).rejects.toMatchObject({ code: 'ACCOUNT_NOT_FOUND' });
     expect(await db.select().from(journalLines).where(eq(journalLines.accountId, made!.id))).toHaveLength(0);
