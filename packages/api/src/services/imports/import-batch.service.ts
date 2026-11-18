@@ -106,6 +106,22 @@ function sessionSummary(s: SessionRow) {
   };
 }
 
+/**
+ * U-267: the part of a stored tie-out the batch DTO shows; the row lists stay
+ * out of GET and the list (S8): POST .../tieout answers them.
+ */
+export function tieoutSummary(stored: unknown): Record<string, unknown> | null {
+  if (!stored || typeof stored !== 'object') return null;
+  const t = stored as Record<string, unknown>;
+  const len = (k: string) => (Array.isArray(t[k]) ? (t[k] as unknown[]).length : 0);
+  return {
+    asOf: t['asOf'] ?? null, computedAt: t['computedAt'] ?? null, books: t['books'] ?? null,
+    referenceTrialBalance: t['referenceTrialBalance'] ?? null, balanceRows: t['balanceRows'] ?? [], totals: t['totals'] ?? null,
+    differenceCount: t['differenceCount'] ?? null, allZero: t['allZero'] === true, verifiedAt: t['verifiedAt'] ?? null,
+    counts: { accounts: len('accounts'), arItems: len('arItems'), apItems: len('apItems'), inventoryItems: len('inventoryItems') },
+  };
+}
+
 export function toBatchDto(b: BatchRow, sessions: SessionRow[], dateCheck?: BatchDateCheck | null) {
   return {
     // U-266: on create and GET of one batch (not in the list).
@@ -122,7 +138,7 @@ export function toBatchDto(b: BatchRow, sessions: SessionRow[], dateCheck?: Batc
     companyWasEmpty: b.companyWasEmpty,
     conversionDate: b.conversionDate,
     historyFrom: b.historyFrom,
-    tieout: b.tieout ?? null,
+    tieout: tieoutSummary(b.tieout),
     spotCheck: b.spotCheck ?? null,
     verifiedAt: b.verifiedAt ? b.verifiedAt.toISOString() : null,
     verifiedBy: b.verifiedBy,
@@ -205,7 +221,7 @@ function assertNoBlockingErrors(sessions: SessionRow[]): void {
   }
 }
 
-async function loadBatch(ex: DbOrTx, tenantId: string, companyId: string, id: string, forUpdate = false): Promise<BatchRow> {
+export async function loadBatch(ex: DbOrTx, tenantId: string, companyId: string, id: string, forUpdate = false): Promise<BatchRow> {
   const q = ex.select().from(importBatches).where(and(
     eq(importBatches.id, id), eq(importBatches.tenantId, tenantId), eq(importBatches.companyId, companyId),
   ));
@@ -214,7 +230,7 @@ async function loadBatch(ex: DbOrTx, tenantId: string, companyId: string, id: st
   return b;
 }
 
-async function loadSessions(ex: DbOrTx, batchId: string, forUpdate = false): Promise<SessionRow[]> {
+export async function loadSessions(ex: DbOrTx, batchId: string, forUpdate = false): Promise<SessionRow[]> {
   const q = ex.select().from(importSessions).where(eq(importSessions.batchId, batchId)).orderBy(asc(importSessions.createdAt));
   return forUpdate ? await q.for('update') : await q;
 }
@@ -796,6 +812,8 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
       await tx.update(importSessions).set({ status: 'committed', committedAt: new Date(), updatedAt: new Date() })
         .where(inArray(importSessions.id, refs));
     }
+    // U-267: how the commit resolved merged and mapped chart rows, for the tie-out.
+    if (shared.aliases.size > 0) priorValues.accountAliases = Object.fromEntries(shared.aliases);
     // What undo compares against (database clock, review: one stamp in SQL).
     priorValues.stamps = await takeCommitStamps(tx, tenantId, batchId, Object.keys(priorValues.accounts ?? {}));
     await auditBatchOverride(tx, req, 'commit');

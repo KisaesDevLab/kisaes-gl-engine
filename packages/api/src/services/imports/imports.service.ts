@@ -1349,6 +1349,13 @@ export interface BatchPriorValues {
    * with their kind before. Undo puts it back while the contact is still 'both'.
    */
   contacts?: Record<string, { contactType: string }>;
+  /**
+   * U-267: the batch's source chart keys merged into or mapped to an existing
+   * account (`n:<number>` / `name:<lowercased name>` -> account id), kept for
+   * the tie-out, which resolves reference trial balance rows the way the
+   * commit resolved them. Undo does not read it.
+   */
+  accountAliases?: Record<string, string>;
 }
 
 /**
@@ -1462,7 +1469,7 @@ export async function commitSessionInBatch(
     return await commitGl(ctx, row.fileHash, row.sourceSystem as SourceSystem, parsed as CanonicalGlEntry[], options);
   }
   if (isOpenItemKind(row.kind)) {
-    return await commitOpenItems(ctx, row.kind, row.sourceSystem as SourceSystem, parsed as CanonicalOpenItemRow[]);
+    return await commitOpenItems(ctx, row.kind, row.sourceSystem as SourceSystem, parsed as CanonicalOpenItemRow[], row.id);
   }
   throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
 }
@@ -1549,7 +1556,7 @@ async function historyAccount(ctx: CommitSessionContext, side: HistorySide): Pro
 }
 
 /** The tenant's inventory asset accounts: tagged inventory_asset, or the asset account of an inventory part. */
-async function inventoryAssetAccountIds(tx: Tx, tenantId: string): Promise<string[]> {
+export async function inventoryAssetAccountIds(tx: DbOrTx, tenantId: string): Promise<string[]> {
   const r = await tx.execute(sql`
     SELECT a.id::text AS id FROM accounts a
     WHERE a.tenant_id = ${tenantId} AND (a.system_tag = ${INVENTORY_ASSET_TAG} OR EXISTS (
@@ -2407,6 +2414,16 @@ function openItemMemo(sourceSystem: string, r: CanonicalOpenItemRow): string {
   return parts.join('; ');
 }
 
+/**
+ * U-267: transactions.source of an imported open item; source_id is
+ * `<sessionId>:<rowNumber>` (openItemSourceId), its source row.
+ */
+export const OPEN_ITEM_SOURCE = 'import_open_item';
+
+export function openItemSourceId(sessionId: string, rowNumber: number): string {
+  return `${sessionId}:${rowNumber}`;
+}
+
 /** The invoice and credit memo counters (null: not set). */
 async function readCounters(ctx: CommitSessionContext): Promise<{ invoice: number | null; creditMemo: number | null }> {
   const [co] = await ctx.tx.select({ invoiceNextNumber: companies.invoiceNextNumber, documentNumbers: companies.documentNumbers })
@@ -2429,6 +2446,7 @@ async function commitOpenItems(
   kind: 'open_invoices' | 'unpaid_bills',
   sourceSystem: SourceSystem,
   rows: CanonicalOpenItemRow[],
+  sessionId?: string,
 ): Promise<ImportCommitResult> {
   const { tx, tenantId, companyId, userId, batchId } = ctx;
   if (rows.length === 0) return { created: 0, skipped: 0 };
@@ -2461,6 +2479,7 @@ async function commitOpenItems(
   // contact, and "Customer:Job" is the customer (no projects list yet, U-35) with the job in the memo.
   const names = ctx.shared?.strict ? await contactNames(ctx) : null;
   const posted: string[] = [];
+  const links: Array<{ id: string; sourceId: string }> = [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
     const key = r.name.trim().toLowerCase();
@@ -2541,10 +2560,19 @@ async function commitOpenItems(
         'IMPORT_OPEN_ITEM_AMOUNT', { rowNumber: r.rowNumber });
     }
     posted.push(id);
+    if (sessionId) links.push({ id, sourceId: openItemSourceId(sessionId, r.rowNumber) });
     documents[r.docType] = (documents[r.docType] ?? 0) + 1;
     if ((i + 1) % 100 === 0) ctx.progress(kind, i + 1, rows.length);
   }
   await stampTransactions(tx, tenantId, batchId, posted);
+  // U-267: each document names its source row (session and row number), so the tie-out keys items by source row.
+  for (let i = 0; i < links.length; i += IMPORT_ROWS_CHUNK) {
+    const chunk = links.slice(i, i + IMPORT_ROWS_CHUNK);
+    await tx.execute(sql`
+      UPDATE transactions t SET source = ${OPEN_ITEM_SOURCE}, source_id = v.sid
+      FROM (VALUES ${sql.join(chunk.map((l) => sql`(${l.id}::uuid, ${l.sourceId}::varchar)`), sql`, `)}) AS v(id, sid)
+      WHERE t.tenant_id = ${tenantId} AND t.id = v.id`);
+  }
   if (countersBefore) {
     const after = await readCounters(ctx);
     const k = (ctx.priorValues.counters ??= {});
@@ -2678,6 +2706,35 @@ const VALUATION_CHUNK = 500;
  * Inventory Asset accounts hold exactly the valuation. Each movement posted is
  * checked against the report (IMPORT_VALUATION_MISMATCH otherwise).
  */
+/**
+ * U-265: the inventory part a valuation row names: the item of that name, else
+ * (a name with no colon) the one item whose last "Parent:Sub" segment it is.
+ * Shared by the commit and the tie-out (U-267), so both read a row the same way.
+ */
+export async function valuationItemMatcher(ex: DbOrTx, tenantId: string, companyId: string) {
+  const all = await ex.select({ id: items.id, name: items.name, itemType: items.itemType, companyId: items.companyId })
+    .from(items).where(eq(items.tenantId, tenantId));
+  const byName = new Map<string, typeof all>();
+  const lastSegment = new Map<string, typeof all>();
+  for (const it of all) {
+    const k = it.name.toLowerCase();
+    byName.set(k, [...(byName.get(k) ?? []), it]);
+    const seg = it.name.split(':').pop()!.trim().toLowerCase();
+    lastSegment.set(seg, [...(lastSegment.get(seg) ?? []), it]);
+  }
+  return (item: string): { itemId: string } | { reason: 'unknown' | 'ambiguous' | 'other_company' | 'not_inventory' } => {
+    const k = item.toLowerCase();
+    let hit = byName.get(k);
+    // A report that prints only a sub-item's own name: the one item whose last segment it is.
+    if (!hit && !k.includes(':')) hit = lastSegment.get(k);
+    if (!hit || hit.length !== 1) return { reason: hit ? 'ambiguous' : 'unknown' };
+    const it = hit[0]!;
+    if (it.companyId && it.companyId !== companyId) return { reason: 'other_company' };
+    if (it.itemType !== 'inventory_part') return { reason: 'not_inventory' };
+    return { itemId: it.id };
+  };
+}
+
 async function commitValuation(
   ctx: CommitSessionContext,
   sourceSystem: SourceSystem,
@@ -2687,30 +2744,13 @@ async function commitValuation(
   const { tx, tenantId, companyId, userId, batchId } = ctx;
   if (rows.length === 0) return { created: 0, skipped: 0, itemsValued: 0, valuationTotal: '0.00' };
   if (!reportDate) throw AppError.badRequest('The inventory valuation has no report date.', 'IMPORT_BAD_DATE');
-  const all = await tx.select({ id: items.id, name: items.name, itemType: items.itemType, companyId: items.companyId })
-    .from(items).where(eq(items.tenantId, tenantId));
-  const byName = new Map<string, typeof all>();
-  const add = (k: string, it: (typeof all)[number]) => byName.set(k, [...(byName.get(k) ?? []), it]);
-  for (const it of all) {
-    add(it.name.toLowerCase(), it);
-  }
-  const lastSegment = new Map<string, typeof all>();
-  for (const it of all) {
-    const seg = it.name.split(':').pop()!.trim().toLowerCase();
-    lastSegment.set(seg, [...(lastSegment.get(seg) ?? []), it]);
-  }
+  const match = await valuationItemMatcher(tx, tenantId, companyId);
   const lines: Array<{ itemId: string; quantityChange: string; valueChange: string; row: CanonicalValuationRow }> = [];
   const problems: Array<{ rowNumber: number; item: string; reason: string }> = [];
   for (const r of rows) {
-    const k = r.item.toLowerCase();
-    let hit = byName.get(k);
-    // A report that prints only a sub-item's own name: the one item whose last segment it is.
-    if (!hit && !k.includes(':')) hit = lastSegment.get(k);
-    if (!hit || hit.length !== 1) { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: hit ? 'ambiguous' : 'unknown' }); continue; }
-    const it = hit[0]!;
-    if (it.companyId && it.companyId !== companyId) { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: 'other_company' }); continue; }
-    if (it.itemType !== 'inventory_part') { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: 'not_inventory' }); continue; }
-    lines.push({ itemId: it.id, quantityChange: r.onHand, valueChange: r.assetValue, row: r });
+    const m = match(r.item);
+    if ('reason' in m) { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: m.reason }); continue; }
+    lines.push({ itemId: m.itemId, quantityChange: r.onHand, valueChange: r.assetValue, row: r });
   }
   if (problems.length > 0) {
     const code = problems.every((p) => p.reason === 'not_inventory') ? 'IMPORT_ITEM_NOT_INVENTORY' : 'IMPORT_UNKNOWN_ITEM';
