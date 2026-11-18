@@ -286,8 +286,11 @@ describe('U-267 QuickBooks Desktop conversion tie-out', () => {
     expect(v.json['error'].code).toBe('TIEOUT_NOT_ZERO');
     const d = v.json['error'].details;
     expect(d.differenceCount).toBe(2);
+    const rows = Object.fromEntries(t.accounts.map((a: Body) => [a.accountId, a.sourceRow]));
+    expect(d.firstDifferences.map((x: Body) => x.sourceRow)).toEqual(d.firstDifferences.map((x: Body) => rows[x.accountId]));
+    expect(d.firstDifferences.every((x: Body) => typeof x.sourceRow === 'number' && x.accountId)).toBe(true);
     expect(d.firstDifferences.map((x: Body) => [x.section, x.key, x.diffExact])).toEqual([
-      ['accounts', '6100', '-400.00'], ['accounts', '6200', '400.00'],
+      ['accounts', null, '-400.00'], ['accounts', null, '400.00'],
     ]);
     // Codes and ids only: no account or contact names in the error.
     expect(JSON.stringify(v.json['error'])).not.toMatch(/Supplies|Repairs|Cedar/);
@@ -304,7 +307,7 @@ describe('U-267 QuickBooks Desktop conversion tie-out', () => {
     expect(t.totals.ar).toEqual({ sourceExact: '1210.00', booksExact: '1210.00', diffExact: '0.00' });
     const v = await post(`/batches/${id}/verify`, {});
     expect(v.json['error'].details.firstDifferences.map((x: Body) => [x.section, x.key, x.diffExact])).toEqual([
-      ['accounts', '11000', '10.00'], ['balanceRows', 'history_ar', '-10.00'],
+      ['accounts', null, '10.00'], ['balanceRows', 'history_ar', '-10.00'],
     ]);
   });
 
@@ -351,6 +354,16 @@ describe('U-267 QuickBooks Desktop conversion tie-out', () => {
       ['3001', 'Alder Café', '700.00'], ['3002', 'Birch & Co', '500.00'],
     ]);
     expect((await get(`/batches/${id}/transactions?cursor=nope`)).status).toBe(400);
+  });
+
+  it('the same trial balance file may be uploaded to post and as the reference; twice in one role is 409 IMPORT_SESSION_ACTIVE', async () => {
+    await upload('tb.csv', TB_REFERENCE, 'trial_balance');
+    await upload('tb-ref.csv', TB_REFERENCE, 'trial_balance', { role: 'reference' });
+    await expect(importsService.createSession({
+      tenantId: c.tenantId, companyId: c.companyId, userId: c.userId,
+      file: { originalname: 'tb-again.csv', buffer: Buffer.from(TB_REFERENCE, 'latin1') },
+      kind: 'trial_balance', sourceSystem: 'quickbooks_desktop', options: {} as never, role: 'reference',
+    })).rejects.toMatchObject({ code: 'IMPORT_SESSION_ACTIVE' });
   });
 
   it('refuses a batch that is not committed', async () => {
@@ -425,6 +438,28 @@ describe('U-267 Generic tie-out', () => {
     expect(t2.books).toBe('batch');
     expect(t2.allZero, JSON.stringify(nonzero(t2))).toBe(true);
     expect((await post(`/batches/${ok}/verify`, {})).status).toBe(200);
+  });
+});
+
+describe('U-267 batch books across a year end', () => {
+  it('with other books in the company, the batch\'s earlier-year income ties to the reference\'s retained earnings', async () => {
+    await commit([
+      await upload('g-coa.csv', G_COA, 'coa', { source: 'generic' }),
+      await genericTb('g-tb-mid.csv', gTb('50.00', '50.00', '0.00', '0.00'), '2025-06-30'),
+    ], 'generic', { conversionDate: '2025-06-30' });
+    // Opening balances at the prior year end, income 300.00 in 2025; QuickBooks shows it in Retained Earnings in 2026.
+    const id = await commit([
+      await genericTb('g-tb-ye.csv', gTb('1000.00', '700.00', '500.00', '200.00'), '2025-12-31'),
+      await genericTb('g-ref-26.csv', `Account Number,Account Name,Debit,Credit
+7100,Gen Checking,1000.00,
+7300,Gen Equity,,700.00
+,Retained Earnings,,300.00
+`, CONV, 'reference'),
+    ], 'generic');
+    const t = await tieout(id);
+    expect(t.books).toBe('batch');
+    expect(nonzero(t), JSON.stringify(t.accounts)).toEqual(NONE);
+    expect(t.accounts.find((a: Body) => a.sourceKeys.includes('Retained Earnings'))).toMatchObject({ sourceExact: '-300.00', booksExact: '-300.00' });
   });
 });
 

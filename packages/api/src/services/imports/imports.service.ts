@@ -798,6 +798,9 @@ export async function createSession(input: CreateSessionInput): Promise<{
         eq(importSessions.tenantId, input.tenantId),
         eq(importSessions.companyId, input.companyId),
         eq(importSessions.fileHash, fileHash),
+        // U-267: per role. A conversion-date trial balance may be uploaded both to post and as the
+        // reference the tie-out compares against (a reference file is never posted).
+        eq(importSessions.role, input.role ?? 'post'),
       ),
     );
   for (const d of dups) {

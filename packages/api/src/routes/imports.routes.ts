@@ -428,8 +428,8 @@ importsRouter.post('/batches/:id/tieout', validate(importTieoutRequestSchema), d
 importsRouter.post('/batches/:id/verify', requireImportAdmin, validate(importTieoutRequestSchema), describe({
   summary: 'Verify a committed import batch (imports-tieout-v1)',
   description: 'Recomputes the tie-out. 409 TIEOUT_NOT_ZERO {batchId, differenceCount, firstDifferences [{section '
-    + 'accounts|arItems|apItems|inventoryItems|balanceRows|totals, key, sourceRow, accountId, transactionId, itemId, '
-    + 'diffExact, quantityDiff?}] (up to 20, ids only)} unless every difference is exactly 0. Else 200 {batch, tieout}: the '
+    + 'accounts|arItems|apItems|inventoryItems|balanceRows|totals, key (balanceRows: the balance key; totals: ar|ap|inventory; '
+    + 'else null), sourceRow, accountId, transactionId, itemId, diffExact, quantityDiff?}] (up to 20, ids only, never names)} unless every difference is exactly 0. Else 200 {batch, tieout}: the '
     + 'batch is verified (verifiedAt, verifiedBy), keeps the tie-out, and the stored parsed rows of its sessions are deleted '
     + '(review S8); one audit row. Verifying a verified batch answers 200 with what it kept. 409 IMPORT_BUSY while another '
     + 'import or undo of the company runs. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED). ' + TIEOUT_DOC,

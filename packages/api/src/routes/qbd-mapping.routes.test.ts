@@ -606,7 +606,8 @@ describe('U-267 tie-out with inventory (imports-tieout-v1)', () => {
     await inventoryOn();
     const ref = await importsService.createSession({
       tenantId: c.tenantId, companyId: c.companyId, userId: c.userId,
-      file: { originalname: 'tb-reference.csv', buffer: Buffer.from(`${TB}\n`, 'latin1') },
+      // The same bytes as the posted trial balance: the upload guard is per role.
+      file: { originalname: 'tb-reference.csv', buffer: Buffer.from(TB, 'latin1') },
       kind: 'trial_balance', sourceSystem: 'quickbooks_desktop', options: {} as never, role: 'reference',
     });
     const { id, batch, error } = await commit([...(await uploadConversion()), ref.session.id]);

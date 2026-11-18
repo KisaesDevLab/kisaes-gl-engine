@@ -453,7 +453,8 @@ export function differences(t: Tieout): TieoutDifference[] {
   const out: TieoutDifference[] = [];
   const base = { key: null, sourceRow: null, accountId: null, transactionId: null, itemId: null };
   for (const a of t.accounts) {
-    if (!D(a.diffExact).isZero()) out.push({ ...base, section: 'accounts', key: a.sourceKeys[0] ?? null, sourceRow: a.sourceRow, accountId: a.accountId, diffExact: a.diffExact });
+    if (!D(a.diffExact).isZero()) // No key: a source account key may be a name (codes and ids only).
+      out.push({ ...base, section: 'accounts', sourceRow: a.sourceRow, accountId: a.accountId, diffExact: a.diffExact });
   }
   for (const [section, list] of [['arItems', t.arItems], ['apItems', t.apItems]] as const) {
     for (const i of list) {
