@@ -20,6 +20,9 @@ import {
   transactions,
   companies,
   tags,
+  tagGroups,
+  items,
+  inventoryMovements,
 } from '../../db/schema/index.js';
 import { normalizeLoose } from '../ai-name-match.js';
 import {
@@ -27,9 +30,12 @@ import {
   type CanonicalCoaRow,
   type CanonicalContactRow,
   type CanonicalGlEntry,
+  type CanonicalItemRow,
   type CanonicalOpenItemRow,
   type CanonicalTrialBalanceRow,
+  type CanonicalValuationRow,
   type ContactKind,
+  type ImportAccountMatch,
   type CreateInvoiceInput,
   type CreateCreditMemoInput,
   type ImportCommitResult,
@@ -50,6 +56,8 @@ import * as qbo from './adapters/quickbooks-online.js';
 import * as qbd from './adapters/quickbooks-desktop.js';
 import * as generic from './adapters/generic.js';
 import { parseOpenItems, openItemsTotal } from './adapters/open-items.js';
+import { parseItems, parseInventoryValuation, valuationTotal } from './adapters/items.js';
+import { INVENTORY_ASSET_TAG } from '../inventory.service.js';
 import { postTransaction } from '../ledger.service.js';
 import { Decimal } from 'decimal.js';
 
@@ -251,7 +259,57 @@ async function ensureTags(
   return { map, created: toCreate.length };
 }
 
-const TERMINAL_STATUSES: readonly ImportStatus[] = ['committed', 'failed', 'cancelled', 'undone'];
+/**
+ * U-265: journal line classes through the batch's classMap: a mapped class
+ * becomes its `tag` (found by name tenant-wide, else created) in its `group`
+ * (a tag group found by name, else created; both stamped with the batch); an
+ * unmapped class becomes the tag of its own name, as ensureTags does. Returns
+ * lowercased class name -> tag id, the tags created and the classes mapped.
+ */
+async function ensureMappedTags(
+  ctx: CommitSessionContext,
+  classNames: string[],
+): Promise<{ map: Map<string, string>; created: number; mapped: number }> {
+  const { tx, tenantId, companyId, batchId } = ctx;
+  const classMap = ctx.shared!.classMap;
+  const wanted = Array.from(new Set(classNames.map((n) => n.trim()).filter(Boolean)));
+  const out = new Map<string, string>();
+  if (wanted.length === 0) return { map: out, created: 0, mapped: 0 };
+  const existing = await tx.select({ id: tags.id, name: tags.name }).from(tags).where(eq(tags.tenantId, tenantId));
+  const tagByName = new Map(existing.map((t) => [t.name.toLowerCase(), t.id]));
+  const groups = await tx.select({ id: tagGroups.id, name: tagGroups.name }).from(tagGroups)
+    .where(and(eq(tagGroups.tenantId, tenantId), or(eq(tagGroups.companyId, companyId), isNull(tagGroups.companyId))));
+  const groupByName = new Map(groups.map((g) => [g.name.toLowerCase(), g.id]));
+  let created = 0;
+  let mapped = 0;
+  const groupId = async (name: string | undefined): Promise<string | null> => {
+    const n = name?.trim();
+    if (!n) return null;
+    const known = groupByName.get(n.toLowerCase());
+    if (known) return known;
+    const [g] = await tx.insert(tagGroups).values({ tenantId, companyId, name: n, importBatchId: batchId }).returning({ id: tagGroups.id });
+    groupByName.set(n.toLowerCase(), g!.id);
+    return g!.id;
+  };
+  for (const cls of wanted) {
+    const m = classMap.get(cls.toLowerCase());
+    if (m) mapped++;
+    const tagName = (m?.tag ?? cls).trim();
+    let id = tagByName.get(tagName.toLowerCase());
+    if (!id) {
+      const [t] = await tx.insert(tags).values({
+        tenantId, companyId, name: tagName, groupId: m ? await groupId(m.group) : null, importBatchId: batchId,
+      }).returning({ id: tags.id });
+      id = t!.id;
+      tagByName.set(tagName.toLowerCase(), id);
+      created++;
+    }
+    out.set(cls.toLowerCase(), id);
+  }
+  return { map: out, created, mapped };
+}
+
+const TERMINAL_STATUSES: readonly ImportStatus[] =['committed', 'failed', 'cancelled', 'undone'];
 
 function isTerminal(s: string): boolean {
   return TERMINAL_STATUSES.includes(s as ImportStatus);
@@ -279,6 +337,8 @@ const MAX_ROWS_PER_KIND: Record<ImportKind, number> = {
   gl_transactions: 50_000,
   open_invoices: 20_000,
   unpaid_bills: 20_000,
+  items: 10_000,
+  inventory_valuation: 10_000,
 };
 
 function enforceRowCap(kind: ImportKind, count: number): void {
@@ -418,12 +478,102 @@ function buildPreview(
       openTotal: openItemsTotal(rows),
     };
   }
+  if (kind === 'inventory_valuation') {
+    const rows = (parsed as CanonicalValuationRow[]) ?? [];
+    return {
+      totalRows: rows.length,
+      errorCount,
+      sampleRows: rows.slice(0, MAX_PREVIEW_ROWS),
+      ...(reportDate ? { reportDate } : {}),
+      valuationTotal: valuationTotal(rows),
+    };
+  }
   const rows = (parsed as { rowNumber: number }[]) ?? [];
   return {
     totalRows: rows.length,
     errorCount,
     sampleRows: rows.slice(0, MAX_PREVIEW_ROWS),
   };
+}
+
+/**
+ * U-265: the source account key of a chart row, trial balance row, journal
+ * line or item account: the account number, else the name. The key of the
+ * batch's accountMap, of preview.accountMatches and of unmappedAccountKeys.
+ */
+export function sourceAccountKey(accountNumber?: string | null, accountName?: string | null): string | null {
+  return accountNumber || accountName || null;
+}
+
+type AccountRef = { accountNumber?: string; accountName?: string };
+
+/** Every account reference of a file's rows (chart rows as their own account). */
+function accountRefsOf(kind: ImportKind, parsed: unknown): Array<AccountRef & { systemRole?: ImportAccountMatch['systemRole'] }> {
+  const out: Array<AccountRef & { systemRole?: ImportAccountMatch['systemRole'] }> = [];
+  if (kind === 'coa') {
+    for (const r of (parsed as CanonicalCoaRow[]) ?? []) {
+      out.push({ accountNumber: r.accountNumber, accountName: r.name, ...(r.systemRole ? { systemRole: r.systemRole } : {}) });
+    }
+  } else if (kind === 'trial_balance') {
+    for (const r of (parsed as CanonicalTrialBalanceRow[]) ?? []) out.push({ accountNumber: r.accountNumber, accountName: r.accountName });
+  } else if (kind === 'gl_transactions') {
+    for (const e of (parsed as CanonicalGlEntry[]) ?? []) {
+      for (const l of e.lines) out.push({ accountNumber: l.accountNumber, accountName: l.accountName });
+    }
+  } else if (kind === 'items') {
+    for (const r of (parsed as CanonicalItemRow[]) ?? []) {
+      for (const a of [r.incomeAccount, r.expenseAccount, r.assetAccount, r.cogsAccount]) if (a) out.push(a);
+    }
+  }
+  return out;
+}
+
+/**
+ * preview.accountMatches (U-265): one entry per distinct source account key
+ * over EVERY row of the file, not the preview sample (review S8), against the
+ * company's chart as it is now. A chart file's row is 'existing' when its
+ * number is in the chart (the commit keeps that account), else 'create'.
+ * Another file's key is 'existing' (by number, then name) or 'unmatched'; a
+ * chart file in the same batch, or the batch's accountMap, settles it.
+ * Undefined for kinds that name no accounts.
+ */
+export async function computeAccountMatches(
+  ex: DbOrTx,
+  tenantId: string,
+  companyId: string,
+  kind: ImportKind,
+  parsed: unknown,
+): Promise<ImportAccountMatch[] | undefined> {
+  if (!['coa', 'trial_balance', 'gl_transactions', 'items'].includes(kind)) return undefined;
+  const refs = accountRefsOf(kind, parsed);
+  const acctRows = await ex.select({ id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name })
+    .from(accounts).where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))));
+  const byNum = new Map<string, string>();
+  const byName = new Map<string, string>();
+  for (const a of acctRows) {
+    if (a.accountNumber) byNum.set(a.accountNumber, a.id);
+    byName.set(a.name.toLowerCase(), a.id); // as the commit resolves names
+  }
+  const out = new Map<string, ImportAccountMatch>();
+  for (const r of refs) {
+    const key = sourceAccountKey(r.accountNumber, r.accountName);
+    if (!key) continue;
+    const seen = out.get(key);
+    if (seen) { seen.rows++; continue; }
+    const m: ImportAccountMatch = {
+      sourceKey: key, rows: 1, match: 'unmatched',
+      ...(r.accountNumber ? { number: r.accountNumber } : {}),
+      ...(r.accountName ? { name: r.accountName } : {}),
+      ...(r.systemRole ? { systemRole: r.systemRole } : {}),
+    };
+    const numHit = r.accountNumber ? byNum.get(r.accountNumber) : undefined;
+    const nameHit = r.accountName ? byName.get(r.accountName.toLowerCase()) : undefined;
+    if (numHit) Object.assign(m, { match: 'existing', accountId: numHit, matchedBy: 'number' });
+    else if (kind === 'coa') m.match = 'create';
+    else if (nameHit) Object.assign(m, { match: 'existing', accountId: nameHit, matchedBy: 'name' });
+    out.set(key, m);
+  }
+  return [...out.values()].sort((a, b) => (a.sourceKey < b.sourceKey ? -1 : a.sourceKey > b.sourceKey ? 1 : 0));
 }
 
 // ── Parsing dispatch ──────────────────────────────────────────────
@@ -450,6 +600,22 @@ async function dispatchParse(
     const { rows, errors, reportDate } = await parseOpenItems(buf, kind, sourceSystem);
     return { parsed: rows, errors, reportDate: reportDate ?? options.reportDate ?? null, rowCount: rows.length };
   }
+  // U-265: item lists and inventory valuations, one parser each for every source but Accounting Power.
+  if (kind === 'items' || kind === 'inventory_valuation') {
+    if (sourceSystem === 'accounting_power') {
+      throw AppError.badRequest(`Accounting Power does not support kind="${kind}" in this version.`, 'IMPORT_WRONG_KIND');
+    }
+    if (kind === 'items') {
+      const { rows, errors } = await parseItems(buf, sourceSystem);
+      return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
+    }
+    const { rows, errors, reportDate } = await parseInventoryValuation(buf, sourceSystem);
+    return { parsed: rows, errors, reportDate: reportDate ?? options.reportDate ?? null, rowCount: rows.length };
+  }
+  // U-265: an Other Names list is a QuickBooks Desktop list.
+  if (kind === 'contacts' && options.contactKind === 'other' && sourceSystem !== 'quickbooks_desktop') {
+    throw AppError.badRequest('contactKind "other" is a QuickBooks Desktop Other Names list.', 'IMPORT_CONTACT_KIND_UNSUPPORTED');
+  }
   if (sourceSystem === 'accounting_power') {
     if (kind === 'coa') {
       const { rows, errors } = ap.parseCoa(buf);
@@ -466,7 +632,7 @@ async function dispatchParse(
           'IMPORT_CONTACT_KIND_REQUIRED',
         );
       }
-      const { rows, errors } = ap.parseContacts(buf, options.contactKind);
+      const { rows, errors } = ap.parseContacts(buf, options.contactKind as ContactKind);
       return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
     }
     if (kind === 'trial_balance') {
@@ -536,7 +702,7 @@ async function dispatchParse(
     if (kind === 'contacts') {
       // contactKind is an optional per-file default; the template also has a
       // per-row Type column, so a mixed customer/vendor file is fine.
-      const { rows, errors } = await generic.parseContacts(buf, options.contactKind);
+      const { rows, errors } = await generic.parseContacts(buf, options.contactKind as ContactKind | undefined);
       return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
     }
     if (kind === 'trial_balance') {
@@ -569,7 +735,7 @@ async function dispatchParse(
         'IMPORT_CONTACT_KIND_REQUIRED',
       );
     }
-    const { rows, errors } = await qbo.parseContacts(buf, options.contactKind);
+    const { rows, errors } = await qbo.parseContacts(buf, options.contactKind as ContactKind);
     return { parsed: rows, errors, reportDate: null, rowCount: rows.length };
   }
   if (kind === 'trial_balance') {
@@ -702,6 +868,8 @@ export async function createSession(input: CreateSessionInput): Promise<{
   });
   const session = toSessionDto(inserted as unknown as SessionRowDb);
   const preview = buildPreview(input.kind, parsed.parsed, allErrors, reportDate, input.options);
+  const accountMatches = await computeAccountMatches(db, input.tenantId, input.companyId, input.kind, parsed.parsed);
+  if (accountMatches) preview.accountMatches = accountMatches;
   return { session, preview, validationErrors: allErrors };
 }
 
@@ -749,6 +917,13 @@ async function validateAgainstDb(
     // Names are matched at commit (the contacts may come in the same batch).
     const dates = Array.from(new Set(((parsedAny as CanonicalOpenItemRow[]) ?? []).map((r) => r.date)));
     return await checkLockDate(tenantId, companyId, dates);
+  }
+  if (kind === 'inventory_valuation') {
+    // U-265: opening stock is dated the report date; without one it can't post.
+    if (!reportDate) {
+      return [{ rowNumber: 0, code: 'IMPORT_BAD_DATE', message: 'The inventory valuation has no "As of" date. Give the report date (options.reportDate).' }];
+    }
+    return ((parsedAny as unknown[]) ?? []).length > 0 ? await checkLockDate(tenantId, companyId, [reportDate]) : [];
   }
   return [];
 }
@@ -980,13 +1155,10 @@ export async function getSession(
   if (!row) return null;
   const session = toSessionDto(row as unknown as SessionRowDb);
   const validationErrors = (row.validationErrors as ImportValidationError[] | null) ?? [];
-  const preview = buildPreview(
-    session.kind,
-    await loadParsedRows(db, row),
-    validationErrors,
-    session.reportDate,
-    session.options,
-  );
+  const parsedRows = await loadParsedRows(db, row);
+  const preview = buildPreview(session.kind, parsedRows, validationErrors, session.reportDate, session.options);
+  const accountMatches = await computeAccountMatches(db, tenantId, companyId, session.kind, parsedRows);
+  if (accountMatches) preview.accountMatches = accountMatches;
   return { session, validationErrors, preview };
 }
 
@@ -1118,8 +1290,10 @@ export async function commitSession(
 // ── Batch commit core (U-261) ─────────────────────────────────────
 
 /** Posting order inside a batch: what later sessions resolve against comes first. */
+// U-265: items before the trial balance and journals (their lines on an item's inventory asset
+// account are history, redirected), the inventory valuation last (it clears that history).
 const KIND_ORDER: Record<string, number> = {
-  coa: 0, contacts: 1, trial_balance: 2, gl_transactions: 3, open_invoices: 4, unpaid_bills: 5,
+  coa: 0, contacts: 1, items: 2, trial_balance: 3, gl_transactions: 4, open_invoices: 5, unpaid_bills: 6, inventory_valuation: 7,
 };
 
 export function sortSessionsForCommit<T extends { kind: string; createdAt: Date }>(sessions: T[]): T[] {
@@ -1151,6 +1325,11 @@ export interface BatchPriorValues {
     invoice?: { before: number | null; after: number | null };
     creditMemo?: { before: number | null; after: number | null };
   };
+  /**
+   * U-265 (Q-77): existing contacts of the other kind the batch made 'both',
+   * with their kind before. Undo puts it back while the contact is still 'both'.
+   */
+  contacts?: Record<string, { contactType: string }>;
 }
 
 /**
@@ -1163,30 +1342,52 @@ export interface BatchPriorValues {
  */
 export interface BatchShared {
   openItems: { ar: boolean; ap: boolean };
+  /** U-265: the batch holds an inventory valuation: inventory asset history goes to "Inventory before conversion". */
+  inventory: boolean;
   /** Source chart keys merged into a system account: `n:<number>` / `name:<lowercased name>` -> account id. */
   aliases: Map<string, string>;
   /** The before-conversion accounts this batch used (found or created). */
-  historyAccounts: { ar?: string; ap?: string };
+  historyAccounts: { ar?: string; ap?: string; inventory?: string };
   /** Source account keys whose trial balance or journal lines were moved there. */
   redirectedKeys: Set<string>;
+  /**
+   * U-265: a batch made through POST /imports/batches. Unmapped accounts fail the
+   * commit (never suspense) and names merge into 'both' (Q-77). False for the old
+   * one-session POST /imports/:id/commit, which keeps its behaviour.
+   */
+  strict: boolean;
+  /** U-265: the batch's accountMap (source account key -> account id | "create"). */
+  accountMap: Record<string, string>;
+  /** U-265: the batch's classMap (lowercased class name -> {group?, tag}). */
+  classMap: Map<string, { group?: string; tag: string }>;
 }
 
-export function newBatchShared(kinds: string[]): BatchShared {
+export function newBatchShared(
+  kinds: string[],
+  opts: { strict?: boolean; accountMap?: Record<string, string>; classMap?: Record<string, { group?: string; tag: string }> } = {},
+): BatchShared {
   return {
     openItems: { ar: kinds.includes('open_invoices'), ap: kinds.includes('unpaid_bills') },
+    inventory: kinds.includes('inventory_valuation'),
     aliases: new Map(),
     historyAccounts: {},
     redirectedKeys: new Set(),
+    strict: opts.strict ?? false,
+    accountMap: opts.accountMap ?? {},
+    classMap: new Map(Object.entries(opts.classMap ?? {}).map(([k, v]) => [k.trim().toLowerCase(), v])),
   };
 }
 
-/** The batch result fields a batch with open items adds (U-264): for the tie-out (E3) and the desktop. */
+/** The batch result fields a batch with open items or a valuation adds (U-264, U-265): for the tie-out (E3) and the desktop. */
 export function batchSharedResult(shared: BatchShared | undefined): Record<string, unknown> {
-  if (!shared || (!shared.historyAccounts.ar && !shared.historyAccounts.ap && shared.redirectedKeys.size === 0)) return {};
+  if (!shared || (!shared.historyAccounts.ar && !shared.historyAccounts.ap && !shared.historyAccounts.inventory
+    && shared.redirectedKeys.size === 0)) return {};
   return {
     historyAccounts: {
       ar: shared.historyAccounts.ar ?? null,
       ap: shared.historyAccounts.ap ?? null,
+      // U-265: only in a batch with an inventory valuation.
+      ...(shared.inventory ? { inventory: shared.historyAccounts.inventory ?? null } : {}),
     },
     redirectedAccountKeys: [...shared.redirectedKeys].sort(),
   };
@@ -1222,6 +1423,12 @@ export async function commitSessionInBatch(
   }
   if (row.kind === 'contacts') {
     return await commitContacts(ctx, parsed as CanonicalContactRow[]);
+  }
+  if (row.kind === 'items') {
+    return await commitItems(ctx, parsed as CanonicalItemRow[]);
+  }
+  if (row.kind === 'inventory_valuation') {
+    return await commitValuation(ctx, row.sourceSystem as SourceSystem, row.reportDate, parsed as CanonicalValuationRow[]);
   }
   if (row.kind === 'trial_balance') {
     return await commitTrialBalance(ctx, row.reportDate, options, parsed as CanonicalTrialBalanceRow[], row.originalFilename);
@@ -1282,9 +1489,16 @@ export const HISTORY_ACCOUNT_SPECS = {
     name: 'Payables before conversion', accountType: 'liability', detailType: 'other_current_liability',
     description: 'Payables history from before the switch. The unpaid bills brought in clear it: 0.00 at the conversion date.',
   },
+  // U-265 (Q-P31e, Q-P31s): never an inventory asset account (no item names it), so an inventory adjustment may offset to it.
+  inventory: {
+    name: 'Inventory before conversion', accountType: 'asset', detailType: 'other_current_asset',
+    description: 'Inventory history from before the switch. The opening stock brought in at its exact value clears it: 0.00 at the conversion date.',
+  },
 } as const;
 
-async function historyAccount(ctx: CommitSessionContext, side: 'ar' | 'ap'): Promise<string> {
+type HistorySide = keyof typeof HISTORY_ACCOUNT_SPECS;
+
+async function historyAccount(ctx: CommitSessionContext, side: HistorySide): Promise<string> {
   const shared = ctx.shared;
   if (!shared) throw AppError.internal('Open items need the batch context.');
   const known = shared.historyAccounts[side];
@@ -1309,6 +1523,55 @@ async function historyAccount(ctx: CommitSessionContext, side: 'ar' | 'ap'): Pro
   return id;
 }
 
+/** The tenant's inventory asset accounts: tagged inventory_asset, or the asset account of an inventory part. */
+async function inventoryAssetAccountIds(tx: Tx, tenantId: string): Promise<string[]> {
+  const r = await tx.execute(sql`
+    SELECT a.id::text AS id FROM accounts a
+    WHERE a.tenant_id = ${tenantId} AND (a.system_tag = ${INVENTORY_ASSET_TAG} OR EXISTS (
+      SELECT 1 FROM items i WHERE i.tenant_id = a.tenant_id AND i.item_type = 'inventory_part' AND i.asset_account_id = a.id))`);
+  return (r.rows as Array<{ id: string }>).map((x) => x.id);
+}
+
+/**
+ * U-265: resolves source account references the way every batch kind does:
+ * the batch's accountMap first (an account id), then the chart rows merged in
+ * this batch (aliases), then the company's chart by number, then by name.
+ */
+async function accountResolver(ctx: CommitSessionContext) {
+  const { tx, tenantId, companyId } = ctx;
+  const acctRows = await tx.select().from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))));
+  const byNum = new Map<string, string>();
+  const byName = new Map<string, string>();
+  for (const a of acctRows) {
+    if (a.accountNumber) byNum.set(a.accountNumber, a.id);
+    byName.set(a.name.toLowerCase(), a.id);
+  }
+  applyAliases(ctx, byNum, byName);
+  const map = ctx.shared?.accountMap ?? {};
+  const resolve = (accountNumber?: string | null, accountName?: string | null): string | null => {
+    const key = sourceAccountKey(accountNumber, accountName);
+    const mapped = key ? map[key] : undefined;
+    if (mapped && mapped !== 'create') return mapped;
+    return (accountNumber && byNum.get(accountNumber)) || (accountName && byName.get(accountName.toLowerCase())) || null;
+  };
+  return { acctRows, resolve };
+}
+
+/**
+ * U-265: a batch commit refuses every account reference it can't resolve, all
+ * of them in one error (never suspense): 422 IMPORT_UNMAPPED_ACCOUNT
+ * {rowNumber (the first), unmappedAccountKeys (up to 500), unmappedCount}.
+ */
+function unmappedError(first: number, keys: Set<string>): AppError {
+  const list = [...keys].sort();
+  return AppError.unprocessableEntity(
+    `${list.length} account(s) in this file are not in the chart of accounts and have no mapping. Map them before importing.`,
+    'IMPORT_UNMAPPED_ACCOUNT',
+    { rowNumber: first, unmappedAccountKeys: list.slice(0, 500), unmappedCount: list.length },
+  );
+}
+
 function aliasKeys(accountNumber: string | undefined | null, name: string | undefined | null): string[] {
   return [
     ...(accountNumber ? [`n:${accountNumber}`] : []),
@@ -1329,16 +1592,21 @@ function applyAliases(ctx: CommitSessionContext, byNum: Map<string, string>, byN
  * an A/R (or A/P) account (system tag or detail type) posts to the
  * before-conversion account instead. Null when the batch has no open items.
  */
-function historyRedirect(
+async function historyRedirect(
   ctx: CommitSessionContext,
   acctRows: Array<{ id: string; systemTag: string | null; detailType: string | null }>,
-): { to: (id: string, key: string) => Promise<string>; count: () => number } | null {
+): Promise<{ to: (id: string, key: string) => Promise<string>; count: () => number } | null> {
   const shared = ctx.shared;
-  if (!shared || (!shared.openItems.ar && !shared.openItems.ap)) return null;
-  const sideOf = new Map<string, 'ar' | 'ap'>();
+  if (!shared || (!shared.openItems.ar && !shared.openItems.ap && !shared.inventory)) return null;
+  const sideOf = new Map<string, HistorySide>();
   for (const a of acctRows) {
     if (shared.openItems.ar && (a.systemTag === 'accounts_receivable' || a.detailType === 'accounts_receivable')) sideOf.set(a.id, 'ar');
     if (shared.openItems.ap && (a.systemTag === 'accounts_payable' || a.detailType === 'accounts_payable')) sideOf.set(a.id, 'ap');
+  }
+  // U-265: with an inventory valuation in the batch, the inventory asset accounts (tagged, or named by a part,
+  // the batch's items included: they commit first) send their history to "Inventory before conversion".
+  if (shared.inventory) {
+    for (const id of await inventoryAssetAccountIds(ctx.tx, ctx.tenantId)) sideOf.set(id, 'inventory');
   }
   let moved = 0;
   return {
@@ -1395,8 +1663,19 @@ async function commitCoa(
   const mergeRole = (role: CanonicalCoaRow['systemRole']) => !!role && !!ctx.shared
     && ((role === 'accounts_receivable' && ctx.shared.openItems.ar) || (role === 'accounts_payable' && ctx.shared.openItems.ap));
 
+  // U-265: a chart row the batch's accountMap sends to an existing account is not created:
+  // its lines resolve to that account (as a merged system row's do).
+  const mappedRows = new Set<number>();
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
+    const mapKey = sourceAccountKey(r.accountNumber, r.name);
+    const mappedTo = mapKey && ctx.shared ? ctx.shared.accountMap[mapKey] : undefined;
+    if (mappedTo && mappedTo !== 'create') {
+      for (const k of aliasKeys(r.accountNumber, r.name)) ctx.shared!.aliases.set(k, mappedTo);
+      mappedRows.add(r.rowNumber);
+      skipped++;
+      continue;
+    }
     if (mergeRole(r.systemRole)) {
       const role = r.systemRole!;
       let target = roleAccount.get(role) ?? await findSystemAccountId(tenantId, role, tx);
@@ -1481,7 +1760,7 @@ async function commitCoa(
     parentOf.set(a.id, a.parentId ?? null);
   }
   for (const r of rows) {
-    if (mergeRole(r.systemRole)) continue; // merged into a system account: its parent stays as it is
+    if (mergeRole(r.systemRole) || mappedRows.has(r.rowNumber)) continue; // merged or mapped: its parent stays as it is
     let parentId: string | null = null;
     if (r.parentNumber) parentId = byNum.get(r.parentNumber) ?? null;
     if (!parentId && r.parentName) parentId = byName.get(r.parentName.toLowerCase()) ?? null;
@@ -1500,7 +1779,126 @@ async function commitCoa(
   return { created, skipped, updated, ...(merged > 0 ? { mergedIntoSystemAccounts: merged } : {}) };
 }
 
+/**
+ * U-265: the company's contacts by display name (case-insensitive), for the
+ * names of a batch (Q-77): a name found as the other kind becomes 'both' (its
+ * kind before kept in prior_values when the batch did not create it); a name
+ * not found is created, stamped with the batch.
+ */
+async function contactNames(ctx: CommitSessionContext) {
+  const { tx, tenantId, companyId, batchId } = ctx;
+  type Entry = { id: string; contactType: string; mine: boolean };
+  const rows = await tx.select({
+    id: contacts.id, displayName: contacts.displayName, contactType: contacts.contactType, importBatchId: contacts.importBatchId,
+  }).from(contacts).where(and(eq(contacts.tenantId, tenantId), or(eq(contacts.companyId, companyId), isNull(contacts.companyId))))
+    .orderBy(asc(contacts.createdAt), asc(contacts.id));
+  const byName = new Map<string, Entry[]>();
+  const add = (name: string, e: Entry) => {
+    const k = name.trim().toLowerCase();
+    byName.set(k, [...(byName.get(k) ?? []), e]);
+  };
+  for (const r of rows) add(r.displayName, { id: r.id, contactType: r.contactType, mine: r.importBatchId === batchId });
+  let created = 0;
+  let merged = 0;
+  return {
+    /** The contact of that name usable as `want` (that kind or both); null when there is none. */
+    find(name: string, want: ContactKind): string | null {
+      return (byName.get(name.trim().toLowerCase()) ?? []).find((e) => e.contactType === want || e.contactType === 'both')?.id ?? null;
+    },
+    async ensure(name: string, want: ContactKind, values: Partial<typeof contacts.$inferInsert> = {}): Promise<{ id: string; outcome: 'existing' | 'merged' | 'created' }> {
+      const list = byName.get(name.trim().toLowerCase()) ?? [];
+      const same = list.find((e) => e.contactType === want || e.contactType === 'both');
+      if (same) return { id: same.id, outcome: 'existing' };
+      const other = list.find((e) => e.contactType === 'customer' || e.contactType === 'vendor');
+      if (other) {
+        if (!other.mine) (ctx.priorValues.contacts ??= {})[other.id] ??= { contactType: other.contactType };
+        await tx.update(contacts).set({ contactType: 'both', updatedAt: new Date() })
+          .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, other.id)));
+        other.contactType = 'both';
+        merged++;
+        return { id: other.id, outcome: 'merged' };
+      }
+      const [c] = await tx.insert(contacts).values({
+        ...values, tenantId, companyId, contactType: want, displayName: name.trim(), importBatchId: batchId,
+      }).returning({ id: contacts.id });
+      add(name, { id: c!.id, contactType: want, mine: true });
+      created++;
+      return { id: c!.id, outcome: 'created' };
+    },
+    counts: () => ({ created, merged }),
+  };
+}
+
+/**
+ * Contacts in a batch (U-265): one contact per name (Q-77: a name on the
+ * customer and the vendor list becomes 'both'), inactive names inactive, a
+ * job row ("Customer:Job") folded into its customer (created when missing)
+ * until the engine has a projects list (U-35). The old one-session commit
+ * keeps its behaviour (commitContactsLegacy).
+ */
 async function commitContacts(
+  ctx: CommitSessionContext,
+  rows: CanonicalContactRow[],
+): Promise<ImportCommitResult> {
+  // The old path left inactive names out and kept a job as a contact of its full name.
+  if (!ctx.shared?.strict) return await commitContactsLegacy(ctx, rows.filter((r) => r.isActive !== false));
+  const { tx, tenantId } = ctx;
+  const names = await contactNames(ctx);
+  const coa = rows.some((r) => r.defaultExpenseAccountRaw)
+    ? await tx.select({ id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name, accountType: accounts.accountType })
+      .from(accounts).where(eq(accounts.tenantId, tenantId))
+    : [];
+  const byNumber = new Map<string, string>();
+  const byAcctName = new Map<string, { id: string; isExpense: boolean }>();
+  for (const a of coa) {
+    if (a.accountNumber) byNumber.set(a.accountNumber.trim(), a.id);
+    const key = a.name.trim().toLowerCase();
+    const isExpense = ['expense', 'cogs', 'other_expense'].includes(a.accountType);
+    const known = byAcctName.get(key);
+    if (!known || (isExpense && !known.isExpense)) byAcctName.set(key, { id: a.id, isExpense });
+  }
+  const resolveAccount = (raw: string | undefined): string | null => {
+    const v = raw?.trim();
+    return v ? (byNumber.get(v) ?? byAcctName.get(v.toLowerCase())?.id ?? null) : null;
+  };
+  let skipped = 0;
+  let accountsLinked = 0;
+  let inactive = 0;
+  let jobsFolded = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    if (r.jobOf) {
+      await names.ensure(r.jobOf, 'customer');
+      jobsFolded++;
+      continue;
+    }
+    const defaultExpenseAccountId = r.contactType === 'vendor' ? resolveAccount(r.defaultExpenseAccountRaw) : null;
+    const res = await names.ensure(r.displayName, r.contactType, {
+      email: r.email ?? null,
+      phone: r.phone ?? null,
+      billingLine1: r.billingAddress ? r.billingAddress.split('\n')[0] : null,
+      shippingLine1: r.shippingAddress ? r.shippingAddress.split('\n')[0] : null,
+      is1099Eligible: (r as { is1099Eligible?: boolean }).is1099Eligible ?? false,
+      defaultExpenseAccountId,
+      isActive: r.isActive !== false,
+    });
+    if (res.outcome === 'existing') skipped++;
+    if (res.outcome === 'created') {
+      if (defaultExpenseAccountId) accountsLinked++;
+      if (r.isActive === false) inactive++;
+    }
+    if ((i + 1) % 200 === 0) ctx.progress('contacts', i + 1, rows.length);
+  }
+  const { created, merged } = names.counts();
+  return {
+    created, skipped, accountsLinked,
+    ...(merged > 0 ? { mergedToBoth: merged } : {}),
+    ...(inactive > 0 ? { inactive } : {}),
+    ...(jobsFolded > 0 ? { jobsFolded } : {}),
+  };
+}
+
+async function commitContactsLegacy(
   ctx: CommitSessionContext,
   rows: CanonicalContactRow[],
 ): Promise<ImportCommitResult> {
@@ -1629,37 +2027,31 @@ async function commitTrialBalance(
 
   // Resolve account names/numbers to ids — scoped to this company's
   // CoA plus tenant-wide template accounts. Same scope rule as
-  // validateTrialBalance.
-  const acctRows = await tx
-    .select()
-    .from(accounts)
-    .where(
-      and(
-        eq(accounts.tenantId, tenantId),
-        or(eq(accounts.companyId, companyId), isNull(accounts.companyId)),
-      ),
-    );
-  const byNum = new Map<string, string>();
-  const byName = new Map<string, string>();
-  for (const a of acctRows) {
-    if (a.accountNumber) byNum.set(a.accountNumber, a.id);
-    byName.set(a.name.toLowerCase(), a.id);
-  }
-  applyAliases(ctx, byNum, byName);
-  const redirect = historyRedirect(ctx, acctRows);
+  // validateTrialBalance. U-265: the batch's accountMap first.
+  const { acctRows, resolve } = await accountResolver(ctx);
+  const redirect = await historyRedirect(ctx, acctRows);
   // Lines naming an account this CoA does not have go to suspense (default)
   // so the opening JE still balances and the work is reviewable, instead of
   // aborting the whole import. Resolved lazily: a file that maps cleanly
-  // never mints a suspense account.
-  const fallbackOn = suspenseFallbackOn(options);
+  // never mints a suspense account. U-265: a batch import never does that;
+  // every unresolved account fails it, in one error.
+  const fallbackOn = !ctx.shared?.strict && suspenseFallbackOn(options);
+  if (ctx.shared?.strict) {
+    const missing = new Set<string>();
+    let first = 0;
+    for (const r of rows) {
+      if (resolve(r.accountNumber, r.accountName)) continue;
+      missing.add(r.accountNumber ?? r.accountName ?? '?');
+      first ||= r.rowNumber;
+    }
+    if (missing.size > 0) throw unmappedError(first, missing);
+  }
   let suspenseAccountId: string | null = null;
   const unmappedKeys = new Set<string>();
 
   const lines = [];
   for (const r of rows) {
-    let id =
-      (r.accountNumber && byNum.get(r.accountNumber)) ||
-      (r.accountName && byName.get(r.accountName.toLowerCase()));
+    let id = resolve(r.accountNumber, r.accountName);
     if (id && redirect) id = await redirect.to(id, r.accountNumber ?? r.accountName ?? '?');
     if (!id) {
       const key = r.accountNumber ?? r.accountName ?? '?';
@@ -1720,8 +2112,7 @@ async function commitGl(
   let skipped = 0;
   let voidsReversed = 0;
   // See commitTrialBalance — unmapped accounts land in suspense by default so
-  // the JE still balances and the fix becomes reviewable work.
-  const fallbackOn = suspenseFallbackOn(options);
+  // the JE still balances and the fix becomes reviewable work (not in a batch, U-265).
   let suspenseAccountId: string | null = null;
   const unmappedKeys = new Set<string>();
 
@@ -1761,37 +2152,33 @@ async function commitGl(
   const seenSourceIds = new Set(existing.map((e) => e.sourceId).filter(Boolean) as string[]);
 
   // Build accountId lookup once — scoped to this company's CoA plus
-  // tenant-wide template accounts (companyId IS NULL).
-  const acctRows = await tx
-    .select()
-    .from(accounts)
-    .where(
-      and(
-        eq(accounts.tenantId, tenantId),
-        or(eq(accounts.companyId, companyId), isNull(accounts.companyId)),
-      ),
-    );
-  const byNum = new Map<string, string>();
-  const byName = new Map<string, string>();
-  for (const a of acctRows) {
-    if (a.accountNumber) byNum.set(a.accountNumber, a.id);
-    byName.set(a.name.toLowerCase(), a.id);
+  // tenant-wide template accounts (companyId IS NULL). U-265: the batch's
+  // accountMap first; a batch import never posts to suspense.
+  const { acctRows, resolve } = await accountResolver(ctx);
+  const redirect = await historyRedirect(ctx, acctRows);
+  const fallbackOn = !ctx.shared?.strict && suspenseFallbackOn(options);
+  if (ctx.shared?.strict) {
+    const missing = new Set<string>();
+    let first = 0;
+    for (const e of entries) {
+      for (const line of e.lines) {
+        if (resolve(line.accountNumber, line.accountName)) continue;
+        missing.add(line.accountNumber ?? line.accountName ?? '?');
+        first ||= e.rowNumber;
+      }
+    }
+    if (missing.size > 0) throw unmappedError(first, missing);
   }
-  applyAliases(ctx, byNum, byName);
-  const redirect = historyRedirect(ctx, acctRows);
 
   // Resolve (and auto-create) every tag named across the file up front, so a
   // single tag referenced by many rows is created once. The Generic importer
   // populates line.tagName from its Tag column; the QBO/QBD adapters populate
   // it from the Class column (class tracking); for other sources this is a
-  // no-op.
-  const { map: tagMap, created: tagsCreated } = await ensureTags(
-    tx,
-    tenantId,
-    companyId,
-    entries.flatMap((e) => e.lines.map((l) => l.tagName).filter((n): n is string => !!n)),
-    batchId,
-  );
+  // no-op. U-265: the batch's classMap turns a class into a tag in a group.
+  const classNames = entries.flatMap((e) => e.lines.map((l) => l.tagName).filter((n): n is string => !!n));
+  const { map: tagMap, created: tagsCreated, mapped: classesMapped } = ctx.shared && ctx.shared.classMap.size > 0
+    ? await ensureMappedTags(ctx, classNames)
+    : { ...(await ensureTags(tx, tenantId, companyId, classNames, batchId)), mapped: 0 };
 
   // Match each entry's imported "Description" (e.name) to an existing vendor
   // contact so imported GL transactions carry a payee. Deliberately
@@ -1830,9 +2217,7 @@ async function commitGl(
 
     const lines = [];
     for (const line of e.lines) {
-      let id =
-        (line.accountNumber && byNum.get(line.accountNumber)) ||
-        (line.accountName && byName.get(line.accountName.toLowerCase()));
+      let id = resolve(line.accountNumber, line.accountName);
       if (id && redirect) id = await redirect.to(id, line.accountNumber ?? line.accountName ?? '?');
       if (!id) {
         const key = line.accountNumber ?? line.accountName ?? '?';
@@ -1902,6 +2287,7 @@ async function commitGl(
   return {
     created, skipped, voidsReversed, vendorsMatched,
     ...(tagsCreated ? { tagsCreated } : {}),
+    ...(classesMapped ? { classesMapped } : {}),
     ...(redirect && redirect.count() > 0 ? { redirectedLines: redirect.count() } : {}),
     ...(unmappedKeys.size > 0
       ? { unmappedToSuspense: unmappedKeys.size, unmappedAccountKeys: [...unmappedKeys].sort() }
@@ -1977,21 +2363,36 @@ async function commitOpenItems(
 
   const documents: Partial<Record<CanonicalOpenItemRow['docType'], number>> = {};
   let contactsCreated = 0;
+  // U-265: in a batch, a name found as the other kind becomes 'both' (Q-77) rather than a second
+  // contact, and "Customer:Job" is the customer (no projects list yet, U-35) with the job in the memo.
+  const names = ctx.shared?.strict ? await contactNames(ctx) : null;
   const posted: string[] = [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
     const key = r.name.trim().toLowerCase();
-    let contactId = byName.get(key);
-    if (!contactId) {
-      const [c] = await tx.insert(contacts).values({
-        tenantId, companyId, contactType: want, displayName: r.name.trim(), importBatchId: batchId,
-      }).returning({ id: contacts.id });
-      contactId = c!.id;
-      byName.set(key, contactId);
-      contactsCreated++;
+    let contactId: string | undefined;
+    let job: string | null = null;
+    if (names) {
+      const colon = r.name.indexOf(':');
+      if (!names.find(r.name, want) && colon > 0) {
+        job = r.name.slice(colon + 1).trim();
+        contactId = (await names.ensure(r.name.slice(0, colon), want)).id;
+      } else {
+        contactId = (await names.ensure(r.name, want)).id;
+      }
+    } else {
+      contactId = byName.get(key);
+      if (!contactId) {
+        const [c] = await tx.insert(contacts).values({
+          tenantId, companyId, contactType: want, displayName: r.name.trim(), importBatchId: batchId,
+        }).returning({ id: contacts.id });
+        contactId = c!.id;
+        byName.set(key, contactId);
+        contactsCreated++;
+      }
     }
     const amount = new Decimal(r.openBalance).abs().toFixed(2);
-    const memo = openItemMemo(sourceSystem, r);
+    const memo = `${openItemMemo(sourceSystem, r)}${job ? `; job ${job}` : ''}`;
     const description = r.docType === 'invoice' || r.docType === 'bill' ? 'Open balance brought in' : 'Open credit brought in';
     let id: string;
     let total: string;
@@ -2060,5 +2461,202 @@ async function commitOpenItems(
     }
   }
   ctx.progress(kind, rows.length, rows.length);
+  if (names) {
+    const n = names.counts();
+    contactsCreated = n.created;
+    if (n.merged > 0) return { created: posted.length, skipped: 0, documents, ...(contactsCreated > 0 ? { contactsCreated } : {}), mergedToBoth: n.merged };
+  }
   return { created: posted.length, skipped: 0, documents, ...(contactsCreated > 0 ? { contactsCreated } : {}) };
+}
+
+// ── Items and inventory valuation (U-265, qbd-mapping-v1) ─────────
+
+/** Rethrows a service refusal with the row it came from (the batch transaction rolls back). */
+function rowError(err: unknown, rowNumber: number, what: string): AppError {
+  const msg = err instanceof Error ? err.message : String(err);
+  return new AppError(
+    err instanceof AppError && [403, 409, 423].includes(err.statusCode) ? err.statusCode : 422,
+    `Failed importing the ${what} at row ${rowNumber}: ${msg}`,
+    err instanceof AppError ? (err.code ?? 'IMPORT_POST_FAILED') : 'IMPORT_POST_FAILED',
+    { ...(err instanceof AppError ? (err.details ?? {}) : {}), rowNumber, originalError: msg },
+  );
+}
+
+/**
+ * Items (U-265): each row becomes an item through the item service (its kind
+ * and account checks, its audit row) in the batch transaction, stamped with
+ * the batch. Accounts resolve like journal lines (accountMap, merged chart
+ * rows, number, name); any unresolved one fails the commit, all listed
+ * (IMPORT_UNMAPPED_ACCOUNT), in every path. A name the tenant already has is
+ * left as it is (itemsSkipped.exists); sales tax items, groups and payment
+ * items are listed but not imported; a subtotal with no account is skipped.
+ * Inactive items come in inactive. The preferred vendor is matched by name
+ * among the company's vendors (never created).
+ */
+async function commitItems(ctx: CommitSessionContext, rows: CanonicalItemRow[]): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
+  const { resolve } = await accountResolver(ctx);
+  const skippedBy: NonNullable<ImportCommitResult['itemsSkipped']> = {};
+  const bump = (k: keyof typeof skippedBy) => { skippedBy[k] = (skippedBy[k] ?? 0) + 1; };
+  const existing = await tx.select({ name: items.name }).from(items).where(eq(items.tenantId, tenantId));
+  const taken = new Set(existing.map((x) => x.name.toLowerCase()));
+  const todo = rows.filter((r) => {
+    if (!r.itemType) { bump(r.skipReason ?? 'group'); return false; }
+    if (taken.has(r.name.toLowerCase())) { bump('exists'); return false; }
+    if (r.itemType === 'subtotal' && !r.incomeAccount) { bump('no_account'); return false; }
+    return true;
+  });
+  const refId = (a: AccountRef | undefined) => (a ? resolve(a.accountNumber, a.accountName) : null);
+  const missing = new Set<string>();
+  let first = 0;
+  for (const r of todo) {
+    for (const a of [r.incomeAccount, r.expenseAccount, r.assetAccount, r.cogsAccount]) {
+      if (!a || refId(a)) continue;
+      missing.add(sourceAccountKey(a.accountNumber, a.accountName) ?? '?');
+      first ||= r.rowNumber;
+    }
+  }
+  if (missing.size > 0) throw unmappedError(first, missing);
+
+  const vendors = await tx.select({ id: contacts.id, displayName: contacts.displayName }).from(contacts).where(and(
+    eq(contacts.tenantId, tenantId), or(eq(contacts.companyId, companyId), isNull(contacts.companyId)),
+    inArray(contacts.contactType, ['vendor', 'both']),
+  )).orderBy(asc(contacts.createdAt), asc(contacts.id));
+  const vendorByName = new Map<string, string>();
+  for (const v of vendors) {
+    const k = v.displayName.trim().toLowerCase();
+    if (!vendorByName.has(k)) vendorByName.set(k, v.id);
+  }
+  const { create } = await import('../items.service.js');
+  let created = 0;
+  let inactive = 0;
+  for (let i = 0; i < todo.length; i++) {
+    const r = todo[i]!;
+    const input = {
+      name: r.name,
+      description: r.description ?? null,
+      itemType: r.itemType!,
+      unitPrice: r.unitPrice ?? null,
+      discountPercent: r.discountPercent ?? null,
+      incomeAccountId: refId(r.incomeAccount)!,
+      isTaxable: r.isTaxable ?? true,
+      purchaseDescription: r.purchaseDescription ?? null,
+      purchaseCost: r.purchaseCost ?? null,
+      expenseAccountId: refId(r.expenseAccount),
+      assetAccountId: refId(r.assetAccount),
+      cogsAccountId: refId(r.cogsAccount),
+      preferredVendorId: r.preferredVendor ? (vendorByName.get(r.preferredVendor.trim().toLowerCase()) ?? null) : null,
+      reorderPoint: r.reorderPoint ?? null,
+    };
+    let id: string;
+    try {
+      const item = await create(tenantId, input as never, userId, companyId, tx);
+      id = (item as { id: string }).id;
+    } catch (err) {
+      throw rowError(err, r.rowNumber, 'item');
+    }
+    await tx.update(items).set({ importBatchId: batchId, ...(r.isActive ? {} : { isActive: false }) })
+      .where(and(eq(items.tenantId, tenantId), eq(items.id, id)));
+    taken.add(r.name.toLowerCase());
+    created++;
+    if (!r.isActive) inactive++;
+    if ((i + 1) % 200 === 0) ctx.progress('items', i + 1, todo.length);
+  }
+  ctx.progress('items', todo.length, todo.length);
+  const skipped = rows.length - created;
+  return {
+    created, skipped,
+    ...(Object.keys(skippedBy).length > 0 ? { itemsSkipped: skippedBy } : {}),
+    ...(inactive > 0 ? { inactive } : {}),
+  };
+}
+
+const VALUATION_CHUNK = 500;
+
+/**
+ * Inventory valuation (U-265, review S6; Q-P31e, Q-P31s): each row becomes
+ * opening stock of its inventory item, dated the report date, for the exact
+ * quantity and value of the report (never quantity x average cost), offset
+ * to "Inventory before conversion" (an inventory adjustment can't offset to an
+ * inventory asset account). With the batch's trial balance and journal lines
+ * on inventory asset accounts sent to that account, it ends at 0.00 and the
+ * Inventory Asset accounts hold exactly the valuation. Each movement posted is
+ * checked against the report (IMPORT_VALUATION_MISMATCH otherwise).
+ */
+async function commitValuation(
+  ctx: CommitSessionContext,
+  sourceSystem: SourceSystem,
+  reportDate: string | null,
+  rows: CanonicalValuationRow[],
+): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
+  if (rows.length === 0) return { created: 0, skipped: 0, itemsValued: 0, valuationTotal: '0.00' };
+  if (!reportDate) throw AppError.badRequest('The inventory valuation has no report date.', 'IMPORT_BAD_DATE');
+  const all = await tx.select({ id: items.id, name: items.name, itemType: items.itemType, companyId: items.companyId })
+    .from(items).where(eq(items.tenantId, tenantId));
+  const byName = new Map<string, typeof all>();
+  const add = (k: string, it: (typeof all)[number]) => byName.set(k, [...(byName.get(k) ?? []), it]);
+  for (const it of all) {
+    add(it.name.toLowerCase(), it);
+  }
+  const lastSegment = new Map<string, typeof all>();
+  for (const it of all) {
+    const seg = it.name.split(':').pop()!.trim().toLowerCase();
+    lastSegment.set(seg, [...(lastSegment.get(seg) ?? []), it]);
+  }
+  const lines: Array<{ itemId: string; quantityChange: string; valueChange: string; row: CanonicalValuationRow }> = [];
+  const problems: Array<{ rowNumber: number; item: string; reason: string }> = [];
+  for (const r of rows) {
+    const k = r.item.toLowerCase();
+    let hit = byName.get(k);
+    // A report that prints only a sub-item's own name: the one item whose last segment it is.
+    if (!hit && !k.includes(':')) hit = lastSegment.get(k);
+    if (!hit || hit.length !== 1) { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: hit ? 'ambiguous' : 'unknown' }); continue; }
+    const it = hit[0]!;
+    if (it.companyId && it.companyId !== companyId) { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: 'other_company' }); continue; }
+    if (it.itemType !== 'inventory_part') { problems.push({ rowNumber: r.rowNumber, item: r.item, reason: 'not_inventory' }); continue; }
+    lines.push({ itemId: it.id, quantityChange: r.onHand, valueChange: r.assetValue, row: r });
+  }
+  if (problems.length > 0) {
+    const code = problems.every((p) => p.reason === 'not_inventory') ? 'IMPORT_ITEM_NOT_INVENTORY' : 'IMPORT_UNKNOWN_ITEM';
+    throw AppError.unprocessableEntity(
+      `${problems.length} item(s) of the inventory valuation are not inventory items of this company. Import the item list first.`,
+      code, { rowNumber: problems[0]!.rowNumber, items: problems.slice(0, 200), itemCount: problems.length },
+    );
+  }
+  const offset = await historyAccount(ctx, 'inventory');
+  const { postAdjustment } = await import('../inventory-adjustment.service.js');
+  const label = SOURCE_LABEL[sourceSystem] ?? sourceSystem;
+  const posted: string[] = [];
+  let total = new Decimal(0);
+  for (let i = 0; i < lines.length; i += VALUATION_CHUNK) {
+    const chunk = lines.slice(i, i + VALUATION_CHUNK);
+    let txnId: string;
+    try {
+      const txn = await postAdjustment(tenantId, companyId, {
+        txnDate: reportDate, adjustmentAccountId: offset,
+        memo: `Opening inventory brought in from ${label} (valuation as of ${reportDate})`,
+        lines: chunk.map((l) => ({ itemId: l.itemId, quantityChange: l.quantityChange, valueChange: l.valueChange })),
+      }, userId, tx, { openingZero: true });
+      txnId = txn.id;
+    } catch (err) {
+      throw rowError(err, chunk[0]!.row.rowNumber, 'inventory valuation');
+    }
+    // Exactly the report's figures, or nothing posts.
+    const mv = await tx.select({ itemId: inventoryMovements.itemId, quantity: inventoryMovements.quantity, value: inventoryMovements.value })
+      .from(inventoryMovements).where(and(eq(inventoryMovements.tenantId, tenantId), eq(inventoryMovements.transactionId, txnId)));
+    const byItem = new Map(mv.map((m) => [m.itemId, m]));
+    for (const l of chunk) {
+      const m = byItem.get(l.itemId);
+      if (!m || !new Decimal(m.quantity).equals(l.quantityChange) || !new Decimal(m.value).equals(l.valueChange)) {
+        throw AppError.unprocessableEntity(`The opening stock of "${l.row.item}" did not post at the report's quantity and value.`,
+          'IMPORT_VALUATION_MISMATCH', { rowNumber: l.row.rowNumber });
+      }
+      total = total.plus(l.valueChange);
+    }
+    posted.push(txnId);
+    ctx.progress('inventory_valuation', Math.min(i + VALUATION_CHUNK, lines.length), lines.length);
+  }
+  await stampTransactions(tx, tenantId, batchId, posted);
+  return { created: posted.length, skipped: 0, itemsValued: lines.length, valuationTotal: total.toFixed(2) };
 }

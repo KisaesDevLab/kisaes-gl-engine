@@ -357,8 +357,8 @@ export interface ImportCommitResult {
   /** Contacts / items (U-265): rows brought in inactive. */
   inactive?: number;
   /** Items (U-265): rows listed but not imported, by reason. */
-  itemsSkipped?: Partial<Record<'sales_tax' | 'group' | 'payment' | 'exists', number>>;
-  /** GL (U-265): lines tagged through the batch's classMap. */
+  itemsSkipped?: Partial<Record<'sales_tax' | 'group' | 'payment' | 'exists' | 'no_account', number>>;
+  /** GL (U-265): distinct classes turned into tags through the batch's classMap. */
   classesMapped?: number;
   /** inventory_valuation (U-265): items given opening stock, and the exact total value. */
   itemsValued?: number;

@@ -4,7 +4,7 @@
 
 import { eq, and, ilike, count, asc, desc, sql, isNull, or, type SQL } from 'drizzle-orm';
 import type { CreateItemInput, UpdateItemInput, ItemFilters } from '@kis-books/shared';
-import { db, type DbOrTx } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import * as salesTaxSvc from './sales-tax.service.js';
 import * as inventory from './inventory.service.js';
 import * as units from './units.service.js';
@@ -153,11 +153,12 @@ async function assertNameFree(executor: DbOrTx, tenantId: string, name: string, 
   if (dup && dup.id !== exceptId) throw AppError.conflict('An item with this name already exists');
 }
 
-export async function create(tenantId: string, input: CreateItemInput, userId?: string, companyId?: string) {
+/** `outerTx` (U-265): inside the caller's transaction (a Bulk Import batch), with the same checks and audit row. */
+export async function create(tenantId: string, input: CreateItemInput, userId?: string, companyId?: string, outerTx?: Tx) {
   assertKindFields(input);
 
   // The insert, its audit row and an Idempotency-Key (U-18) commit together.
-  return await db.transaction(async (tx) => {
+  const run = async (tx: Tx) => {
     await claimIdempotency(tx);
     // Inside the transaction (U-39b).
     await assertNameFree(tx, tenantId, input.name);
@@ -182,7 +183,8 @@ export async function create(tenantId: string, input: CreateItemInput, userId?: 
       await postOpening(tx, tenantId, companyId, item.id, opening, userId);
     }
     return (await withFigures(tx, tenantId, [item], companyId))[0]!;
-  });
+  };
+  return outerTx ? await run(outerTx) : await db.transaction(run);
 }
 
 const PART_ONLY_FIELDS = ['assetAccountId', 'cogsAccountId', 'reorderPoint', 'reorderQuantity'] as const;
