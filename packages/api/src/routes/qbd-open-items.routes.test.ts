@@ -423,7 +423,8 @@ describe.each<Depth>(['journal', 'tb-only'])('QBD conversion with open items, hi
 
     // The documents keep the QBD number, date and due date; the partly paid one its original amount in the memo.
     const all = await docs(id);
-    const byNum = (n: string) => all.find((t) => t.txnType !== 'journal_entry' && (t.txnNumber === n || t.vendorInvoiceNumber === n))!;
+    // A credit memo with no Num takes the next number, which may equal an invoice's (e.g. 1001): the file's own document first, whatever the row order.
+    const byNum = (n: string) => { const hit = all.filter((t) => t.txnType !== 'journal_entry' && (t.txnNumber === n || t.vendorInvoiceNumber === n)); return (hit.find((t) => t.txnType !== 'credit_memo') ?? hit[0])!; };
     expect([byNum('1003').txnType, byNum('1003').txnDate, byNum('1003').dueDate, m2(byNum('1003').total)]).toEqual(['invoice', '2026-10-10', '2026-11-09', '500.00']);
     expect(byNum('1003').memo).toContain('original amount 800.00, open 500.00');
     expect([byNum('B-55').txnType, byNum('B-55').dueDate, m2(byNum('B-55').balanceDue)]).toEqual(['bill', '2026-07-20', '900.00']);
@@ -446,7 +447,8 @@ describe.each<Depth>(['journal', 'tb-only'])('QBD conversion with open items, hi
   it('regression (spike C2-C6) on the imported documents: receive, apply credits, void, pay a bill with a vendor credit', async () => {
     const { id } = await commit(await uploadConversion(depth));
     const all = await docs(id);
-    const byNum = (n: string) => all.find((t) => t.txnType !== 'journal_entry' && (t.txnNumber === n || t.vendorInvoiceNumber === n))!.id;
+    // A credit memo with no Num takes the next number, which may equal an invoice's (e.g. 1001): the file's own document first, whatever the row order.
+    const byNum = (n: string) => { const hit = all.filter((t) => t.txnType !== 'journal_entry' && (t.txnNumber === n || t.vendorInvoiceNumber === n)); return (hit.find((t) => t.txnType !== 'credit_memo') ?? hit[0])!.id; };
     const alder = await contactId('Alder Café', 'customer');
     const birchC = await contactId('Birch & Co', 'customer');
     const dogwood = await contactId('Dogwood Ltd', 'customer');
