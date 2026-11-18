@@ -30,6 +30,9 @@ import {
   importBatchCommitSchema,
   importBatchListQuerySchema,
   importBatchUndoSchema,
+  importTieoutRequestSchema,
+  importSpotCheckSchema,
+  importBatchTransactionsQuerySchema,
 } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
@@ -40,6 +43,7 @@ import type { LockDateContext } from '../services/ledger.service.js';
 import { AppError } from '../utils/errors.js';
 import * as importsService from '../services/imports/imports.service.js';
 import * as batchService from '../services/imports/import-batch.service.js';
+import * as tieoutService from '../services/imports/import-tieout.service.js';
 import { buildSampleWorkbook, sampleFileName } from '../services/imports/generic-templates.service.js';
 
 // Magic-byte signatures we either require (xlsx/xls) or actively reject
@@ -358,6 +362,125 @@ importsRouter.post('/batches/:id/undo',
     });
     res.status(202).json(out);
   });
+
+// ── Tie-out, verify, spot-check, transactions (U-267, U-271) ──────
+
+const exact = z.string();
+const tieoutTotalSchema = z.object({ sourceExact: exact, booksExact: exact, diffExact: exact });
+const tieoutItemSchema = z.object({
+  sourceRow: z.number().int().nullable(), sessionId: z.string().uuid().nullable(), transactionId: z.string().uuid().nullable(),
+  contactName: z.string().nullable(), number: z.string().nullable(), docType: z.string().nullable(), date: z.string().nullable(),
+  sourceExact: exact, booksExact: exact, diffExact: exact,
+});
+const tieoutBalanceRowSchema = z.object({
+  key: z.enum(['history_ar', 'history_ap', 'history_inventory', 'valuation_vs_asset']), accountId: z.string().uuid().nullable(),
+  sourceExact: exact, booksExact: exact, diffExact: exact,
+});
+const tieoutSchema = z.object({
+  batchId: z.string().uuid(), asOf: z.string(), computedAt: z.string(), books: z.enum(['company', 'batch']),
+  referenceTrialBalance: z.object({ sessionId: z.string().uuid(), reportDate: z.string().nullable() }).nullable(),
+  accounts: z.array(z.object({
+    accountId: z.string().uuid().nullable(), number: z.string().nullable(), name: z.string(),
+    sourceRow: z.number().int().nullable(), sourceRows: z.array(z.number().int()), sourceKeys: z.array(z.string()),
+    sourceExact: exact, booksExact: exact, diffExact: exact,
+  })),
+  arItems: z.array(tieoutItemSchema), apItems: z.array(tieoutItemSchema),
+  inventoryItems: z.array(z.object({
+    sourceRow: z.number().int().nullable(), item: z.string(), itemId: z.string().uuid().nullable(),
+    sourceQuantity: exact, booksQuantity: exact, quantityDiff: exact, sourceExact: exact, booksExact: exact, diffExact: exact,
+  })),
+  balanceRows: z.array(tieoutBalanceRowSchema),
+  totals: z.object({
+    accounts: z.object({ sourceDebitExact: exact, sourceCreditExact: exact, booksDebitExact: exact, booksCreditExact: exact }).nullable(),
+    ar: tieoutTotalSchema.nullable(), ap: tieoutTotalSchema.nullable(), inventory: tieoutTotalSchema.nullable(),
+  }),
+  differenceCount: z.number().int(), allZero: z.boolean(), verifiedAt: z.string().nullable(),
+});
+
+const TIEOUT_DOC = 'asOf is the batch\'s conversionDate, else its reference trial balance\'s date. accounts: the reference trial '
+  + 'balance (required by default for every source, review S9: 422 TIEOUT_REFERENCE_REQUIRED; requireReference false skips '
+  + 'the accounts side), each row resolved as the commit resolved it (accountMap, merged or mapped chart rows, number, name) '
+  + 'and grouped per account (sourceKeys, sourceRows), against the exact accrual trial balance as of asOf (P&L fiscal year to '
+  + 'date, earlier years in the retained earnings account): the whole company when it was empty at commit (books "company"), '
+  + 'else only the batch\'s own lines (books "batch", Q-P31h). The before-conversion accounts are not in accounts but in '
+  + 'balanceRows (history_ar, history_ap, history_inventory: 0.00 expected at asOf; valuation_vs_asset: inventory asset '
+  + 'accounts in the books vs the valuation file). arItems/apItems: each open-item row (sourceRow) vs the open balance of the '
+  + 'document it became, as of asOf; with books "company", an open item no row made is a row with sourceRow null. '
+  + 'inventoryItems: each valuation row vs the engine valuation of its item (value in cents). totals: ar and ap aging totals '
+  + 'and inventory (file and books), accounts debit and credit sums. Exact decimal strings (accounts debit - credit); '
+  + 'diffExact = booksExact - sourceExact; allZero only when every difference (quantities too) is exactly 0. 409 '
+  + 'IMPORT_BATCH_NOT_COMMITTED / IMPORT_BATCH_UNDONE; 422 TIEOUT_NO_DATE, TIEOUT_REFERENCE_AMBIGUOUS. Error messages never '
+  + 'name accounts or contacts.';
+
+importsRouter.post('/batches/:id/tieout', validate(importTieoutRequestSchema), describe({
+  summary: 'Tie out a committed import batch (imports-tieout-v1)',
+  description: 'Compares the batch\'s source files with the books and keeps the result on the batch (GET shows its summary: '
+    + 'asOf, books, balanceRows, totals, differenceCount, allZero, counts, verifiedAt). A verified batch answers the tie-out '
+    + 'kept at verify (its source rows are deleted). ' + TIEOUT_DOC,
+  tags: ['Imports'],
+  body: importTieoutRequestSchema,
+  response: tieoutSchema,
+}), async (req, res) => {
+  const id = uuidParam.parse(req.params['id']);
+  res.json(await tieoutService.runTieout(req.tenantId, req.companyId, id, req.body));
+});
+
+importsRouter.post('/batches/:id/verify', requireImportAdmin, validate(importTieoutRequestSchema), describe({
+  summary: 'Verify a committed import batch (imports-tieout-v1)',
+  description: 'Recomputes the tie-out. 409 TIEOUT_NOT_ZERO {batchId, differenceCount, firstDifferences [{section '
+    + 'accounts|arItems|apItems|inventoryItems|balanceRows|totals, key (balanceRows: the balance key; totals: ar|ap|inventory; '
+    + 'else null), sourceRow, accountId, transactionId, itemId, diffExact, quantityDiff?}] (up to 20, ids only, never names)} unless every difference is exactly 0. Else 200 {batch, tieout}: the '
+    + 'batch is verified (verifiedAt, verifiedBy), keeps the tie-out, and the stored parsed rows of its sessions are deleted '
+    + '(review S8); one audit row. Verifying a verified batch answers 200 with what it kept. 409 IMPORT_BUSY while another '
+    + 'import or undo of the company runs. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED). ' + TIEOUT_DOC,
+  tags: ['Imports'],
+  body: importTieoutRequestSchema,
+  response: z.object({ batch: batchSchema, tieout: tieoutSchema }),
+}), async (req, res) => {
+  const id = uuidParam.parse(req.params['id']);
+  res.json(await tieoutService.verifyBatch(req.tenantId, req.companyId, req.userId, id, req.body));
+});
+
+const spotCheckOutSchema = z.object({
+  items: z.array(z.object({ key: z.string(), label: z.string(), done: z.boolean(), note: z.string().nullable().optional() })),
+  updatedAt: z.string(), updatedBy: z.string().uuid(),
+});
+
+importsRouter.put('/batches/:id/spot-check', validate(importSpotCheckSchema), describe({
+  summary: 'Save the spot-check list of an import batch (imports-tieout-v1)',
+  description: 'Replaces the batch\'s spot-check list {items [{key, label, done, note?}]} (up to 200) and answers {spotCheck '
+    + '{items, updatedAt, updatedBy}}; GET /imports/batches/:id returns it as batch.spotCheck. A committed batch only (409 '
+    + 'IMPORT_BATCH_NOT_COMMITTED / IMPORT_BATCH_UNDONE).',
+  tags: ['Imports'],
+  body: importSpotCheckSchema,
+  response: z.object({ spotCheck: spotCheckOutSchema }),
+}), async (req, res) => {
+  const id = uuidParam.parse(req.params['id']);
+  const spotCheck = await tieoutService.saveSpotCheck(req.tenantId, req.companyId, req.userId, id, req.body.items);
+  res.json({ spotCheck });
+});
+
+importsRouter.get('/batches/:id/transactions', describe({
+  summary: 'List the transactions an import batch created (imports-tieout-v1)',
+  description: 'U-271: by date then id, paged (pass nextCursor back as cursor; null on the last page); txnType filters '
+    + '(e.g. invoice, bill, journal_entry). total counts every match (for sampling). Each: {id, txnType, txnDate, txnNumber, '
+    + 'vendorInvoiceNumber, status, contactId, contactName, total (exact; a journal entry\'s debits)}. Empty after undo.',
+  tags: ['Imports'],
+  query: importBatchTransactionsQuerySchema,
+  response: z.object({
+    transactions: z.array(z.object({
+      id: z.string().uuid(), txnType: z.string(), txnDate: z.string(), txnNumber: z.string().nullable(),
+      vendorInvoiceNumber: z.string().nullable(), status: z.string(), contactId: z.string().uuid().nullable(),
+      contactName: z.string().nullable(), total: z.string(),
+    })),
+    nextCursor: z.string().nullable(),
+    total: z.number().int(),
+  }),
+}), async (req, res) => {
+  const id = uuidParam.parse(req.params['id']);
+  const q = importBatchTransactionsQuerySchema.parse(req.query);
+  res.json(await tieoutService.listBatchTransactions(req.tenantId, req.companyId, id, q));
+});
 
 // ── POST /imports/upload ──────────────────────────────────────────
 //

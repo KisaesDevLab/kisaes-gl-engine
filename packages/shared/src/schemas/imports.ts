@@ -126,6 +126,32 @@ export const importBatchListQuerySchema = z.object({
   cursor: z.string().max(200).optional(),
 });
 
+/**
+ * U-267 (imports-tieout-v1): body of POST /imports/batches/:id/tieout and /verify. The accounts side compares
+ * against the batch's reference trial balance, required by default for every source (review S9: never a file
+ * against itself); requireReference false skips the accounts side when the batch has none.
+ */
+export const importTieoutRequestSchema = z.object({
+  requireReference: z.boolean().default(true),
+}).strict().default({});
+
+/** U-267: PUT /imports/batches/:id/spot-check, the owner's spot-check list, stored on the batch as sent. */
+export const importSpotCheckSchema = z.object({
+  items: z.array(z.object({
+    key: z.string().min(1).max(100),
+    label: z.string().max(300),
+    done: z.boolean(),
+    note: z.string().max(2000).nullable().optional(),
+  }).strict()).max(200),
+}).strict();
+
+/** U-271: GET /imports/batches/:id/transactions, the batch's created transactions, paged. */
+export const importBatchTransactionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  cursor: z.string().max(200).optional(),
+  txnType: z.string().min(1).max(40).optional(),
+});
+
 export const importListQuerySchema = z.object({
   kind: importKindSchema.optional(),
   sourceSystem: sourceSystemSchema.optional(),

@@ -1734,5 +1734,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * on the conversion date) shows a nonzero balance on an inventory asset account (tagged, or an inventory part's)
    * fails after the 202 with 422 IMPORT_VALUATION_REQUIRED {sessionId, accounts [{sourceKey, balance}]}.
    */
-  'qbd-dates-v1',];
+  'qbd-dates-v1',
+  /**
+   * U-267, U-271 (ClientLedger P31 E3): import tie-out. POST /imports/batches/:id/tieout {requireReference?=true} answers
+   * {batchId, asOf (conversionDate, else the reference trial balance's date), computedAt, books company|batch,
+   * referenceTrialBalance, accounts [{accountId, number, name, sourceRow, sourceRows, sourceKeys, sourceExact, booksExact,
+   * diffExact}], arItems / apItems [{sourceRow, sessionId, transactionId, contactName, number, docType, date, sourceExact,
+   * booksExact, diffExact}] (keyed by source row; books-only open items have sourceRow null), inventoryItems [{sourceRow,
+   * item, itemId, sourceQuantity, booksQuantity, quantityDiff, sourceExact, booksExact, diffExact}], balanceRows [{key
+   * history_ar|history_ap|history_inventory|valuation_vs_asset, accountId, sourceExact, booksExact, diffExact}], totals
+   * {accounts, ar, ap, inventory}, differenceCount, allZero, verifiedAt}. Books: the exact trial balance when the company
+   * was empty at commit, else the batch's own lines (Q-P31h). A reference trial balance is required by default for every
+   * source (422 TIEOUT_REFERENCE_REQUIRED). POST .../verify (owner or super admin) recomputes: 409 TIEOUT_NOT_ZERO
+   * {differenceCount, firstDifferences (ids only)} or 200 {batch, tieout}, verified, parsed rows deleted. PUT
+   * .../spot-check {items [{key, label, done, note?}]} -> {spotCheck}, on GET as batch.spotCheck; batch.tieout on GET is a
+   * summary. GET .../transactions?limit&cursor&txnType {transactions [{id, txnType, txnDate, txnNumber,
+   * vendorInvoiceNumber, status, contactId, contactName, total}], nextCursor, total}.
+   */
+  'imports-tieout-v1',];
 

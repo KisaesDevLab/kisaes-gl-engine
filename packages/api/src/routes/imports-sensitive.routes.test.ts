@@ -35,6 +35,11 @@ describe('U-263 sensitive accounts on Bulk Import', () => {
       ['POST', '/api/v1/imports/batches'],
       ['POST', `/api/v1/imports/batches/${id}/commit`],
       ['POST', `/api/v1/imports/batches/${id}/undo`],
+      // U-267, U-271 (imports-tieout-v1).
+      ['POST', `/api/v1/imports/batches/${id}/tieout`],
+      ['POST', `/api/v1/imports/batches/${id}/verify`],
+      ['PUT', `/api/v1/imports/batches/${id}/spot-check`],
+      ['GET', `/api/v1/imports/batches/${id}/transactions`],
       ['POST', `/api/v1/imports/${id}/commit`],
     ] as const) {
       const bk = await h.call('bk', method, path, method === 'GET' ? undefined : {});
