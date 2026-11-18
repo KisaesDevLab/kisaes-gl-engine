@@ -18,10 +18,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { accounts, importRows, importSessions } from '../db/schema/index.js';
+import { accounts, importRows, importSessions, transactions } from '../db/schema/index.js';
 import { importsRouter } from './imports.routes.js';
 import * as importsService from '../services/imports/imports.service.js';
 import * as batchService from '../services/imports/import-batch.service.js';
+import * as tieoutService from '../services/imports/import-tieout.service.js';
+import * as ledger from '../services/ledger.service.js';
 import { buildTrialBalance } from '../services/report.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
@@ -542,6 +544,33 @@ describe('U-272 QuickBooks Desktop retained earnings merge (qbd-retained-earning
     expect(u.status, JSON.stringify(u.json)).toBe(202);
     await batchService.__batchJobs.last;
     expect(await companySnapshot(c)).toEqual(before);
+  });
+});
+
+describe('P31 review S2: verify computes the tie-out under the company import lock', () => {
+  it('a change committed after the request started and before the lock is in the figures: 409, nothing verified, rows kept', async () => {
+    const id = await commit([
+      await upload('g-coa.csv', G_COA, 'coa', { source: 'generic' }),
+      await genericTb('g-tb.csv', gTb('1000.00', '700.00', '500.00', '200.00'), CONV),
+      await genericTb('g-ref.csv', gTb('1000.00', '700.00', '500.00', '200.00', '\n'), CONV, 'reference'),
+    ], 'generic');
+    expect((await tieout(id)).allZero).toBe(true);
+    const [opening] = await db.select().from(transactions).where(eq(transactions.importBatchId, id)).limit(1);
+    // Before the fix the tie-out was computed here, outside the lock, and this change was not in what got verified.
+    tieoutService.__tieoutTestHooks.beforeVerifyLock = async () => {
+      await ledger.voidTransaction(c.tenantId, opening!.id, 'changed during verify', c.userId);
+    };
+    try {
+      const v = await post(`/batches/${id}/verify`, {});
+      expect([v.status, v.json['error']?.code], JSON.stringify(v.json)).toEqual([409, 'TIEOUT_NOT_ZERO']);
+    } finally {
+      delete tieoutService.__tieoutTestHooks.beforeVerifyLock;
+    }
+    const b = await batchRow(id);
+    expect(b.verifiedAt).toBeNull();
+    expect((b.tieout as Body).allZero).toBe(false);
+    const ids = await sessionIds(id);
+    expect((await db.select().from(importRows).where(inArray(importRows.sessionId, ids))).length).toBeGreaterThan(0);
   });
 });
 

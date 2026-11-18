@@ -1646,7 +1646,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * 202 (423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429; staff confirm with confirmClosedPeriod when no
    * password is set); one closing_date_override audit row per batch. Re-import (by parsed-row SHA-256): 409
    * IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} at upload and commit; 409 IMPORT_PERIOD_OVERLAP {batchId|null,
-   * from, to} for journal dates overlapping a committed journal of the same source or another journal of the batch; an
+   * from, to} for journal dates overlapping a committed journal (any source, P31 review M5) or another journal of the batch; an
    * undone batch frees both. Upload takes role post|reference (reference files are never posted). Other refusals: 409
    * IMPORT_SESSION_IN_BATCH, IMPORT_TERMINAL, IMPORT_HAS_ERRORS, IMPORT_COMPANY_NOT_EMPTY, IMPORT_FISCAL_YEAR_LOCKED,
    * IMPORT_BATCH_UNDONE, IMPORT_BATCH_NOT_COMMITTED; 400 IMPORT_SOURCE_MISMATCH, IMPORT_BATCH_EMPTY. Rights: commit and
@@ -1728,7 +1728,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * IMPORT_HISTORY_GAP (days > 0 between them) | IMPORT_JOURNAL_BEFORE_OPENING, message, openingBalanceDate,
    * firstJournalDate, days?}]} on create and GET (live while draft or failed; kept in result.dateCheck once committed);
    * warnings never block. Several journal files per batch, each within the per-file caps; overlapping journal files
-   * in one batch or with a committed journal file of the same source are refused (409 IMPORT_PERIOD_OVERLAP), also
+   * in one batch or with a committed journal file of any source are refused (409 IMPORT_PERIOD_OVERLAP), also
    * re-checked inside the commit job under the company lock; open-item files are never overlap-checked. A conversion
    * batch (not Accounting Power) with no inventory valuation whose conversion-date trial balance (reference, or posted
    * on the conversion date) shows a nonzero balance on an inventory asset account (tagged, or an inventory part's)
@@ -1781,4 +1781,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * "<sessionId>:<first row>"; session result {created, skipped, documents}. Closing date, undo and re-import as
    * imports-batch-v1; never overlap-checked.
    */
-  'imports-transactions-v1',];
+  'imports-transactions-v1',
+  /**
+   * U-273 (ClientLedger P31 combined review fixes; no migration). Verify computes the tie-out under the company import
+   * lock, in the transaction that marks the batch verified and deletes its rows (409 IMPORT_BUSY is now answered before
+   * any tie-out). The undo job locks the accounts, contacts, items, tags and tag groups the batch created before its
+   * blocker sweep; a posting on such an account that waited fails 409 ACCOUNT_NOT_FOUND (no orphan lines). A batch left
+   * committing or undoing for over 60 s with no running job and a free lock is settled before the next commit or undo
+   * (failed IMPORT_INTERRUPTED, or committed), not only at engine start. A batch of kind transactions deletes its parsed
+   * rows in the commit transaction. Stored batch errors (and the old commit's session commitResult.error) say only
+   * "The import stopped at row N (CODE)."; details keep their lists, without accountKey. Journal overlap (409
+   * IMPORT_PERIOD_OVERLAP) counts committed journals of every source system. Inventory asset accounts are the
+   * company's (and tenant-wide ones). QuickBooks Online Paycheck / Payroll Check / Payroll Adjustment rows keep no
+   * Name or Memo (Q-P31m). Open-item amounts are formatted exactly.
+   */
+  'imports-review-fixes-v1',];

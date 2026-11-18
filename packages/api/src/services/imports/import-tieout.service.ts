@@ -429,7 +429,7 @@ export async function computeTieout(b: BatchRow, sessions: SessionRow[], opts: {
     balanceRows.push({ key, accountId: id, sourceExact: '0.00', booksExact: fmt(n), diffExact: fmt(n) });
   }
   if (valuationFileTotal) {
-    const ids = await inventoryAssetAccountIds(db, tenantId);
+    const ids = await inventoryAssetAccountIds(db, tenantId, companyId);
     const assetNets = await accountNets(tenantId, companyId, asOf, booksBatch, ids);
     const gl = [...assetNets.values()].reduce((s, v) => s.plus(v), ZERO);
     balanceRows.push({ key: 'valuation_vs_asset', accountId: null, sourceExact: fmt(valuationFileTotal), booksExact: fmt(gl), diffExact: fmt(gl.minus(valuationFileTotal)) });
@@ -502,30 +502,34 @@ export async function runTieout(tenantId: string, companyId: string, batchId: st
  * (import_rows and any legacy parsed_rows; review S8). A verified batch
  * answers 200 again with what it kept.
  */
+/** Test hook (NODE_ENV=test only): runs after the request's first read, before the lock is taken. */
+export const __tieoutTestHooks: { beforeVerifyLock?: (info: { batchId: string }) => void | Promise<void> } = {};
+
 export async function verifyBatch(
   tenantId: string, companyId: string, userId: string, batchId: string, opts: { requireReference: boolean },
 ): Promise<{ batch: BatchDto; tieout: Tieout }> {
   const b = await loadBatch(db, tenantId, companyId, batchId);
   assertCommitted(b);
   if (b.verifiedAt && b.tieout) return { batch: toBatchDto(b, await loadSessions(db, batchId)), tieout: b.tieout as Tieout };
-  const t = await computeTieout(b, await loadSessions(db, batchId), opts);
-  if (!t.allZero) {
-    await db.update(importBatches).set({ tieout: t as never, updatedAt: new Date() }).where(and(
-      eq(importBatches.id, batchId), eq(importBatches.status, 'committed'), sql`${importBatches.verifiedAt} IS NULL`,
-    ));
-    const diffs = differences(t);
-    throw AppError.conflict('The import does not tie out yet.', 'TIEOUT_NOT_ZERO', {
-      batchId, differenceCount: diffs.length, firstDifferences: diffs.slice(0, FIRST_DIFFERENCES),
-    });
-  }
-  return await db.transaction(async (tx) => {
+  if (process.env['NODE_ENV'] === 'test' && __tieoutTestHooks.beforeVerifyLock) await __tieoutTestHooks.beforeVerifyLock({ batchId });
+  const out = await db.transaction(async (tx): Promise<{ done: { batch: BatchDto; tieout: Tieout } } | { notZero: Tieout }> => {
     if (!(await tryCompanyImportLock(tx, companyId))) {
       throw AppError.conflict('Another import or undo is running for this company. Try again when it has finished.', 'IMPORT_BUSY', { batchId });
     }
     const locked = await loadBatch(tx, tenantId, companyId, batchId, true);
     assertCommitted(locked);
     const sessions = await loadSessions(tx, batchId, true);
-    if (locked.verifiedAt && locked.tieout) return { batch: toBatchDto(locked, sessions), tieout: locked.tieout as Tieout };
+    if (locked.verifiedAt && locked.tieout) return { done: { batch: toBatchDto(locked, sessions), tieout: locked.tieout as Tieout } };
+    // P31 review S2: the tie-out is computed here, under the company import lock with the batch and its
+    // sessions locked, so the figures kept as verified are the ones checked, and the source rows are
+    // deleted in the same transaction. A posting committed before this point is in the figures. (The
+    // reports read on their own connections: a posting that commits while they run is like one made
+    // just after the verify.)
+    const t = await computeTieout(locked, sessions, opts);
+    if (!t.allZero) {
+      await tx.update(importBatches).set({ tieout: t as never, updatedAt: new Date() }).where(eq(importBatches.id, batchId));
+      return { notZero: t };
+    }
     const now = new Date();
     t.verifiedAt = now.toISOString();
     const ids = sessions.map((s) => s.id);
@@ -540,8 +544,15 @@ export async function verifyBatch(
     await auditLog(tenantId, 'update', 'import_batch', batchId, { verifiedAt: null }, {
       verifiedAt: t.verifiedAt, asOf: t.asOf, books: t.books, parsedRowsDeleted: purged,
     }, userId, tx);
-    return { batch: toBatchDto(after!, await loadSessions(tx, batchId)), tieout: t };
+    return { done: { batch: toBatchDto(after!, await loadSessions(tx, batchId)), tieout: t } };
   });
+  if ('notZero' in out) {
+    const diffs = differences(out.notZero);
+    throw AppError.conflict('The import does not tie out yet.', 'TIEOUT_NOT_ZERO', {
+      batchId, differenceCount: diffs.length, firstDifferences: diffs.slice(0, FIRST_DIFFERENCES),
+    });
+  }
+  return out.done;
 }
 
 export interface SpotCheckItem { key: string; label: string; done: boolean; note?: string | null }

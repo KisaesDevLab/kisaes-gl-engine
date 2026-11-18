@@ -15,6 +15,7 @@ import {
   SOURCE_SYSTEM_ROLE_TYPES,
   sourceRetainedEarnings,
   QBO_TXN_TYPE_LABELS,
+  QBO_PAYCHECK_TYPES,
   type CanonicalCoaRow,
   type CanonicalContactRow,
   type CanonicalGlEntry,
@@ -565,6 +566,12 @@ export async function parseGl(
     if (invalid) {
       current = null;
       return;
+    }
+    // Q-P31m (P31 review M7): a paycheck's Name and Memo/Description name the employee; neither is
+    // kept, so the name never reaches import_rows, the preview or the posted memo (as for QBD).
+    const paycheck = QBO_PAYCHECK_TYPES.has(first.txnType.trim().toLowerCase());
+    if (paycheck) {
+      for (const l of current) { l.name = ''; l.memo = ''; }
     }
     const lines: CanonicalGlLine[] = current.map((l) => {
       const acct = splitQboAccount(l.account || '');

@@ -62,6 +62,7 @@ import { parseItems, parseInventoryValuation, valuationTotal } from './adapters/
 import { parseTransactionsFile } from './adapters/transactions.js';
 import { INVENTORY_ASSET_TAG } from '../inventory.service.js';
 import { postTransaction } from '../ledger.service.js';
+import { importAmountText } from './import-amount.js';
 import { Decimal } from 'decimal.js';
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -165,14 +166,16 @@ export async function assertNotAlreadyCommitted(
 
 /**
  * U-263: 409 IMPORT_PERIOD_OVERLAP when a journal file's dates overlap a
- * journal file of the same source that a committed batch holds in this
- * company (an undone batch frees it).
+ * journal file that a committed batch holds in this company (an undone batch
+ * frees it). Any source counts (P31 review M5): the same months imported once
+ * from QuickBooks Desktop and once from a Generic file would post twice.
+ * `_sourceSystem` is kept for the callers' signature; it no longer narrows.
  */
 export async function assertNoCommittedOverlap(
   ex: DbOrTx,
   tenantId: string,
   companyId: string,
-  sourceSystem: string,
+  _sourceSystem: string,
   from: string | null,
   to: string | null,
   exceptSessionIds: string[] = [],
@@ -184,7 +187,6 @@ export async function assertNoCommittedOverlap(
     .where(and(
       eq(importSessions.tenantId, tenantId),
       eq(importSessions.companyId, companyId),
-      eq(importSessions.sourceSystem, sourceSystem),
       eq(importSessions.kind, 'gl_transactions'),
       eq(importSessions.activeCommit, true),
       sql`${importSessions.dateFrom} <= ${to} AND ${importSessions.dateTo} >= ${from}`,
@@ -1597,12 +1599,18 @@ async function historyAccount(ctx: CommitSessionContext, side: HistorySide): Pro
   return id;
 }
 
-/** The tenant's inventory asset accounts: tagged inventory_asset, or the asset account of an inventory part. */
-export async function inventoryAssetAccountIds(tx: DbOrTx, tenantId: string): Promise<string[]> {
+/**
+ * The company's inventory asset accounts: tagged inventory_asset, or the asset
+ * account of an inventory part. The company's own accounts and items and the
+ * tenant-wide ones (company_id null); never another company's (P31 review M4).
+ */
+export async function inventoryAssetAccountIds(tx: DbOrTx, tenantId: string, companyId: string): Promise<string[]> {
   const r = await tx.execute(sql`
     SELECT a.id::text AS id FROM accounts a
-    WHERE a.tenant_id = ${tenantId} AND (a.system_tag = ${INVENTORY_ASSET_TAG} OR EXISTS (
-      SELECT 1 FROM items i WHERE i.tenant_id = a.tenant_id AND i.item_type = 'inventory_part' AND i.asset_account_id = a.id))`);
+    WHERE a.tenant_id = ${tenantId} AND (a.company_id = ${companyId} OR a.company_id IS NULL)
+      AND (a.system_tag = ${INVENTORY_ASSET_TAG} OR EXISTS (
+        SELECT 1 FROM items i WHERE i.tenant_id = a.tenant_id AND (i.company_id = ${companyId} OR i.company_id IS NULL)
+          AND i.item_type = 'inventory_part' AND i.asset_account_id = a.id))`);
   return (r.rows as Array<{ id: string }>).map((x) => x.id);
 }
 
@@ -1683,7 +1691,7 @@ async function historyRedirect(
   // U-265: with an inventory valuation in the batch, the inventory asset accounts (tagged, or named by a part,
   // the batch's items included: they commit first) send their history to "Inventory before conversion".
   if (shared.inventory) {
-    for (const id of await inventoryAssetAccountIds(ctx.tx, ctx.tenantId)) sideOf.set(id, 'inventory');
+    for (const id of await inventoryAssetAccountIds(ctx.tx, ctx.tenantId, ctx.companyId)) sideOf.set(id, 'inventory');
   }
   let moved = 0;
   return {
@@ -2164,7 +2172,7 @@ async function commitTrialBalance(
       const key = r.accountNumber ?? r.accountName ?? '?';
       if (!fallbackOn) {
         throw AppError.unprocessableEntity(
-          `Account "${key}" not found.`,
+          `The account at row ${r.rowNumber} is not in the chart.`,
           'IMPORT_UNKNOWN_ACCOUNT',
           { rowNumber: r.rowNumber },
         );
@@ -2341,7 +2349,7 @@ async function commitGl(
         if (!fallbackOn) {
           // The batch transaction rolls back: nothing of the batch is posted.
           throw AppError.unprocessableEntity(
-            `JE on ${e.date} references unknown account "${key}"`,
+            `The journal entry at row ${e.rowNumber} names an account that is not in the chart.`,
             'IMPORT_UNKNOWN_ACCOUNT',
             { rowNumber: e.rowNumber, failedAtIndex: idx, accountKey: line.accountNumber ?? line.accountName },
           );
@@ -2425,7 +2433,7 @@ export async function assertValuationNotNeeded(
   ctx: CommitSessionContext,
   sessions: Array<typeof importSessions.$inferSelect>,
 ): Promise<void> {
-  const inventoryIds = new Set(await inventoryAssetAccountIds(ctx.tx, ctx.tenantId));
+  const inventoryIds = new Set(await inventoryAssetAccountIds(ctx.tx, ctx.tenantId, ctx.companyId));
   if (inventoryIds.size === 0) return;
   const { resolve } = await accountResolver(ctx);
   for (const s of sessions) {
@@ -2457,12 +2465,21 @@ const SOURCE_LABEL: Record<string, string> = {
   accounting_power: 'Accounting Power',
 };
 
+/**
+ * An open item's amount as exact text: the absolute value with at least 2
+ * places and never rounded (P31 review M8; the parser already refuses more
+ * than 2 places, IMPORT_OPEN_ITEM_CENTS, so no rounding call sits on this path).
+ */
+export function openItemAmountText(value: string): string {
+  return importAmountText(new Decimal(value).abs());
+}
+
 /** The memo of an imported open item: where it came from, its number and, when partly paid, its original amount. */
 function openItemMemo(sourceSystem: string, r: CanonicalOpenItemRow): string {
   const open = new Decimal(r.openBalance).abs();
   const original = r.originalAmount !== undefined ? new Decimal(r.originalAmount).abs() : null;
   const parts = [`Open balance brought in from ${SOURCE_LABEL[sourceSystem] ?? sourceSystem}`, `${r.sourceType}${r.number ? ` ${r.number}` : ''}`];
-  if (original && !original.equals(open)) parts.push(`original amount ${original.toFixed(2)}, open ${open.toFixed(2)}`);
+  if (original && !original.equals(open)) parts.push(`original amount ${importAmountText(original)}, open ${importAmountText(open)}`);
   return parts.join('; ');
 }
 
@@ -2557,7 +2574,7 @@ async function commitOpenItems(
         contactsCreated++;
       }
     }
-    const amount = new Decimal(r.openBalance).abs().toFixed(2);
+    const amount = openItemAmountText(r.openBalance);
     const memo = `${openItemMemo(sourceSystem, r)}${job ? `; job ${job}` : ''}`;
     const description = r.docType === 'invoice' || r.docType === 'bill' ? 'Open balance brought in' : 'Open credit brought in';
     let id: string;
@@ -2836,7 +2853,7 @@ async function commitValuation(
     for (const l of chunk) {
       const m = byItem.get(l.itemId);
       if (!m || !new Decimal(m.quantity).equals(l.quantityChange) || !new Decimal(m.value).equals(l.valueChange)) {
-        throw AppError.unprocessableEntity(`The opening stock of "${l.row.item}" did not post at the report's quantity and value.`,
+        throw AppError.unprocessableEntity(`The opening stock at row ${l.row.rowNumber} did not post at the report's quantity and value.`,
           'IMPORT_VALUATION_MISMATCH', { rowNumber: l.row.rowNumber });
       }
       total = total.plus(l.valueChange);

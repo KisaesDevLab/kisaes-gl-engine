@@ -687,12 +687,20 @@ async function claimForCommit(req: CommitRequest): Promise<void> {
 
 /** Starts a commit: checks, claims, schedules the job. The route answers 202 {batchId}. */
 export async function startCommit(req: CommitRequest): Promise<{ batchId: string }> {
+  await settleStaleBatches(req.tenantId, req.companyId);
   const b = await loadBatch(db, req.tenantId, req.companyId, req.batchId);
   const sessions = await loadSessions(db, req.batchId);
   await precheckCommit(req.tenantId, req.companyId, b, sessions);
   req.override = await closedPeriodCheck(req, earliestPostingDate(sessions, ((b.options as BatchOptions | null) ?? {}).historyFrom));
-  await claimForCommit(req);
+  // Marked running before the claim commits, so no moment shows it 'committing' with no job here (S6).
+  const mine = !progressByBatch.has(req.batchId);
   setProgress(req.batchId, 'queued', 0, sessions.length);
+  try {
+    await claimForCommit(req);
+  } catch (e) {
+    if (mine) progressByBatch.delete(req.batchId);
+    throw e;
+  }
   scheduleCommitJob(req);
   return { batchId: req.batchId };
 }
@@ -711,6 +719,17 @@ function scheduleCommitJob(req: CommitRequest): void {
   }));
 }
 
+/**
+ * P31 review M6: the message a stored batch error carries. The error is kept
+ * in the company file (and its backups and transfer files), so it says only
+ * the code and the row: never the thrown message, which can name an account,
+ * an item or a contact, or carry an amount. The request that ran the job
+ * synchronously (the old one-session commit) still answers the full error.
+ */
+export function storedErrorMessage(code: string, rowNumber?: number): string {
+  return `The import stopped${rowNumber !== undefined ? ` at row ${rowNumber}` : ''} (${code}).`;
+}
+
 function errorOf(e: unknown, sessionId: string | null): BatchError {
   const pgCode = (e as { code?: unknown; cause?: { code?: unknown } } | null)?.cause?.code ?? (e as { code?: unknown })?.code;
   const constraint = String((e as { constraint?: unknown; cause?: { constraint?: unknown } })?.cause?.constraint
@@ -723,10 +742,13 @@ function errorOf(e: unknown, sessionId: string | null): BatchError {
     const rowNumber = typeof details['rowNumber'] === 'number' ? details['rowNumber'] as number : undefined;
     // U-268: the column at fault, beside rowNumber (it stays in details too).
     const field = typeof details['field'] === 'string' ? details['field'] as string : undefined;
-    const { rowNumber: _r, failedAtIndex: _f, originalError: _o, ...rest } = details as Record<string, unknown>;
+    // accountKey (a source account name or number) goes with the message (M6); the
+    // mapping lists (unmappedAccountKeys, accounts[].sourceKey) stay: the desktop maps from them.
+    const { rowNumber: _r, failedAtIndex: _f, originalError: _o, accountKey: _k, ...rest } = details as Record<string, unknown>;
+    const code = e.code ?? 'IMPORT_POST_FAILED';
     return {
-      code: e.code ?? 'IMPORT_POST_FAILED',
-      message: e.message,
+      code,
+      message: storedErrorMessage(code, rowNumber),
       status: e.statusCode,
       ...(rowNumber !== undefined ? { rowNumber } : {}),
       ...(field !== undefined ? { field } : {}),
@@ -819,6 +841,18 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
       await tx.update(importSessions).set({ status: 'committed', committedAt: new Date(), updatedAt: new Date() })
         .where(inArray(importSessions.id, refs));
     }
+    // P31 review S7: a spreadsheet documents batch (kind transactions) has no tie-out (no conversion date,
+    // no reference trial balance), so nothing reads its parsed rows after the commit: they go now, in the
+    // commit transaction (a failed commit keeps them for the retry). Conversion batches keep theirs until
+    // verify or undo (the tie-out needs them); one-session batches (the old commit) keep the old behaviour.
+    if (b.kind === 'transactions') {
+      const ids = sessions.map((s) => s.id);
+      if (ids.length > 0) {
+        await tx.delete(importRows).where(inArray(importRows.sessionId, ids));
+        await tx.update(importSessions).set({ parsedRows: null, updatedAt: new Date() })
+          .where(and(inArray(importSessions.id, ids), sql`${importSessions.parsedRows} IS NOT NULL`));
+      }
+    }
     // U-267: how the commit resolved merged and mapped chart rows, for the tie-out.
     if (shared.aliases.size > 0) priorValues.accountAliases = Object.fromEntries(shared.aliases);
     // What undo compares against (database clock, review: one stamp in SQL).
@@ -860,6 +894,7 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
 export async function commitSingleSession(
   tenantId: string, companyId: string, userId: string, sessionId: string,
 ): Promise<{ batchId: string; result: ImportCommitResult }> {
+  await settleStaleBatches(tenantId, companyId);
   const batchId = await db.transaction(async (tx) => {
     const [s] = await tx.select().from(importSessions).where(and(
       eq(importSessions.id, sessionId), eq(importSessions.tenantId, tenantId), eq(importSessions.companyId, companyId),
@@ -896,7 +931,8 @@ export async function commitSingleSession(
     const results = await runCommitJob({ tenantId, companyId, userId, batchId, legacy: true });
     return { batchId, result: results[sessionId] ?? { created: 0 } };
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+    // Stored with the session: code and row only (M6); the response still carries the full error.
+    const message = errorOf(e, sessionId).message;
     await db.update(importSessions).set({
       status: 'failed', commitResult: { error: message, created: 0 } as never, updatedAt: new Date(),
     }).where(eq(importSessions.id, sessionId));
@@ -925,6 +961,7 @@ async function earliestBatchTxnDate(ex: DbOrTx, tenantId: string, batchId: strin
  * committed with error.
  */
 export async function startUndo(req: CommitRequest): Promise<{ batchId: string }> {
+  await settleStaleBatches(req.tenantId, req.companyId);
   const b = await loadBatch(db, req.tenantId, req.companyId, req.batchId);
   if (b.status === 'committing' || b.status === 'undoing') throw busy({ batchId: b.id, status: b.status });
   if (b.status === 'undone') throw AppError.conflict('This import was already undone.', 'IMPORT_BATCH_UNDONE', { batchId: b.id });
@@ -938,19 +975,25 @@ export async function startUndo(req: CommitRequest): Promise<{ batchId: string }
     const { blockers } = await findUndoBlockers(tx, req.tenantId, req.batchId, created, stamps);
     if (blockers.length > 0) throw undoBlocked(blockers);
   });
-  await db.transaction(async (tx) => {
-    if (!(await tryCompanyImportLock(tx, req.companyId))) throw busy();
-    const locked = await loadBatch(tx, req.tenantId, req.companyId, req.batchId, true);
-    const [other] = await tx.select({ id: importBatches.id, status: importBatches.status }).from(importBatches).where(and(
-      eq(importBatches.tenantId, req.tenantId), eq(importBatches.companyId, req.companyId), ne(importBatches.id, req.batchId),
-      inArray(importBatches.status, ['committing', 'undoing']),
-    )).limit(1);
-    if (other) throw busy({ batchId: other.id, status: other.status });
-    if (locked.status !== 'committed') throw busy({ batchId: locked.id, status: locked.status });
-    await tx.update(importBatches).set({ status: 'undoing', error: null, updatedAt: new Date() }).where(eq(importBatches.id, req.batchId));
-    await claimAndRecord(tx, 'import_batch', req.batchId);
-  });
+  const mine = !progressByBatch.has(req.batchId);
   setProgress(req.batchId, 'undo queued', 0, 1);
+  try {
+    await db.transaction(async (tx) => {
+      if (!(await tryCompanyImportLock(tx, req.companyId))) throw busy();
+      const locked = await loadBatch(tx, req.tenantId, req.companyId, req.batchId, true);
+      const [other] = await tx.select({ id: importBatches.id, status: importBatches.status }).from(importBatches).where(and(
+        eq(importBatches.tenantId, req.tenantId), eq(importBatches.companyId, req.companyId), ne(importBatches.id, req.batchId),
+        inArray(importBatches.status, ['committing', 'undoing']),
+      )).limit(1);
+      if (other) throw busy({ batchId: other.id, status: other.status });
+      if (locked.status !== 'committed') throw busy({ batchId: locked.id, status: locked.status });
+      await tx.update(importBatches).set({ status: 'undoing', error: null, updatedAt: new Date() }).where(eq(importBatches.id, req.batchId));
+      await claimAndRecord(tx, 'import_batch', req.batchId);
+    });
+  } catch (e) {
+    if (mine) progressByBatch.delete(req.batchId);
+    throw e;
+  }
   __batchJobs.last = runWithoutIdempotency(() => new Promise<void>((resolve) => {
     setImmediate(() => { void runUndoJob(req).catch(() => undefined).finally(resolve); });
   }));
@@ -1075,16 +1118,51 @@ export async function runUndoJob(req: CommitRequest): Promise<void> {
 export async function recoverInterruptedBatches(): Promise<number> {
   const stale = await db.select({ id: importBatches.id, companyId: importBatches.companyId, status: importBatches.status })
     .from(importBatches).where(inArray(importBatches.status, ['committing', 'undoing']));
+  return settleBatches(stale, 0, 'The engine stopped while this import was running; nothing was posted.');
+}
+
+/**
+ * P31 review S6: a running state older than this, with no job in this
+ * process and the company import lock free, is stale. The age keeps another
+ * server process's batch alone in the moment between its claim and its job
+ * taking the lock (a job holds the lock for as long as it runs).
+ */
+export const STALE_BATCH_AFTER_MS = 60_000;
+
+/**
+ * P31 review S6: settles a company's batches a job left 'committing' or
+ * 'undoing' when its final status write failed (for example a lost
+ * connection), the way the engine start does, so the company's imports are
+ * not IMPORT_BUSY until a restart. Called before a commit or undo starts.
+ */
+export async function settleStaleBatches(tenantId: string, companyId: string): Promise<number> {
+  const stale = await db.select({ id: importBatches.id, companyId: importBatches.companyId, status: importBatches.status })
+    .from(importBatches).where(and(
+      eq(importBatches.tenantId, tenantId), eq(importBatches.companyId, companyId),
+      inArray(importBatches.status, ['committing', 'undoing']),
+      sql`${importBatches.updatedAt} < now() - make_interval(secs => ${STALE_BATCH_AFTER_MS / 1000})`,
+    ));
+  if (stale.length === 0) return 0;
+  return settleBatches(stale, STALE_BATCH_AFTER_MS, 'The import stopped before it finished; nothing was posted.');
+}
+
+/** 'committing' -> 'failed' (IMPORT_INTERRUPTED; its transaction rolled back), 'undoing' -> 'committed'; under the company import lock. */
+async function settleBatches(
+  stale: Array<{ id: string; companyId: string; status: string }>, minAgeMs: number, message: string,
+): Promise<number> {
   let settled = 0;
   for (const s of stale) {
     if (progressByBatch.has(s.id)) continue;
     const done = await db.transaction(async (tx) => {
       if (!(await tryCompanyImportLock(tx, s.companyId))) return false;
       const to = s.status === 'committing'
-        ? { status: 'failed', error: { code: 'IMPORT_INTERRUPTED', message: 'The engine stopped while this import was running; nothing was posted.' } }
+        ? { status: 'failed', error: { code: 'IMPORT_INTERRUPTED', message } }
         : { status: 'committed' };
       const r = await tx.update(importBatches).set({ ...to, updatedAt: new Date() } as never)
-        .where(and(eq(importBatches.id, s.id), eq(importBatches.status, s.status))).returning({ id: importBatches.id });
+        .where(and(
+          eq(importBatches.id, s.id), eq(importBatches.status, s.status),
+          minAgeMs > 0 ? sql`${importBatches.updatedAt} < now() - make_interval(secs => ${minAgeMs / 1000})` : undefined,
+        )).returning({ id: importBatches.id });
       return r.length > 0;
     });
     if (done) settled++;

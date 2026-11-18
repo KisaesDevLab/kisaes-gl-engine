@@ -86,10 +86,15 @@ export async function loadCreatedSets(ex: DbOrTx, tenantId: string, batchId: str
   const txns = await ids('transactions', lock);
   const lines = txns.length === 0 ? [] : ((await ex.execute(sql`
     SELECT id::text AS id FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id = ANY(${pgArray(txns)}::uuid[])`)).rows as Array<{ id: string }>).map((r) => r.id);
+  // P31 review S5: with `lock`, the master records the batch created are locked too, before the
+  // blocker sweep. A posting updates its accounts' stored balance (and a tag is a foreign key), so a
+  // posting on one of them waits for the undo: it either committed first (the sweep sees it) or
+  // finds the account gone (updateAccountBalances refuses). Contacts and items have no foreign keys;
+  // the lock does not stop a posting on them.
   return {
     txns, lines,
-    accounts: await ids('accounts'), contacts: await ids('contacts'), items: await ids('items'),
-    tags: await ids('tags'), tagGroups: await ids('tag_groups'),
+    accounts: await ids('accounts', lock), contacts: await ids('contacts', lock), items: await ids('items', lock),
+    tags: await ids('tags', lock), tagGroups: await ids('tag_groups', lock),
   };
 }
 

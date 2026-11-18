@@ -2033,10 +2033,15 @@ async function updateAccountBalances(
   for (const accountId of [...deltas.keys()].sort()) {
     const delta = deltas.get(accountId)!;
     if (!delta.isZero()) {
-      await executor.update(accounts).set({
+      const updated = await executor.update(accounts).set({
         balance: sql`${accounts.balance} + ${delta.toFixed(4)}::decimal`,
         updatedAt: new Date(),
-      }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId)));
+      }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, accountId))).returning({ id: accounts.id });
+      // P31 review S5: an account deleted while this posting waited for its row (an import undo)
+      // must not leave journal lines pointing at nothing (journal_lines.account_id has no FK).
+      if (updated.length === 0) {
+        throw AppError.conflict('An account on this transaction no longer exists.', 'ACCOUNT_NOT_FOUND', { accountId });
+      }
     }
   }
 }
