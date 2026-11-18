@@ -37,7 +37,8 @@ const HEADER = 'group_id,type,date,number,name,due_date,memo,line_account,line_i
 beforeEach(async () => {
   h.extraCleanup = [cleanImports];
   await h.start([['/api/v1/imports', importsRouter]]);
-  c = await h.company();
+  // A company with a sales tax rate: the imported invoices must still carry none (Q-P31i).
+  c = await h.company('8.25');
   const acct = async (id: string) => (await db.select().from(accounts).where(eq(accounts.id, id)))[0]!;
   const income = await acct(c.roles['income']!);
   const expense = await acct(c.roles['expense']!);
@@ -71,6 +72,9 @@ function goodRows() {
     row('JE-1', 'journal_entry', '2026-09-30', 'ADJ-9', '', '', 'Reclass', ref.income, '', 'Move', '', '', '70.50'),
     row('JE-1', 'journal_entry', '2026-09-30', 'ADJ-9', '', '', 'Reclass', ref.income, '', 'Move', '', '', '5.00'),
     row('JE-1', 'journal_entry', '2026-09-30', 'ADJ-9', '', '', 'Reclass', ref.income, '', 'Zero line', '', '0', ''),
+    // No number, a signed line_amount (positive = debit).
+    row('JE-2', 'journal_entry', '2026-09-30', '', '', '', '', ref.expense, '', '', '12.00'),
+    row('JE-2', 'journal_entry', '2026-09-30', '', '', '', '', ref.income, '', '', '-12.00'),
   ];
 }
 
@@ -117,9 +121,9 @@ describe('U-268 spreadsheet documents: parse', () => {
     const grid = csv(goodRows()).trim().split('\r\n').map((l) => l.split(','));
     const { documents, errors, lineCount } = parseTransactions(grid);
     expect(errors).toEqual([]);
-    expect(lineCount).toBe(10);
+    expect(lineCount).toBe(12);
     expect(documents.map((d) => [d.groupId, d.docType, d.lines.length])).toEqual([
-      ['INV-1', 'invoice', 2], ['INV-2', 'invoice', 2], ['B-1', 'bill', 2], ['JE-1', 'journal_entry', 3],
+      ['INV-1', 'invoice', 2], ['INV-2', 'invoice', 2], ['B-1', 'bill', 2], ['JE-1', 'journal_entry', 3], ['JE-2', 'journal_entry', 2],
     ]);
     expect(documents[2]!.lines.map((l) => l.amount)).toEqual(['410.1234', '89.8766']);
     expect(documents[3]!.lines.map((l) => l.amount)).toEqual(['75.50', '-70.50', '-5.00']);
@@ -163,23 +167,45 @@ describe('U-268 spreadsheet documents: parse', () => {
       row('I9', 'invoice', '2026-09-30', '', 'Nobody Ltd', '', '', 'No Such Account', 'No Such Item', '', '10.00', '', '', 'No Such Tag'),
     ]));
     expect(s.validationErrors.map((e) => [e.rowNumber, e.field, e.code])).toEqual([
-      [12, 'name', 'IMPORT_UNKNOWN_REF'], [12, 'line_account', 'IMPORT_UNKNOWN_REF'], [12, 'line_item', 'IMPORT_UNKNOWN_REF'], [12, 'line_tag', 'IMPORT_UNKNOWN_REF'],
+      [14, 'name', 'IMPORT_UNKNOWN_REF'], [14, 'line_account', 'IMPORT_UNKNOWN_REF'], [14, 'line_item', 'IMPORT_UNKNOWN_REF'], [14, 'line_tag', 'IMPORT_UNKNOWN_REF'],
     ]);
     // Messages never carry the names.
     expect(s.validationErrors.some((e) => /Nobody|No Such/.test(e.message))).toBe(false);
-    expect(s.preview).toMatchObject({ totalRows: 11, documentCount: 5, documents: { invoice: 3, bill: 1, journal_entry: 1 } });
+    expect(s.preview).toMatchObject({ totalRows: 13, documentCount: 6, documents: { invoice: 3, bill: 1, journal_entry: 2 } });
     // Re-checked at commit (a chart or name file of the same batch could bring them): the batch fails, all listed.
     const id = await batchOf(s.session.id);
     expect((await run(`/batches/${id}/commit`)).status).toBe(202);
     const g = await h.request('GET', `/api/v1/imports/batches/${id}`, c.token);
     expect(g.json['batch'].status).toBe('failed');
-    expect(g.json['error']).toMatchObject({ code: 'IMPORT_UNKNOWN_REF', rowNumber: 12, field: 'name', details: { refCount: 4 } });
+    expect(g.json['error']).toMatchObject({ code: 'IMPORT_UNKNOWN_REF', rowNumber: 14, field: 'name', details: { refCount: 4 } });
     expect(await batchTxns(id)).toHaveLength(0);
     // Other upload problems block before the 202.
     const bad = await upload(csv([row('J', 'journal_entry', '2026-09-30', '', '', '', '', ref.income, '', '', '', '10.00')]));
     const id2 = await batchOf(bad.session.id);
     const r = await post(`/batches/${id2}/commit`, { backupRef: 'x.clb' });
     expect([r.status, r.json['error'].code]).toEqual([409, 'IMPORT_HAS_ERRORS']);
+  });
+
+  it('xlsx: number cells are their exact raw values, float noise is refused, date cells and serials are dates', async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Transactions');
+    ws.addRow(HEADER.split(','));
+    const cells = (g: string, date: unknown, amount: unknown) =>
+      ['', 'invoice', date, '', 'Bluestem Veterinary Clinic', '', '', ref.income, '', '', amount].map((v, i) => (i === 0 ? g : v));
+    ws.addRow(cells('X1', new Date(Date.UTC(2026, 8, 15)), 1200.25));
+    ws.addRow(cells('X2', 45658, 1234567.5));
+    ws.addRow(cells('X3', '2026-09-15', 0.1 + 0.2));
+    const buf = Buffer.from(await wb.xlsx.writeBuffer() as ArrayBuffer);
+    const s = await importsService.createSession({
+      tenantId: c.tenantId, companyId: c.companyId, userId: c.userId,
+      file: { originalname: 't.xlsx', buffer: buf }, kind: 'transactions', sourceSystem: 'generic', options: {} as never,
+    });
+    expect(s.validationErrors.map((e) => [e.rowNumber, e.field, e.code])).toEqual([[4, 'line_amount', 'IMPORT_AMOUNT_INVALID']]);
+    const docs = s.preview.sampleRows as Body[];
+    expect(docs.map((d) => [d.groupId, d.date, d.lines[0].amount])).toEqual([
+      ['X1', '2026-09-15', '1200.25'], ['X2', '2025-01-01', '1234567.50'],
+    ]);
   });
 
   it('a transactions file is Generic only', async () => {
@@ -197,10 +223,10 @@ describe('U-268 spreadsheet documents: commit, undo, re-commit', () => {
     const { id, sessionId } = await commitFile(csv(goodRows()));
     const b = await batchRow(id);
     expect(b.status).toBe('committed');
-    expect((b.result as Body).sessions[sessionId]).toEqual({ created: 4, skipped: 0, documents: { invoice: 2, bill: 1, journal_entry: 1 } });
+    expect((b.result as Body).sessions[sessionId]).toEqual({ created: 5, skipped: 0, documents: { invoice: 2, bill: 1, journal_entry: 2 } });
 
     const docs = await batchTxns(id);
-    expect(docs).toHaveLength(4);
+    expect(docs).toHaveLength(5);
     expect(docs.every((d) => d.source === 'import_transactions' && d.sourceId?.startsWith(`${sessionId}:`))).toBe(true);
     const inv1 = docs.find((d) => d.txnType === 'invoice' && d.txnNumber === '1001')!;
     expect(inv1).toMatchObject({ txnDate: '2026-09-15', dueDate: '2026-10-15', memo: 'September work', contactId: c.customer });
@@ -214,7 +240,7 @@ describe('U-268 spreadsheet documents: commit, undo, re-commit', () => {
     const bill = docs.find((d) => d.txnType === 'bill')!;
     expect(bill.vendorInvoiceNumber).toBe('V-778');
     expect(Number(bill.total).toFixed(4)).toBe('500.0000');
-    const je = docs.find((d) => d.txnType === 'journal_entry')!;
+    const je = docs.find((d) => d.txnType === 'journal_entry' && d.txnNumber === 'ADJ-9')!;
     expect(je.txnNumber).toBe('ADJ-9');
     const jl = await db.select().from(journalLines).where(eq(journalLines.transactionId, je.id));
     expect(jl.map((l) => [Number(l.debit).toFixed(2), Number(l.credit).toFixed(2)]).sort()).toEqual([['0.00', '5.00'], ['0.00', '70.50'], ['75.50', '0.00']]);
@@ -258,7 +284,7 @@ describe('U-268 spreadsheet documents: commit, undo, re-commit', () => {
   it('undo removes every document and gives the invoice counter back; a re-commit after undo creates all of them again', async () => {
     const before = await companySnapshot(c);
     const { id } = await commitFile(csv(goodRows()));
-    expect(await batchTxns(id)).toHaveLength(4);
+    expect(await batchTxns(id)).toHaveLength(5);
     const u = await run(`/batches/${id}/undo`, { backupRef: 'before-undo.clb' });
     expect(u.status, JSON.stringify(u.json)).toBe(202);
     expect((await batchRow(id)).status).toBe('undone');
@@ -268,15 +294,17 @@ describe('U-268 spreadsheet documents: commit, undo, re-commit', () => {
     const again = await commitFile(csv(goodRows()));
     expect((await batchRow(again.id)).status).toBe('committed');
     const docs = await batchTxns(again.id);
-    expect(docs.map((d) => d.txnType).sort()).toEqual(['bill', 'invoice', 'invoice', 'journal_entry']);
+    expect(docs.map((d) => d.txnType).sort()).toEqual(['bill', 'invoice', 'invoice', 'journal_entry', 'journal_entry']);
   });
 
-  it('a closed period: 423 without the closing-date password, 403 when wrong, one override audit row when right', async () => {
-    const s = await upload(csv(goodRows()));
-    const id = await batchOf(s.session.id);
+  it('a closed period: the upload has no row problem; 423 without the closing-date password, 403 when wrong, one override audit row when right', async () => {
+    // The closing date is set before the upload, as in use: the upload is clean (the commit asks for the password).
     await db.update(companies).set({
       lockDate: '2026-09-16', lockDateSetAt: new Date(), lockDateSetBy: c.userId, closingPasswordHash: await hashClosingPassword('Closing-Pass-1'),
     }).where(eq(companies.id, c.companyId));
+    const s = await upload(csv(goodRows()));
+    expect(s.validationErrors).toEqual([]);
+    const id = await batchOf(s.session.id);
     const none = await post(`/batches/${id}/commit`, { backupRef: 'x.clb' });
     expect([none.status, none.json['error'].code]).toEqual([423, 'TB_PERIOD_LOCKED']);
     const wrong = await post(`/batches/${id}/commit`, { backupRef: 'x.clb', closingPassword: 'nope' });
@@ -285,7 +313,7 @@ describe('U-268 spreadsheet documents: commit, undo, re-commit', () => {
     const ok = await run(`/batches/${id}/commit`, { backupRef: 'x.clb', closingPassword: 'Closing-Pass-1' });
     expect(ok.status, JSON.stringify(ok.json)).toBe(202);
     expect((await batchRow(id)).status).toBe('committed');
-    expect(await batchTxns(id)).toHaveLength(4);
+    expect(await batchTxns(id)).toHaveLength(5);
     const overrides = await db.select().from(auditLog).where(and(eq(auditLog.tenantId, c.tenantId), eq(auditLog.entityType, 'closing_date_override')));
     expect(overrides).toHaveLength(1);
   });

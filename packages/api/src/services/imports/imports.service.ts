@@ -970,11 +970,9 @@ async function validateAgainstDb(
   }
   if (kind === 'transactions') {
     // U-268: names, accounts, items and tags the company doesn't have (re-checked at commit,
-    // where a chart or name file of the same batch counts), and the closing date.
-    const docs = (parsedAny as CanonicalTxnDocument[]) ?? [];
-    const errs = await validateTransactionRefs(tenantId, companyId, docs);
-    errs.push(...(await checkLockDate(tenantId, companyId, Array.from(new Set(docs.map((d) => d.date))))));
-    return errs;
+    // where a chart or name file of the same batch counts). No closing-date row error here: a
+    // document in a closed period is the commit's 423 and its closing-date password (U-262).
+    return await validateTransactionRefs(tenantId, companyId, (parsedAny as CanonicalTxnDocument[]) ?? []);
   }
   if (kind === 'inventory_valuation') {
     // U-265: opening stock is dated the report date; without one it can't post.
