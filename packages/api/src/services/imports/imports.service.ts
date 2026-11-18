@@ -2383,7 +2383,7 @@ export async function assertValuationNotNeeded(
       throw AppError.unprocessableEntity(
         'The trial balance shows an inventory balance. Add the Inventory Valuation Summary as of the conversion date.',
         'IMPORT_VALUATION_REQUIRED',
-        { sessionId: s.id, accounts: nonzero.map(([sourceKey, v]) => ({ sourceKey, balance: v.toFixed() })) },
+        { sessionId: s.id, accounts: nonzero.map(([sourceKey, v]) => ({ sourceKey, balance: v.toFixed(Math.max(2, v.decimalPlaces())) })) },
       );
     }
   }
