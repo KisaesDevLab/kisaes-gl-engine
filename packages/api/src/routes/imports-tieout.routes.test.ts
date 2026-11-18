@@ -483,6 +483,15 @@ describe('U-272 QuickBooks Desktop retained earnings merge (qbd-retained-earning
     expect(m).toMatchObject({ systemRole: 'retained_earnings', name: 'Retained Earnings' });
     // An equity account of another name is not it.
     expect((s.preview as Body).accountMatches.find((a: Body) => a.sourceKey === '30000').systemRole).toBeUndefined();
+    // QuickBooks Online marks it by Detail type, whatever its name.
+    const q = await importsService.createSession({
+      tenantId: c.tenantId, companyId: c.companyId, userId: c.userId,
+      file: { originalname: 'qbo-accounts.csv', buffer: Buffer.from('Full name,Type,Detail type\nEarnings kept,Equity,Retained Earnings\nOwner draws,Equity,Owner\'s Equity\n', 'utf8') },
+      kind: 'coa', sourceSystem: 'quickbooks_online', options: {} as never, role: 'post',
+    });
+    expect(q.validationErrors).toEqual([]);
+    const roles = Object.fromEntries((q.preview as Body).accountMatches.map((a: Body) => [a.sourceKey, a.systemRole ?? null]));
+    expect(roles).toEqual({ 'Earnings kept': 'retained_earnings', 'Owner draws': null });
   });
 
   it('a numbered chart with prior-year history ties to exactly zero; the source row is the system account; undo is exact', async () => {
