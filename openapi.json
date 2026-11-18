@@ -40532,6 +40532,921 @@
         "x-idempotency": true
       }
     },
+    "/api/v1/imports/batches/{id}/spot-check": {
+      "put": {
+        "description": "Replaces the batch's spot-check list {items [{key, label, done, note?}]} (up to 200) and answers {spotCheck {items, updatedAt, updatedBy}}; GET /imports/batches/:id returns it as batch.spotCheck. A committed batch only (409 IMPORT_BATCH_NOT_COMMITTED / IMPORT_BATCH_UNDONE).",
+        "operationId": "put_api_v1_imports_batches_by_id_spot_check",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "items": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "done": {
+                          "type": "boolean"
+                        },
+                        "key": {
+                          "maxLength": 100,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "label": {
+                          "maxLength": 300,
+                          "type": "string"
+                        },
+                        "note": {
+                          "anyOf": [
+                            {
+                              "maxLength": 2000,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "label",
+                        "done"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 200,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "items"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "spotCheck": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "items": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "done": {
+                                "type": "boolean"
+                              },
+                              "key": {
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "note": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "label",
+                              "done"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        },
+                        "updatedBy": {
+                          "format": "uuid",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "items",
+                        "updatedAt",
+                        "updatedBy"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "spotCheck"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Save the spot-check list of an import batch (imports-tieout-v1)",
+        "tags": [
+          "Imports"
+        ]
+      }
+    },
+    "/api/v1/imports/batches/{id}/tieout": {
+      "post": {
+        "description": "Compares the batch's source files with the books and keeps the result on the batch (GET shows its summary: asOf, books, balanceRows, totals, differenceCount, allZero, counts, verifiedAt). A verified batch answers the tie-out kept at verify (its source rows are deleted). asOf is the batch's conversionDate, else its reference trial balance's date. accounts: the reference trial balance (required by default for every source, review S9: 422 TIEOUT_REFERENCE_REQUIRED; requireReference false skips the accounts side), each row resolved as the commit resolved it (accountMap, merged or mapped chart rows, number, name) and grouped per account (sourceKeys, sourceRows), against the exact accrual trial balance as of asOf (P&L fiscal year to date, earlier years in the retained earnings account): the whole company when it was empty at commit (books \"company\"), else only the batch's own lines (books \"batch\", Q-P31h). The before-conversion accounts are not in accounts but in balanceRows (history_ar, history_ap, history_inventory: 0.00 expected at asOf; valuation_vs_asset: inventory asset accounts in the books vs the valuation file). arItems/apItems: each open-item row (sourceRow) vs the open balance of the document it became, as of asOf; with books \"company\", an open item no row made is a row with sourceRow null. inventoryItems: each valuation row vs the engine valuation of its item (value in cents). totals: ar and ap aging totals and inventory (file and books), accounts debit and credit sums. Exact decimal strings (accounts debit - credit); diffExact = booksExact - sourceExact; allZero only when every difference (quantities too) is exactly 0. 409 IMPORT_BATCH_NOT_COMMITTED / IMPORT_BATCH_UNDONE; 422 TIEOUT_NO_DATE, TIEOUT_REFERENCE_AMBIGUOUS. Error messages never name accounts or contacts.",
+        "operationId": "post_api_v1_imports_batches_by_id_tieout",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "default": {},
+                "properties": {
+                  "requireReference": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "accounts": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "booksExact": {
+                            "type": "string"
+                          },
+                          "diffExact": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "number": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sourceExact": {
+                            "type": "string"
+                          },
+                          "sourceKeys": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "sourceRow": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sourceRows": {
+                            "items": {
+                              "type": "integer"
+                            },
+                            "type": "array"
+                          }
+                        },
+                        "required": [
+                          "accountId",
+                          "number",
+                          "name",
+                          "sourceRow",
+                          "sourceRows",
+                          "sourceKeys",
+                          "sourceExact",
+                          "booksExact",
+                          "diffExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "allZero": {
+                      "type": "boolean"
+                    },
+                    "apItems": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "booksExact": {
+                            "type": "string"
+                          },
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "date": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "diffExact": {
+                            "type": "string"
+                          },
+                          "docType": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "number": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sessionId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sourceExact": {
+                            "type": "string"
+                          },
+                          "sourceRow": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "transactionId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "sourceRow",
+                          "sessionId",
+                          "transactionId",
+                          "contactName",
+                          "number",
+                          "docType",
+                          "date",
+                          "sourceExact",
+                          "booksExact",
+                          "diffExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "arItems": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "booksExact": {
+                            "type": "string"
+                          },
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "date": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "diffExact": {
+                            "type": "string"
+                          },
+                          "docType": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "number": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "sessionId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sourceExact": {
+                            "type": "string"
+                          },
+                          "sourceRow": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "transactionId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "sourceRow",
+                          "sessionId",
+                          "transactionId",
+                          "contactName",
+                          "number",
+                          "docType",
+                          "date",
+                          "sourceExact",
+                          "booksExact",
+                          "diffExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "asOf": {
+                      "type": "string"
+                    },
+                    "balanceRows": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "booksExact": {
+                            "type": "string"
+                          },
+                          "diffExact": {
+                            "type": "string"
+                          },
+                          "key": {
+                            "enum": [
+                              "history_ar",
+                              "history_ap",
+                              "history_inventory",
+                              "valuation_vs_asset"
+                            ],
+                            "type": "string"
+                          },
+                          "sourceExact": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "accountId",
+                          "sourceExact",
+                          "booksExact",
+                          "diffExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "batchId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "books": {
+                      "enum": [
+                        "company",
+                        "batch"
+                      ],
+                      "type": "string"
+                    },
+                    "computedAt": {
+                      "type": "string"
+                    },
+                    "differenceCount": {
+                      "type": "integer"
+                    },
+                    "inventoryItems": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "booksExact": {
+                            "type": "string"
+                          },
+                          "booksQuantity": {
+                            "type": "string"
+                          },
+                          "diffExact": {
+                            "type": "string"
+                          },
+                          "item": {
+                            "type": "string"
+                          },
+                          "itemId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "quantityDiff": {
+                            "type": "string"
+                          },
+                          "sourceExact": {
+                            "type": "string"
+                          },
+                          "sourceQuantity": {
+                            "type": "string"
+                          },
+                          "sourceRow": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "sourceRow",
+                          "item",
+                          "itemId",
+                          "sourceQuantity",
+                          "booksQuantity",
+                          "quantityDiff",
+                          "sourceExact",
+                          "booksExact",
+                          "diffExact"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "referenceTrialBalance": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "properties": {
+                            "reportDate": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "sessionId": {
+                              "format": "uuid",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "sessionId",
+                            "reportDate"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "totals": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accounts": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "booksCreditExact": {
+                                  "type": "string"
+                                },
+                                "booksDebitExact": {
+                                  "type": "string"
+                                },
+                                "sourceCreditExact": {
+                                  "type": "string"
+                                },
+                                "sourceDebitExact": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "sourceDebitExact",
+                                "sourceCreditExact",
+                                "booksDebitExact",
+                                "booksCreditExact"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "ap": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "booksExact": {
+                                  "type": "string"
+                                },
+                                "diffExact": {
+                                  "type": "string"
+                                },
+                                "sourceExact": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "sourceExact",
+                                "booksExact",
+                                "diffExact"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "ar": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "booksExact": {
+                                  "type": "string"
+                                },
+                                "diffExact": {
+                                  "type": "string"
+                                },
+                                "sourceExact": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "sourceExact",
+                                "booksExact",
+                                "diffExact"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "inventory": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "booksExact": {
+                                  "type": "string"
+                                },
+                                "diffExact": {
+                                  "type": "string"
+                                },
+                                "sourceExact": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "sourceExact",
+                                "booksExact",
+                                "diffExact"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "accounts",
+                        "ar",
+                        "ap",
+                        "inventory"
+                      ],
+                      "type": "object"
+                    },
+                    "verifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "batchId",
+                    "asOf",
+                    "computedAt",
+                    "books",
+                    "referenceTrialBalance",
+                    "accounts",
+                    "arItems",
+                    "apItems",
+                    "inventoryItems",
+                    "balanceRows",
+                    "totals",
+                    "differenceCount",
+                    "allZero",
+                    "verifiedAt"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Tie out a committed import batch (imports-tieout-v1)",
+        "tags": [
+          "Imports"
+        ]
+      }
+    },
+    "/api/v1/imports/batches/{id}/transactions": {
+      "get": {
+        "description": "U-271: by date then id, paged (pass nextCursor back as cursor; null on the last page); txnType filters (e.g. invoice, bill, journal_entry). total counts every match (for sampling). Each: {id, txnType, txnDate, txnNumber, vendorInvoiceNumber, status, contactId, contactName, total (exact; a journal entry's debits)}. Empty after undo.",
+        "operationId": "get_api_v1_imports_batches_by_id_transactions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 200,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "txnType",
+            "required": false,
+            "schema": {
+              "maxLength": 40,
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "transactions": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "contactId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "contactName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "id": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "total": {
+                            "type": "string"
+                          },
+                          "txnDate": {
+                            "type": "string"
+                          },
+                          "txnNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "txnType": {
+                            "type": "string"
+                          },
+                          "vendorInvoiceNumber": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "txnType",
+                          "txnDate",
+                          "txnNumber",
+                          "vendorInvoiceNumber",
+                          "status",
+                          "contactId",
+                          "contactName",
+                          "total"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "transactions",
+                    "nextCursor",
+                    "total"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List the transactions an import batch created (imports-tieout-v1)",
+        "tags": [
+          "Imports"
+        ]
+      }
+    },
     "/api/v1/imports/batches/{id}/undo": {
       "post": {
         "description": "Removes everything the batch created in ONE database transaction (a hard delete; stored balances move back exactly) and restores what it changed (accounts, the fiscal year month). Checks run before the 202: 409 IMPORT_UNDO_BLOCKED {blockers:[{kind, id, reason, target?}], blockerCount} when something imported has been used since: reconciled, deposited, payment_applied, bill_paid, credit_applied, bank_match, tax_filed, billed, used_by_other_transaction, used_by_void_transaction, edited, changed_since, inventory_used, payroll, attached or linked (the advice is to restore the backup taken before the import). Voided payment applications are removed with the batch; the voided payment stays. Then committed -> undoing and 202 {batchId}; poll GET: undone, or back to committed with error. 409 IMPORT_BATCH_NOT_COMMITTED, IMPORT_BATCH_UNDONE, IMPORT_BUSY. Sessions become undone, their parsed rows are deleted, and the same data may be imported again. One delete audit row per removed record (before-image) and one for the batch. A date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without it, 403 CLOSING_PASSWORD_INVALID when wrong, 429 when tried too often); with no closing-date password set, staff may send confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).",
@@ -40625,6 +41540,1099 @@
           "Imports"
         ],
         "x-idempotency": true
+      }
+    },
+    "/api/v1/imports/batches/{id}/verify": {
+      "post": {
+        "description": "Recomputes the tie-out. 409 TIEOUT_NOT_ZERO {batchId, differenceCount, firstDifferences [{section accounts|arItems|apItems|inventoryItems|balanceRows|totals, key, sourceRow, accountId, transactionId, itemId, diffExact, quantityDiff?}] (up to 20, ids only)} unless every difference is exactly 0. Else 200 {batch, tieout}: the batch is verified (verifiedAt, verifiedBy), keeps the tie-out, and the stored parsed rows of its sessions are deleted (review S8); one audit row. Verifying a verified batch answers 200 with what it kept. 409 IMPORT_BUSY while another import or undo of the company runs. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED). asOf is the batch's conversionDate, else its reference trial balance's date. accounts: the reference trial balance (required by default for every source, review S9: 422 TIEOUT_REFERENCE_REQUIRED; requireReference false skips the accounts side), each row resolved as the commit resolved it (accountMap, merged or mapped chart rows, number, name) and grouped per account (sourceKeys, sourceRows), against the exact accrual trial balance as of asOf (P&L fiscal year to date, earlier years in the retained earnings account): the whole company when it was empty at commit (books \"company\"), else only the batch's own lines (books \"batch\", Q-P31h). The before-conversion accounts are not in accounts but in balanceRows (history_ar, history_ap, history_inventory: 0.00 expected at asOf; valuation_vs_asset: inventory asset accounts in the books vs the valuation file). arItems/apItems: each open-item row (sourceRow) vs the open balance of the document it became, as of asOf; with books \"company\", an open item no row made is a row with sourceRow null. inventoryItems: each valuation row vs the engine valuation of its item (value in cents). totals: ar and ap aging totals and inventory (file and books), accounts debit and credit sums. Exact decimal strings (accounts debit - credit); diffExact = booksExact - sourceExact; allZero only when every difference (quantities too) is exactly 0. 409 IMPORT_BATCH_NOT_COMMITTED / IMPORT_BATCH_UNDONE; 422 TIEOUT_NO_DATE, TIEOUT_REFERENCE_AMBIGUOUS. Error messages never name accounts or contacts.",
+        "operationId": "post_api_v1_imports_batches_by_id_verify",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "default": {},
+                "properties": {
+                  "requireReference": {
+                    "default": true,
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "batch": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "backupRef": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "committedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "committedBy": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "companyId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "companyWasEmpty": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "conversionDate": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "createdBy": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "dateCheck": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "conversionDate": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "firstJournalDate": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "historyFrom": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "historySkipped": {
+                                  "type": "integer"
+                                },
+                                "openingBalanceDate": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "warnings": {
+                                  "items": {
+                                    "additionalProperties": true,
+                                    "properties": {
+                                      "code": {
+                                        "enum": [
+                                          "IMPORT_HISTORY_GAP",
+                                          "IMPORT_JOURNAL_BEFORE_OPENING"
+                                        ],
+                                        "type": "string"
+                                      },
+                                      "days": {
+                                        "type": "integer"
+                                      },
+                                      "firstJournalDate": {
+                                        "type": "string"
+                                      },
+                                      "message": {
+                                        "type": "string"
+                                      },
+                                      "openingBalanceDate": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "code",
+                                      "message",
+                                      "openingBalanceDate",
+                                      "firstJournalDate"
+                                    ],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "conversionDate",
+                                "historyFrom",
+                                "historySkipped",
+                                "openingBalanceDate",
+                                "firstJournalDate",
+                                "warnings"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "error": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "code": {
+                                  "type": "string"
+                                },
+                                "details": {
+                                  "additionalProperties": {},
+                                  "type": "object"
+                                },
+                                "message": {
+                                  "type": "string"
+                                },
+                                "rowNumber": {
+                                  "type": "integer"
+                                },
+                                "sessionId": {
+                                  "format": "uuid",
+                                  "type": "string"
+                                },
+                                "status": {
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "code",
+                                "message"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "historyFrom": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "conversion",
+                            "single",
+                            "transactions"
+                          ],
+                          "type": "string"
+                        },
+                        "options": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "accountMap": {
+                              "additionalProperties": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "create",
+                                    "type": "string"
+                                  }
+                                ]
+                              },
+                              "propertyNames": {
+                                "maxLength": 200,
+                                "minLength": 1
+                              },
+                              "type": "object"
+                            },
+                            "classMap": {
+                              "additionalProperties": {
+                                "additionalProperties": true,
+                                "properties": {
+                                  "group": {
+                                    "maxLength": 100,
+                                    "type": "string"
+                                  },
+                                  "tag": {
+                                    "maxLength": 100,
+                                    "minLength": 1,
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "tag"
+                                ],
+                                "type": "object"
+                              },
+                              "propertyNames": {
+                                "maxLength": 200
+                              },
+                              "type": "object"
+                            },
+                            "conversionDate": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            "fiscalYearStartMonth": {
+                              "maximum": 12,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "historyFrom": {
+                              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                              "type": "string"
+                            },
+                            "requireEmptyCompany": {
+                              "type": "boolean"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "result": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": {},
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sessions": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "commitResult": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": {},
+                                    "type": "object"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "committedAt": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "dateFrom": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "dateTo": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "errorCount": {
+                                "type": "integer"
+                              },
+                              "id": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "coa",
+                                  "contacts",
+                                  "trial_balance",
+                                  "gl_transactions",
+                                  "open_invoices",
+                                  "unpaid_bills",
+                                  "items",
+                                  "inventory_valuation"
+                                ],
+                                "type": "string"
+                              },
+                              "originalFilename": {
+                                "type": "string"
+                              },
+                              "reportDate": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "role": {
+                                "enum": [
+                                  "post",
+                                  "reference"
+                                ],
+                                "type": "string"
+                              },
+                              "rowCount": {
+                                "type": "integer"
+                              },
+                              "sourceSystem": {
+                                "enum": [
+                                  "accounting_power",
+                                  "quickbooks_online",
+                                  "quickbooks_desktop",
+                                  "generic"
+                                ],
+                                "type": "string"
+                              },
+                              "status": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "sourceSystem",
+                              "role",
+                              "status",
+                              "originalFilename",
+                              "rowCount",
+                              "errorCount",
+                              "reportDate",
+                              "dateFrom",
+                              "dateTo",
+                              "commitResult",
+                              "committedAt"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "sourceSystem": {
+                          "enum": [
+                            "accounting_power",
+                            "quickbooks_online",
+                            "quickbooks_desktop",
+                            "generic"
+                          ],
+                          "type": "string"
+                        },
+                        "spotCheck": {
+                          "anyOf": [
+                            {},
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "status": {
+                          "enum": [
+                            "draft",
+                            "committing",
+                            "committed",
+                            "failed",
+                            "undoing",
+                            "undone"
+                          ],
+                          "type": "string"
+                        },
+                        "tieout": {
+                          "anyOf": [
+                            {},
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "undoneAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "undoneBy": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "updatedAt": {
+                          "type": "string"
+                        },
+                        "verifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "verifiedBy": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "companyId",
+                        "sourceSystem",
+                        "kind",
+                        "status",
+                        "options",
+                        "result",
+                        "error",
+                        "backupRef",
+                        "companyWasEmpty",
+                        "conversionDate",
+                        "historyFrom",
+                        "verifiedAt",
+                        "verifiedBy",
+                        "createdBy",
+                        "createdAt",
+                        "updatedAt",
+                        "committedBy",
+                        "committedAt",
+                        "undoneBy",
+                        "undoneAt",
+                        "sessions"
+                      ],
+                      "type": "object"
+                    },
+                    "tieout": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accounts": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "accountId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "booksExact": {
+                                "type": "string"
+                              },
+                              "diffExact": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "number": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "sourceExact": {
+                                "type": "string"
+                              },
+                              "sourceKeys": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "sourceRow": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "sourceRows": {
+                                "items": {
+                                  "type": "integer"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "accountId",
+                              "number",
+                              "name",
+                              "sourceRow",
+                              "sourceRows",
+                              "sourceKeys",
+                              "sourceExact",
+                              "booksExact",
+                              "diffExact"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "allZero": {
+                          "type": "boolean"
+                        },
+                        "apItems": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "booksExact": {
+                                "type": "string"
+                              },
+                              "contactName": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "date": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "diffExact": {
+                                "type": "string"
+                              },
+                              "docType": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "number": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "sessionId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "sourceExact": {
+                                "type": "string"
+                              },
+                              "sourceRow": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "transactionId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "sourceRow",
+                              "sessionId",
+                              "transactionId",
+                              "contactName",
+                              "number",
+                              "docType",
+                              "date",
+                              "sourceExact",
+                              "booksExact",
+                              "diffExact"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "arItems": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "booksExact": {
+                                "type": "string"
+                              },
+                              "contactName": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "date": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "diffExact": {
+                                "type": "string"
+                              },
+                              "docType": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "number": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "sessionId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "sourceExact": {
+                                "type": "string"
+                              },
+                              "sourceRow": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "transactionId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "sourceRow",
+                              "sessionId",
+                              "transactionId",
+                              "contactName",
+                              "number",
+                              "docType",
+                              "date",
+                              "sourceExact",
+                              "booksExact",
+                              "diffExact"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "asOf": {
+                          "type": "string"
+                        },
+                        "balanceRows": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "accountId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "booksExact": {
+                                "type": "string"
+                              },
+                              "diffExact": {
+                                "type": "string"
+                              },
+                              "key": {
+                                "enum": [
+                                  "history_ar",
+                                  "history_ap",
+                                  "history_inventory",
+                                  "valuation_vs_asset"
+                                ],
+                                "type": "string"
+                              },
+                              "sourceExact": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "key",
+                              "accountId",
+                              "sourceExact",
+                              "booksExact",
+                              "diffExact"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "batchId": {
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "books": {
+                          "enum": [
+                            "company",
+                            "batch"
+                          ],
+                          "type": "string"
+                        },
+                        "computedAt": {
+                          "type": "string"
+                        },
+                        "differenceCount": {
+                          "type": "integer"
+                        },
+                        "inventoryItems": {
+                          "items": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "booksExact": {
+                                "type": "string"
+                              },
+                              "booksQuantity": {
+                                "type": "string"
+                              },
+                              "diffExact": {
+                                "type": "string"
+                              },
+                              "item": {
+                                "type": "string"
+                              },
+                              "itemId": {
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "quantityDiff": {
+                                "type": "string"
+                              },
+                              "sourceExact": {
+                                "type": "string"
+                              },
+                              "sourceQuantity": {
+                                "type": "string"
+                              },
+                              "sourceRow": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "sourceRow",
+                              "item",
+                              "itemId",
+                              "sourceQuantity",
+                              "booksQuantity",
+                              "quantityDiff",
+                              "sourceExact",
+                              "booksExact",
+                              "diffExact"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "referenceTrialBalance": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": true,
+                              "properties": {
+                                "reportDate": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "sessionId": {
+                                  "format": "uuid",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "sessionId",
+                                "reportDate"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "totals": {
+                          "additionalProperties": true,
+                          "properties": {
+                            "accounts": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "booksCreditExact": {
+                                      "type": "string"
+                                    },
+                                    "booksDebitExact": {
+                                      "type": "string"
+                                    },
+                                    "sourceCreditExact": {
+                                      "type": "string"
+                                    },
+                                    "sourceDebitExact": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "sourceDebitExact",
+                                    "sourceCreditExact",
+                                    "booksDebitExact",
+                                    "booksCreditExact"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "ap": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "booksExact": {
+                                      "type": "string"
+                                    },
+                                    "diffExact": {
+                                      "type": "string"
+                                    },
+                                    "sourceExact": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "sourceExact",
+                                    "booksExact",
+                                    "diffExact"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "ar": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "booksExact": {
+                                      "type": "string"
+                                    },
+                                    "diffExact": {
+                                      "type": "string"
+                                    },
+                                    "sourceExact": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "sourceExact",
+                                    "booksExact",
+                                    "diffExact"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "inventory": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": true,
+                                  "properties": {
+                                    "booksExact": {
+                                      "type": "string"
+                                    },
+                                    "diffExact": {
+                                      "type": "string"
+                                    },
+                                    "sourceExact": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "sourceExact",
+                                    "booksExact",
+                                    "diffExact"
+                                  ],
+                                  "type": "object"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "accounts",
+                            "ar",
+                            "ap",
+                            "inventory"
+                          ],
+                          "type": "object"
+                        },
+                        "verifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "batchId",
+                        "asOf",
+                        "computedAt",
+                        "books",
+                        "referenceTrialBalance",
+                        "accounts",
+                        "arItems",
+                        "apItems",
+                        "inventoryItems",
+                        "balanceRows",
+                        "totals",
+                        "differenceCount",
+                        "allZero",
+                        "verifiedAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "batch",
+                    "tieout"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Verify a committed import batch (imports-tieout-v1)",
+        "tags": [
+          "Imports"
+        ]
       }
     },
     "/api/v1/imports/sample/{kind}": {
