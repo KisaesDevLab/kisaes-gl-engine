@@ -39,6 +39,11 @@ import DecimalLib from 'decimal.js';
 import type { Tx, DbOrTx } from '../../db/index.js';
 
 const Decimal = DecimalLib.default || DecimalLib;
+
+/** A Postgres array literal for an id list, passed as ONE parameter (drizzle spreads a JS array into several). */
+export function pgArray(ids: readonly string[]): string {
+  return `{${ids.join(',')}}`;
+}
 type Dec = InstanceType<typeof Decimal>;
 
 export interface UndoBlocker {
@@ -80,7 +85,7 @@ export async function loadCreatedSets(ex: DbOrTx, tenantId: string, batchId: str
   ))).rows as Array<{ id: string }>).map((r) => r.id);
   const txns = await ids('transactions', lock);
   const lines = txns.length === 0 ? [] : ((await ex.execute(sql`
-    SELECT id::text AS id FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id = ANY(${txns}::uuid[])`)).rows as Array<{ id: string }>).map((r) => r.id);
+    SELECT id::text AS id FROM journal_lines WHERE tenant_id = ${tenantId} AND transaction_id = ANY(${pgArray(txns)}::uuid[])`)).rows as Array<{ id: string }>).map((r) => r.id);
   return {
     txns, lines,
     accounts: await ids('accounts'), contacts: await ids('contacts'), items: await ids('items'),
@@ -168,7 +173,7 @@ export function deadTransactionsBlock(): boolean {
 /** Statuses of transactions outside the batch, by id. */
 async function statusesOf(ex: DbOrTx, tenantId: string, ids: string[]): Promise<Map<string, string>> {
   if (ids.length === 0) return new Map();
-  const r = await ex.execute(sql`SELECT id::text AS id, status FROM transactions WHERE tenant_id = ${tenantId} AND id = ANY(${ids}::uuid[])`);
+  const r = await ex.execute(sql`SELECT id::text AS id, status FROM transactions WHERE tenant_id = ${tenantId} AND id = ANY(${pgArray(ids)}::uuid[])`);
   return new Map((r.rows as Array<{ id: string; status: string }>).map((x) => [x.id, x.status]));
 }
 
@@ -197,7 +202,7 @@ async function linkRows(ex: DbOrTx, tenantId: string, T: string[], blockers: Und
   const pa = (await ex.execute(sql`
     SELECT id::text, payment_id::text, invoice_id::text, applied_in_txn_id::text, voided_at IS NOT NULL AS voided, reversed_by_txn_id::text AS reversed
     FROM payment_applications WHERE tenant_id = ${tenantId}
-      AND (payment_id = ANY(${T}::uuid[]) OR invoice_id = ANY(${T}::uuid[]) OR applied_in_txn_id = ANY(${T}::uuid[]))`)).rows as Array<{
+      AND (payment_id = ANY(${pgArray(T)}::uuid[]) OR invoice_id = ANY(${pgArray(T)}::uuid[]) OR applied_in_txn_id = ANY(${pgArray(T)}::uuid[]))`)).rows as Array<{
     id: string; payment_id: string; invoice_id: string; applied_in_txn_id: string | null; voided: boolean; reversed: string | null }>;
   for (const a of pa) {
     if (inT.has(a.payment_id) && inT.has(a.invoice_id)) continue; // inside the batch
@@ -207,16 +212,16 @@ async function linkRows(ex: DbOrTx, tenantId: string, T: string[], blockers: Und
 
   const bpa = (await ex.execute(sql`
     SELECT id::text, payment_id::text, bill_id::text FROM bill_payment_applications
-    WHERE tenant_id = ${tenantId} AND (payment_id = ANY(${T}::uuid[]) OR bill_id = ANY(${T}::uuid[]))`)).rows as Array<{ id: string; payment_id: string; bill_id: string }>;
+    WHERE tenant_id = ${tenantId} AND (payment_id = ANY(${pgArray(T)}::uuid[]) OR bill_id = ANY(${pgArray(T)}::uuid[]))`)).rows as Array<{ id: string; payment_id: string; bill_id: string }>;
   const vca = (await ex.execute(sql`
     SELECT id::text, payment_id::text, credit_id::text, bill_id::text FROM vendor_credit_applications
-    WHERE tenant_id = ${tenantId} AND (payment_id = ANY(${T}::uuid[]) OR credit_id = ANY(${T}::uuid[]) OR bill_id = ANY(${T}::uuid[]))`)).rows as Array<{ id: string; payment_id: string; credit_id: string; bill_id: string }>;
+    WHERE tenant_id = ${tenantId} AND (payment_id = ANY(${pgArray(T)}::uuid[]) OR credit_id = ANY(${pgArray(T)}::uuid[]) OR bill_id = ANY(${pgArray(T)}::uuid[]))`)).rows as Array<{ id: string; payment_id: string; credit_id: string; bill_id: string }>;
   const dl = (await ex.execute(sql`
     SELECT id::text, deposit_id::text, source_transaction_id::text FROM deposit_lines
-    WHERE deposit_id = ANY(${T}::uuid[]) OR source_transaction_id = ANY(${T}::uuid[])`)).rows as Array<{ id: string; deposit_id: string; source_transaction_id: string }>;
+    WHERE deposit_id = ANY(${pgArray(T)}::uuid[]) OR source_transaction_id = ANY(${pgArray(T)}::uuid[])`)).rows as Array<{ id: string; deposit_id: string; source_transaction_id: string }>;
   const ttl = (await ex.execute(sql`
     SELECT id::text, transaction_id::text FROM transaction_tax_lines
-    WHERE tenant_id = ${tenantId} AND invoice_id = ANY(${T}::uuid[]) AND NOT (transaction_id = ANY(${T}::uuid[]))`)).rows as Array<{ id: string; transaction_id: string }>;
+    WHERE tenant_id = ${tenantId} AND invoice_id = ANY(${pgArray(T)}::uuid[]) AND NOT (transaction_id = ANY(${pgArray(T)}::uuid[]))`)).rows as Array<{ id: string; transaction_id: string }>;
 
   const others = new Set<string>();
   for (const a of bpa) others.add(a.payment_id);
@@ -319,7 +324,7 @@ export async function findUndoBlockers(
     const pr = (await ex.execute(sql`
       SELECT id::text FROM payroll_import_sessions WHERE tenant_id = ${tenantId}
         AND jsonb_typeof(journal_entry_ids) = 'array'
-        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(journal_entry_ids) e WHERE e = ANY(${T}::text[]))
+        AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(journal_entry_ids) e WHERE e = ANY(${pgArray(T)}::text[]))
       LIMIT 50`)).rows as Array<{ id: string }>;
     for (const p of pr) blockers.push({ kind: 'payroll_import_sessions.journal_entry_ids', id: p.id, reason: 'payroll' });
   }
@@ -331,7 +336,7 @@ export async function findUndoBlockers(
       SELECT DISTINCT t.id::text FROM transactions t
       LEFT JOIN journal_lines jl ON jl.transaction_id = t.id
         AND ${stamps.linesCreatedMax ?? null}::timestamptz IS NOT NULL AND jl.created_at > ${stamps.linesCreatedMax ?? null}::timestamptz
-      WHERE t.tenant_id = ${tenantId} AND t.id = ANY(${T}::uuid[]) AND (t.status <> 'posted' OR jl.id IS NOT NULL)
+      WHERE t.tenant_id = ${tenantId} AND t.id = ANY(${pgArray(T)}::uuid[]) AND (t.status <> 'posted' OR jl.id IS NOT NULL)
       LIMIT 200`)).rows as Array<{ id: string }>;
     for (const e of edited) blockers.push({ kind: 'transactions', id: e.id, reason: 'edited' });
   }
@@ -350,7 +355,7 @@ export async function findUndoBlockers(
   if (changedIds.length > 0) {
     const r = (await ex.execute(sql`
       SELECT id::text, name, account_type, detail_type, description, parent_id::text FROM accounts
-      WHERE tenant_id = ${tenantId} AND id = ANY(${changedIds}::uuid[])`)).rows as Array<{
+      WHERE tenant_id = ${tenantId} AND id = ANY(${pgArray(changedIds)}::uuid[])`)).rows as Array<{
       id: string; name: string; account_type: string; detail_type: string | null; description: string | null; parent_id: string | null }>;
     for (const a of r) {
       const want = after[a.id]!;
@@ -364,8 +369,8 @@ export async function findUndoBlockers(
   if (T.length > 0) {
     const inv = (await ex.execute(sql`
       SELECT DISTINCT m2.id::text FROM inventory_movements m
-      JOIN inventory_movements m2 ON m2.item_id = m.item_id AND m2.tenant_id = m.tenant_id AND NOT (m2.transaction_id = ANY(${T}::uuid[]))
-      WHERE m.tenant_id = ${tenantId} AND m.transaction_id = ANY(${T}::uuid[]) LIMIT 50`)).rows as Array<{ id: string }>;
+      JOIN inventory_movements m2 ON m2.item_id = m.item_id AND m2.tenant_id = m.tenant_id AND NOT (m2.transaction_id = ANY(${pgArray(T)}::uuid[]))
+      WHERE m.tenant_id = ${tenantId} AND m.transaction_id = ANY(${pgArray(T)}::uuid[]) LIMIT 50`)).rows as Array<{ id: string }>;
     for (const m of inv) blockers.push({ kind: 'inventory_movements', id: m.id, reason: 'inventory_used' });
   }
 
@@ -389,7 +394,7 @@ export async function takeCommitStamps(tx: Tx, tenantId: string, batchId: string
   if (changedAccountIds.length > 0) {
     const r = (await tx.execute(sql`
       SELECT id::text, name, account_type, detail_type, description, parent_id::text FROM accounts
-      WHERE tenant_id = ${tenantId} AND id = ANY(${changedAccountIds}::uuid[])`)).rows as Array<{
+      WHERE tenant_id = ${tenantId} AND id = ANY(${pgArray(changedAccountIds)}::uuid[])`)).rows as Array<{
       id: string; name: string; account_type: string; detail_type: string | null; description: string | null; parent_id: string | null }>;
     for (const a of r) {
       accountsAfter[a.id] = { name: a.name, accountType: a.account_type, detailType: a.detail_type ?? null, description: a.description ?? null, parentId: a.parent_id ?? null };
@@ -462,7 +467,7 @@ export async function deleteBatchRows(tx: Tx, tenantId: string, created: Created
     const net = (await tx.execute(sql`
       SELECT jl.account_id::text AS a, SUM(jl.debit - jl.credit)::text AS n
       FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
-      WHERE t.tenant_id = ${tenantId} AND t.id = ANY(${T}::uuid[]) AND t.status <> 'draft'
+      WHERE t.tenant_id = ${tenantId} AND t.id = ANY(${pgArray(T)}::uuid[]) AND t.status <> 'draft'
       GROUP BY jl.account_id`)).rows as Array<{ a: string; n: string }>;
     const createdAccounts = new Set(created.accounts);
     const deltas = new Map<string, Dec>();

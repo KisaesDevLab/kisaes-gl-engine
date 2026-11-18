@@ -109,6 +109,9 @@ export async function companySnapshot(co: Co): Promise<Record<string, unknown>> 
     items: strip(await db.select().from(items).where(eq(items.tenantId, co.tenantId))),
     transactions: strip(await db.select().from(transactions).where(eq(transactions.tenantId, co.tenantId))),
     lines: lines.rows,
+    applications: (await db.execute(sql`SELECT id, payment_id, invoice_id, amount::text, voided_at IS NOT NULL AS voided FROM payment_applications WHERE tenant_id = ${co.tenantId} ORDER BY id`)).rows,
+    billApplications: (await db.execute(sql`SELECT id, payment_id, bill_id, amount::text FROM bill_payment_applications WHERE tenant_id = ${co.tenantId} ORDER BY id`)).rows,
+    inventoryMovements: (await db.execute(sql`SELECT id, item_id, transaction_id FROM inventory_movements WHERE tenant_id = ${co.tenantId} ORDER BY id`)).rows,
     company: co2,
   };
 }

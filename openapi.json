@@ -40145,7 +40145,7 @@
     },
     "/api/v1/imports/batches/{id}/commit": {
       "post": {
-        "description": "Checks, then claims the batch (draft or failed -> committing) and answers 202 {batchId}; the batch then posts every post-role session in ONE database transaction (chart of accounts, contacts, trial balance, journal, in that order). Poll GET /imports/batches/:id: it ends committed, or failed with error and nothing posted (a failed batch may be committed again with a new Idempotency-Key; the same key replays the 202). 409 IMPORT_BUSY while another import or undo of the company runs; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt}; 409 IMPORT_PERIOD_OVERLAP; 409 IMPORT_BATCH_UNDONE; 409 IMPORT_HAS_ERRORS {sessionId, errors}; 409 IMPORT_COMPANY_NOT_EMPTY; 409 IMPORT_FISCAL_YEAR_LOCKED; 400 IMPORT_BATCH_EMPTY. backupRef names the verified backup the client took first.",
+        "description": "Checks, then claims the batch (draft or failed -> committing) and answers 202 {batchId}; the batch then posts every post-role session in ONE database transaction (chart of accounts, contacts, trial balance, journal, in that order). Poll GET /imports/batches/:id: it ends committed, or failed with error and nothing posted (a failed batch may be committed again with a new Idempotency-Key; the same key replays the 202). 409 IMPORT_BUSY while another import or undo of the company runs; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt}; 409 IMPORT_PERIOD_OVERLAP; 409 IMPORT_BATCH_UNDONE; 409 IMPORT_HAS_ERRORS {sessionId, errors}; 409 IMPORT_COMPANY_NOT_EMPTY; 409 IMPORT_FISCAL_YEAR_LOCKED; 400 IMPORT_BATCH_EMPTY. backupRef names the verified backup the client took first. A date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without it, 403 CLOSING_PASSWORD_INVALID when wrong, 429 when tried too often); with no closing-date password set, staff may send confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).",
         "operationId": "post_api_v1_imports_batches_by_id_commit",
         "parameters": [
           {
@@ -40184,6 +40184,9 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "closingPassword": {
+                    "type": "string"
                   },
                   "confirmClosedPeriod": {
                     "type": "boolean"
@@ -40229,6 +40232,101 @@
           }
         ],
         "summary": "Commit an import batch in the background (imports-batch-v1)",
+        "tags": [
+          "Imports"
+        ],
+        "x-idempotency": true
+      }
+    },
+    "/api/v1/imports/batches/{id}/undo": {
+      "post": {
+        "description": "Removes everything the batch created in ONE database transaction (a hard delete; stored balances move back exactly) and restores what it changed (accounts, the fiscal year month). Checks run before the 202: 409 IMPORT_UNDO_BLOCKED {blockers:[{kind, id, reason, target?}], blockerCount} when something imported has been used since: reconciled, deposited, payment_applied, bill_paid, credit_applied, bank_match, tax_filed, billed, used_by_other_transaction, used_by_void_transaction, edited, changed_since, inventory_used, payroll, attached or linked (the advice is to restore the backup taken before the import). Voided payment applications are removed with the batch; the voided payment stays. Then committed -> undoing and 202 {batchId}; poll GET: undone, or back to committed with error. 409 IMPORT_BATCH_NOT_COMMITTED, IMPORT_BATCH_UNDONE, IMPORT_BUSY. Sessions become undone, their parsed rows are deleted, and the same data may be imported again. One delete audit row per removed record (before-image) and one for the batch. A date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without it, 403 CLOSING_PASSWORD_INVALID when wrong, 429 when tried too often); with no closing-date password set, staff may send confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).",
+        "operationId": "post_api_v1_imports_batches_by_id_undo",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "idempotency-v1: 16-64 characters of [A-Za-z0-9_-] (a UUID). A retry with the same key and request replays the stored result (header Idempotent-Replayed: true); another request with the key is 422 IDEMPOTENCY_KEY_REUSED; a request still running with the key is 409 IDEMPOTENCY_IN_PROGRESS (Retry-After: 1). Kept 24 hours.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_-]{16,64}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "backupRef": {
+                    "anyOf": [
+                      {
+                        "maxLength": 500,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "closingPassword": {
+                    "type": "string"
+                  },
+                  "confirmClosedPeriod": {
+                    "type": "boolean"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "batchId": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "batchId"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Undo a committed import batch in the background (imports-batch-v1)",
         "tags": [
           "Imports"
         ],
