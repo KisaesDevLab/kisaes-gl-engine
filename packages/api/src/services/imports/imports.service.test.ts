@@ -628,6 +628,127 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
     });
   });
 
+  // ── U-260 imports-amounts-v1: exact amounts in every adapter ─────
+
+  describe('exact import amounts (U-260)', () => {
+    const lineAmounts = async () => (await db.select().from(journalLines).where(eq(journalLines.tenantId, tenantId)))
+      .map((l) => `${l.debit}/${l.credit}`).sort();
+    const tb = (sourceSystem: string, file: { originalname: string; buffer: Buffer }, options: Record<string, unknown> = {}) =>
+      importsService.createSession({ tenantId, companyId, userId, file, kind: 'trial_balance', sourceSystem: sourceSystem as never, options });
+
+    it('QBO xlsx: number cells are their raw values (4 places posted exactly), binary noise is refused', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Cash', accountType: 'asset' },
+        { tenantId, companyId, name: 'Equity', accountType: 'equity' },
+        { tenantId, companyId, name: 'Loan', accountType: 'liability' },
+        { tenantId, companyId, name: 'Building', accountType: 'asset' },
+        { tenantId, companyId, name: 'Mortgage', accountType: 'liability' },
+      ]);
+      // 123456789012.34 shows as 1.23457E+11 in a General-format cell; the raw value is exact.
+      const grid = (cash: unknown) => [['Trial Balance'], ['As of December 31, 2025'], [], [null, 'Debit', 'Credit'],
+        ['Cash', cash, null], ['Loan', null, 1000.0078], ['Equity', null, '234.56'],
+        ['Building', 123456789012.34, null], ['Mortgage', null, '123,456,789,012.34']];
+      const ok = await tb('quickbooks_online', await xlsxFromGrid('tb.xlsx', 'Trial Balance', grid(1234.5678)));
+      expect(ok.validationErrors).toEqual([]);
+      expect(ok.preview).toMatchObject({ totalDebit: '123456790246.9078', totalCredit: '123456790246.9078' });
+      await importsService.commitSession(tenantId, companyId, userId, ok.session.id);
+      expect(await lineAmounts()).toEqual(expect.arrayContaining(['1234.5678/0.0000', '0.0000/1000.0078', '123456789012.3400/0.0000']));
+
+      const noisy = await tb('quickbooks_online', await xlsxFromGrid('tb2.xlsx', 'Trial Balance', grid(0.1 + 0.2)));
+      expect(noisy.validationErrors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'IMPORT_AMOUNT_INVALID', field: 'Debit' }),
+      ]));
+    });
+
+    it('generic: the trial balance must balance exactly (a 0.001 difference was tolerated)', async () => {
+      const csv = 'Account Name,Debit,Credit\nCash,100.00,\nEquity,,99.999\n';
+      const out = await tb('generic', fileFromText('tb.csv', csv), { tbReportDate: '2025-12-31' });
+      expect(out.validationErrors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'IMPORT_JE_UNBALANCED', message: expect.stringContaining('100.000') }),
+      ]));
+      const even = await tb('generic', fileFromText('tb2.csv', 'Account Name,Debit,Credit\nCash,"$1,000.0001",\nEquity,,"1,000.0001"\n'),
+        { tbReportDate: '2025-12-31' });
+      expect(even.validationErrors.filter((e) => e.code === 'IMPORT_JE_UNBALANCED')).toEqual([]);
+    });
+
+    it('generic: an unbalanced-by-0.0001 journal entry is refused at validation, as the ledger would', async () => {
+      const csv = 'Date,Account,Amount,Offset Account\n2026-01-05,Cash,"1,000.0001",Equity\n';
+      const out = await importsService.createSession({ tenantId, companyId, userId, file: fileFromText('gl.csv', csv),
+        kind: 'gl_transactions', sourceSystem: 'generic', options: {} });
+      // Single-row entries always balance; the amount keeps all 4 places.
+      expect(out.validationErrors.filter((e) => e.code === 'IMPORT_JE_UNBALANCED')).toEqual([]);
+      expect(JSON.stringify(out.preview)).toContain('1000.0001');
+    });
+
+    it('Accounting Power: signed balances with parentheses, CR and blanks; a comma decimal is IMPORT_AMOUNT_INVALID', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '1000', name: 'Cash', accountType: 'asset' },
+        { tenantId, companyId, accountNumber: '2000', name: 'Accounts payable', accountType: 'liability' },
+        { tenantId, companyId, accountNumber: '3000', name: 'Equity', accountType: 'equity' },
+      ]);
+      const head = 'Account Code, Type, Description, Beginning Balance, Transactions Debit, Transactions Credit, Unadjusted Balance, '
+        + 'Adjustments Debit, Adjustments Credit, Adjusted Balance, Income Statements Debit, Income Statements Credit, '
+        + 'Balance Sheets Debit, Balance Sheets Credit, Tickmark, Notes\n';
+      const row = (code: string, type: string, desc: string, beginning: string) =>
+        `"${code}","${type}","${desc}","${beginning}","0.00","0.00","0.00","0.00","0.00","","0.00","0.00","0.00","0.00","",""\n`;
+      const csv = head + row('1000', 'A', 'Cash', '1,500.25') + row('2000', 'L', 'Accounts payable', '(1,000.00)')
+        + row('3000', 'E', 'Equity', '500.25 CR');
+      const out = await tb('accounting_power', fileFromText('tb.csv', csv), { tbColumn: 'beginning', tbReportDate: '2025-01-01' });
+      expect(out.validationErrors).toEqual([]);
+      expect(out.preview).toMatchObject({ totalDebit: '1500.2500', totalCredit: '1500.2500' });
+      // Adjusted column all blank: zero rows, no errors (blank was IMPORT_BAD_AMOUNT).
+      const blank = await tb('accounting_power', fileFromText('tb2.csv', `\n`), { tbColumn: 'adjusted', tbReportDate: '2025-12-31' });
+      expect(blank.validationErrors.filter((e) => e.code === 'IMPORT_AMOUNT_INVALID' || e.code === 'IMPORT_BAD_AMOUNT')).toEqual([]);
+      const bad = await tb('accounting_power', fileFromText('tb3.csv', head + row('1000', 'A', 'Cash', '1.500,25')),
+        { tbColumn: 'beginning', tbReportDate: '2025-01-01' });
+      expect(bad.validationErrors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'IMPORT_AMOUNT_INVALID', field: 'Beginning Balance', rowNumber: 2 }),
+      ]));
+    });
+
+    it('QBO Journal: a noisy formula totals row still closes its entry; a bad detail line leaves its entry out', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Car Wash Checking', accountType: 'asset' },
+        { tenantId, companyId, name: 'Operating Revenue', accountType: 'revenue' },
+      ]);
+      const noise = 0.1 + 0.2;
+      const file = await xlsxFromGrid('journal-u260.xlsx', 'Journal', [
+        ['Journal'], [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Account', 'Debit', 'Credit'],
+        [null, '01/02/2025', 'Deposit', null, null, 'Sale 1', 'Car Wash Checking', 1234.5678, null],
+        [null, null, null, null, null, 'Sale 1', 'Operating Revenue', null, '1,234.5678'],
+        [null, null, null, null, null, null, null, noise, noise],
+        [],
+        [null, '01/03/2025', 'Deposit', null, null, 'Sale 2', 'Car Wash Checking', noise, null],
+        [null, null, null, null, null, 'Sale 2', 'Operating Revenue', null, noise],
+        [null, null, null, null, null, null, null, noise, noise],
+      ]);
+      const out = await importsService.createSession({ tenantId, companyId, userId, file, kind: 'gl_transactions',
+        sourceSystem: 'quickbooks_online', options: {} });
+      expect(out.preview.jeGroupCount).toBe(1);
+      expect(out.validationErrors.map((e) => [e.field, e.code])).toEqual([
+        ['Debit', 'IMPORT_AMOUNT_INVALID'], ['Credit', 'IMPORT_AMOUNT_INVALID'],
+      ]);
+      expect(JSON.stringify(out.preview)).toContain('1234.5678');
+    });
+
+    it('QB Desktop: "(1,234.00)" and "$" amounts parse exactly (they were a 500)', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, accountNumber: '10100', name: 'Checking', accountType: 'asset' },
+        { tenantId, companyId, accountNumber: '30000', name: 'Opening Balance Equity', accountType: 'equity' },
+        { tenantId, companyId, accountNumber: '24000', name: 'Payroll Liabilities', accountType: 'liability' },
+      ]);
+      const csv = ',"Dec 31, 25"\r\n,"Debit","Credit"\r\n'
+        + '"10100 · Checking","$2,469.13",""\r\n'
+        + '"24000 · Payroll Liabilities","(1,234.00)",""\r\n'
+        + '"30000 · Opening Balance Equity","","1,235.13"\r\n'
+        + '"TOTAL","1,235.13","1,235.13"\r\n';
+      const out = await tb('quickbooks_desktop', { originalname: 'tb.csv', buffer: Buffer.from(csv, 'latin1') });
+      expect(out.validationErrors).toEqual([]);
+      expect(out.preview).toMatchObject({ totalDebit: '1235.1300', totalCredit: '1235.1300' });
+    });
+  });
+
   describe('QuickBooks Online GL Journal', () => {
     it('groups by JE header and posts each', async () => {
       await db.insert(accounts).values([

@@ -35,6 +35,7 @@ import {
   type ImportValidationError,
 } from '@kis-books/shared';
 import { parseCsvText } from '../../payroll-parse.service.js';
+import { Decimal, importAmountError, importAmountText, isImportAmount, parseImportAmount } from '../import-amount.js';
 
 // ── Shared helpers ────────────────────────────────────────────────
 
@@ -98,13 +99,17 @@ const MONTHS: Record<string, string> = {
   jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
 };
 
-/** Parse a QB amount ("1,051.07", "0.00", "-2,500.00", "") → decimal string. */
-function toDecimal(raw: string | undefined): string {
-  if (!raw) return '0';
-  const cleaned = raw.replace(/,/g, '').trim();
-  if (cleaned === '' || cleaned === '-') return '0';
-  return cleaned;
+/**
+ * A QB amount ("1,051.07", "0.00", "-2,500.00", "(1,234.00)", "$5", "")
+ * as canonical decimal text, exactly (U-260); blank is "0.00". Not an
+ * amount: null, and the caller reports IMPORT_AMOUNT_INVALID.
+ */
+function toDecimal(raw: string | undefined): string | null {
+  const d = parseImportAmount(raw);
+  return isImportAmount(d) ? importAmountText(d) : null;
 }
+
+const isZero = (s: string) => new Decimal(s).isZero();
 
 /**
  * Split a QB Desktop account cell "<number> · <name>" into its parts.
@@ -328,14 +333,19 @@ export function parseTrialBalance(buf: Buffer): {
     if (!acctCell || /^total\b/i.test(acctCell)) continue;
     const debit = toDecimal(r[iDeb]);
     const credit = toDecimal(r[iCred]);
-    if (Number(debit) === 0 && Number(credit) === 0) continue; // zero balances contribute nothing
+    if (debit === null || credit === null) {
+      if (debit === null) errors.push(importAmountError(rowNumber, 'Debit', r[iDeb]));
+      if (credit === null) errors.push(importAmountError(rowNumber, 'Credit', r[iCred]));
+      continue;
+    }
+    if (isZero(debit) && isZero(credit)) continue; // zero balances contribute nothing
     const split = splitQbdAccount(acctCell);
     rows.push({
       rowNumber,
       accountNumber: split.accountNumber,
       accountName: split.accountName || acctCell,
-      ...(Number(debit) !== 0 ? { debit } : {}),
-      ...(Number(credit) !== 0 ? { credit } : {}),
+      ...(!isZero(debit) ? { debit } : {}),
+      ...(!isZero(credit) ? { credit } : {}),
     });
   }
   return { rows, errors, reportDate };
@@ -362,6 +372,8 @@ interface QbdGroup {
   num: string;
   name: string;
   legs: QbdLegRaw[];
+  /** A leg's amount is not an amount (IMPORT_AMOUNT_INVALID reported): the entry is left out. */
+  invalid?: boolean;
 }
 
 export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: ImportValidationError[] } {
@@ -396,7 +408,7 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
   const closeCurrent = () => {
     const g = current;
     current = null;
-    if (!g || g.legs.length === 0) return;
+    if (!g || g.legs.length === 0 || g.invalid) return;
     const iso = toIsoDate(g.date);
     if (!iso) {
       errors.push({
@@ -422,7 +434,7 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
     // Drop a wholly zero-amount entry (postTransaction rejects all-zero
     // transactions; dropping here keeps surviving-entry indices stable for
     // fileHash:index dedup on re-upload).
-    if (!lines.some((l) => Number(l.debit) !== 0 || Number(l.credit) !== 0)) return;
+    if (!lines.some((l) => !isZero(l.debit) || !isZero(l.credit))) return;
     entries.push({
       rowNumber: g.rowNumber,
       date: iso,
@@ -478,13 +490,21 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
       continue;
     }
 
+    const debit = toDecimal(r[iDeb]);
+    const credit = toDecimal(r[iCred]);
+    if (debit === null || credit === null) {
+      if (debit === null) errors.push(importAmountError(rowNumber, 'Debit', r[iDeb]));
+      if (credit === null) errors.push(importAmountError(rowNumber, 'Credit', r[iCred]));
+      current.invalid = true;
+      continue;
+    }
     current.legs.push({
       rowNumber,
       name: iName !== -1 ? (r[iName] ?? '').trim() : '',
       memo: iMemo !== -1 ? (r[iMemo] ?? '').trim() : '',
       account,
-      debit: toDecimal(r[iDeb]),
-      credit: toDecimal(r[iCred]),
+      debit,
+      credit,
       className: iClass !== -1 ? (r[iClass] ?? '').trim() : '',
     });
   }
