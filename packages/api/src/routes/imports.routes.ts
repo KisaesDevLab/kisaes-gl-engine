@@ -234,12 +234,20 @@ importsRouter.get('/batches/:id', describe({
  * tenant role owner, or a super admin (as reconciliation undo, U-190).
  * Ahead of idempotent(), so a replay needs the right too.
  */
+function isImportAdmin(req: Request): boolean {
+  return req.isSuperAdmin === true || req.userRole === 'owner';
+}
+
+function importAdminRequired(): AppError {
+  return AppError.forbidden('Only a company administrator can commit or undo an import.', 'IMPORT_ADMIN_REQUIRED');
+}
+
 function requireImportAdmin(req: Request, _res: Response, next: NextFunction): void {
-  if (req.isSuperAdmin || req.userRole === 'owner') {
+  if (isImportAdmin(req)) {
     next();
     return;
   }
-  next(AppError.forbidden('Only a company administrator can commit or undo an import.', 'IMPORT_ADMIN_REQUIRED'));
+  next(importAdminRequired());
 }
 
 /** The closed-period context the batch job runs with, copied from the request's (U-262). */
@@ -393,12 +401,16 @@ importsRouter.post('/:id/commit', describe({
   description: 'Commits the session as a one-session batch (kind single, U-261) in one database transaction and answers '
     + '{session, result}. A failure posts nothing and leaves the session failed. 409 IMPORT_SESSION_IN_BATCH when the '
     + 'session belongs to a batch (commit the batch); 409 IMPORT_ALREADY_COMMITTED / IMPORT_PERIOD_OVERLAP (U-263); 409 '
-    + 'IMPORT_BUSY while another import of the company runs; 409 IMPORT_HAS_ERRORS; 409 IMPORT_TERMINAL. dryRun validates only.',
+    + 'IMPORT_BUSY while another import of the company runs; 409 IMPORT_HAS_ERRORS; 409 IMPORT_TERMINAL. dryRun validates only. '
+    + 'A commit (not a dryRun) is owner or super admin only, as a batch commit (403 IMPORT_ADMIN_REQUIRED, U-264).',
   tags: ['Imports'],
 }), async (req, res) => {
   const id = req.params['id'];
   if (!id) throw AppError.badRequest('Missing session id.');
   const parsed = importCommitSchema.parse(req.body ?? {});
+  // U-264 (E1 open point): posting through the old route needs the same right
+  // as a batch commit; a dry run posts nothing and stays open to staff.
+  if (!parsed.dryRun && !isImportAdmin(req)) throw importAdminRequired();
   const out = await importsService.commitSession(
     req.tenantId,
     req.companyId,

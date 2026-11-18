@@ -6,7 +6,7 @@ import type { CreateCreditMemoInput } from '@kis-books/shared';
 import { eq, and } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 const Decimal = DecimalLib.default || DecimalLib;
-import { db } from '../db/index.js';
+import { db, type Tx } from '../db/index.js';
 import { accounts, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
@@ -25,8 +25,10 @@ export async function createCreditMemo(tenantId: string, input: CreateCreditMemo
  */
 export async function createCreditMemoWithWarnings(
   tenantId: string, input: CreateCreditMemoInput, userId?: string, companyId?: string,
+  /** The caller's transaction (U-264, review S3): the memo posts in it. Default: its own. */
+  outerTx?: Tx,
 ) {
-  const arAccount = await db.query.accounts.findFirst({
+  const arAccount = await (outerTx ?? db).query.accounts.findFirst({
     where: and(eq(accounts.tenantId, tenantId), eq(accounts.systemTag, 'accounts_receivable')),
   });
   if (!arAccount) throw AppError.internal('AR account not found');
@@ -51,7 +53,7 @@ export async function createCreditMemoWithWarnings(
   });
 
   // Number and posting in one transaction: a refused post takes no number.
-  return await db.transaction(async (tx) => {
+  const run = async (tx: Tx) => {
     await claimIdempotency(tx);
     const { txnNumber, warnings } = await documentNumbers.numberForNew(tenantId, 'credit_memo', input.txnNumber, {
       companyId, warnOnly: input.warnOnly === true, executor: tx,
@@ -84,5 +86,6 @@ export async function createCreditMemoWithWarnings(
       }, userId, companyId, { withSource: true });
     }
     return { transaction, warnings };
-  });
+  };
+  return outerTx ? await run(outerTx) : await db.transaction(run);
 }

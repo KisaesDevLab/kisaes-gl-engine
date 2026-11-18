@@ -379,13 +379,14 @@ async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<strin
   return account.id;
 }
 
-async function getNextBillNumber(tenantId: string): Promise<string> {
+async function getNextBillNumber(executor: DbOrTx, tenantId: string): Promise<string> {
   // Atomically pick the next bill number based on the current count of bills.
   // We don't have a dedicated counter on companies, so use a count-based
   // sequence prefixed BILL-. Concurrent inserts may briefly collide on the
   // numeric portion, but txnNumber is purely informational (not unique), so
-  // this is acceptable for an MVP.
-  const [row] = await db.select({ c: count() }).from(transactions)
+  // this is acceptable for an MVP. Counted on the posting transaction, so
+  // several bills in one transaction (an import, U-264) get distinct numbers.
+  const [row] = await executor.select({ c: count() }).from(transactions)
     .where(and(eq(transactions.tenantId, tenantId), eq(transactions.txnType, 'bill')));
   const next = (row?.c ?? 0) + 1;
   return `BILL-${String(next).padStart(5, '0')}`;
@@ -462,7 +463,7 @@ export async function createBill(tenantId: string, input: CreateBillInput, userI
       { accountId: apAccountId, debit: '0', credit: total.toFixed(4) },
     ];
 
-    const txnNumber = await getNextBillNumber(tenantId);
+    const txnNumber = await getNextBillNumber(tx, tenantId);
 
     const bill = await ledger.postTransaction(tenantId, {
       txnType: 'bill',
