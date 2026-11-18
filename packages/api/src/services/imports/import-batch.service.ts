@@ -29,9 +29,9 @@
  * writes are invisible to pollers until the commit).
  */
 
-import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../../db/index.js';
-import { importBatches, importSessions, importRows, transactions, companies } from '../../db/schema/index.js';
+import { importBatches, importSessions, importRows, transactions, companies, accounts } from '../../db/schema/index.js';
 import type { ImportCommitResult } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
 import { claimAndRecord } from '../idempotency.service.js';
@@ -44,7 +44,7 @@ import {
 } from './import-undo.service.js';
 import {
   sortSessionsForCommit, commitSessionInBatch, assertNotAlreadyCommitted, assertNoCommittedOverlap,
-  toSessionDto, newBatchShared, batchSharedResult, type BatchPriorValues,
+  toSessionDto, newBatchShared, batchSharedResult, loadParsedRows, type BatchPriorValues,
 } from './imports.service.js';
 
 export type BatchKind = 'conversion' | 'single' | 'transactions';
@@ -207,6 +207,54 @@ async function loadSessions(ex: DbOrTx, batchId: string, forUpdate = false): Pro
   return forUpdate ? await q.for('update') : await q;
 }
 
+/**
+ * U-265: every account id of an accountMap is an account of the company (or a
+ * tenant-wide one): 400 IMPORT_ACCOUNT_MAP_INVALID {keys} otherwise.
+ */
+async function assertAccountMap(ex: DbOrTx, tenantId: string, companyId: string, map: Record<string, string> | undefined): Promise<void> {
+  const entries = Object.entries(map ?? {}).filter(([, v]) => v !== 'create');
+  if (entries.length === 0) return;
+  const ids = [...new Set(entries.map(([, v]) => v))];
+  const found = await ex.select({ id: accounts.id }).from(accounts).where(and(
+    eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId)), inArray(accounts.id, ids),
+  ));
+  const ok = new Set(found.map((a) => a.id));
+  const bad = entries.filter(([, v]) => !ok.has(v)).map(([k]) => k);
+  if (bad.length > 0) {
+    throw AppError.badRequest('The account map names an account that is not in this company.', 'IMPORT_ACCOUNT_MAP_INVALID', { keys: bad.slice(0, 100) });
+  }
+}
+
+/**
+ * U-265: refusals of inventory postings no closing-date password can lift,
+ * checked before the 202: inventory turned off while the batch brings in
+ * inventory items or a valuation (409 IMPORT_INVENTORY_OFF), and opening
+ * stock dated on or before the closing date (409 INVENTORY_PERIOD_CLOSED).
+ */
+async function assertInventoryReady(tenantId: string, companyId: string, sessions: SessionRow[]): Promise<void> {
+  const posting = sessions.filter((s) => s.role === 'post');
+  const valuations = posting.filter((s) => s.kind === 'inventory_valuation' && s.rowCount > 0);
+  let parts = false;
+  for (const s of posting.filter((x) => x.kind === 'items')) {
+    const rows = (await loadParsedRows(db, s)) as Array<{ itemType?: string | null }>;
+    if (rows.some((r) => r.itemType === 'inventory_part')) { parts = true; break; }
+  }
+  if (!parts && valuations.length === 0) return;
+  const [co] = await db.select({ on: companies.inventoryEnabled, lockDate: companies.lockDate }).from(companies)
+    .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+  if (co?.on !== true) {
+    throw AppError.conflict('This import brings in inventory items. Turn on inventory for the company first.', 'IMPORT_INVENTORY_OFF');
+  }
+  const lockDate = co.lockDate ? String(co.lockDate).slice(0, 10) : null;
+  const early = valuations.find((s) => lockDate && s.reportDate && s.reportDate <= lockDate);
+  if (early) {
+    throw AppError.conflict(
+      `Opening inventory is dated ${early.reportDate}, on or before the closing date (${lockDate}). Inventory in a closed period can't change.`,
+      'INVENTORY_PERIOD_CLOSED', { closingDate: lockDate, sessionId: early.id },
+    );
+  }
+}
+
 // ── Create ────────────────────────────────────────────────────────
 
 export interface CreateBatchInput {
@@ -240,6 +288,7 @@ export async function createBatch(tenantId: string, companyId: string, userId: s
     if (options.fiscalYearStartMonth !== undefined && !(await isCompanyEmpty(tx, tenantId, companyId))) {
       throw AppError.conflict('The fiscal year can only be set by an import into a company with no transactions.', 'IMPORT_FISCAL_YEAR_LOCKED');
     }
+    await assertAccountMap(tx, tenantId, companyId, options.accountMap);
     const [b] = await tx.insert(importBatches).values({
       tenantId, companyId, sourceSystem: input.sourceSystem, kind: input.kind, status: 'draft',
       options: options as never,
@@ -318,6 +367,12 @@ export interface CommitRequest {
   lockContext?: LockDateContext;
   /** Set by the synchronous closed-period check (U-262): audited once, by the job, for the whole batch. */
   override?: LockOverride;
+  /**
+   * U-265: the old one-session POST /imports/:id/commit. Its sessions keep their
+   * behaviour (suspense for unmapped accounts, one contact per kind); a batch
+   * from POST /imports/batches is strict.
+   */
+  legacy?: boolean;
 }
 
 // ── Closed periods (U-262) ────────────────────────────────────────
@@ -329,7 +384,9 @@ function earliestPostingDate(sessions: SessionRow[]): string | null {
     if (s.role !== 'post') continue;
     // Open items (U-264) post on their document dates: dateFrom is the earliest.
     const d = s.kind === 'trial_balance' ? s.reportDate
-      : s.kind === 'gl_transactions' || s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom : null;
+      : s.kind === 'gl_transactions' || s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom
+        // U-265: opening stock is dated the valuation's report date.
+        : s.kind === 'inventory_valuation' && s.rowCount > 0 ? s.reportDate : null;
     if (d && (min === null || d < min)) min = d;
   }
   return min;
@@ -393,6 +450,7 @@ async function precheckCommit(tenantId: string, companyId: string, b: BatchRow, 
   }
   assertNoBlockingErrors(sessions.filter((s) => s.role === 'post'));
   await assertSessionsImportable(db, tenantId, companyId, sessions);
+  await assertInventoryReady(tenantId, companyId, sessions);
   const options = (b.options as BatchOptions | null) ?? {};
   if (options.requireEmptyCompany || options.fiscalYearStartMonth !== undefined) {
     const empty = await isCompanyEmpty(db, tenantId, companyId);
@@ -523,7 +581,9 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
 
     const results: Record<string, ImportCommitResult> = {};
     // U-264: open-item files in the batch send A/R and A/P history to the before-conversion accounts.
-    const shared = newBatchShared(posting.map((s) => s.kind));
+    const shared = newBatchShared(posting.map((s) => s.kind), {
+      strict: !req.legacy, accountMap: options.accountMap, classMap: options.classMap,
+    });
     let done = 0;
     for (const s of posting) {
       currentSession = s.id;
@@ -621,7 +681,7 @@ export async function commitSingleSession(
     return b!.id;
   });
   try {
-    const results = await runCommitJob({ tenantId, companyId, userId, batchId });
+    const results = await runCommitJob({ tenantId, companyId, userId, batchId, legacy: true });
     return { batchId, result: results[sessionId] ?? { created: 0 } };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -714,6 +774,11 @@ export async function runUndoJob(req: CommitRequest): Promise<void> {
     for (const [id, a] of Object.entries(prior.adoptedSystemAccounts ?? {})) {
       await tx.execute(sql`UPDATE accounts SET system_tag = ${a.systemTag}, is_system = ${a.isSystem ?? false}, updated_at = now()
         WHERE tenant_id = ${tenantId} AND id = ${id}`);
+    }
+    // U-265 (Q-77): contacts the batch made 'both' go back to their kind, while still 'both'.
+    for (const [id, c] of Object.entries(prior.contacts ?? {})) {
+      await tx.execute(sql`UPDATE contacts SET contact_type = ${c.contactType}, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND id = ${id} AND contact_type = 'both'`);
     }
     if (prior.fiscalYearStartMonth !== undefined) {
       await tx.update(companies).set({ fiscalYearStartMonth: prior.fiscalYearStartMonth, updatedAt: new Date() })

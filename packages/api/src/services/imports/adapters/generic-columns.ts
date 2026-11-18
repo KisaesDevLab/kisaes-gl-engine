@@ -103,7 +103,40 @@ function openItemsTemplate(kind: 'open_invoices' | 'unpaid_bills'): GenericTempl
   };
 }
 
-export const GENERIC_TEMPLATES: Record<'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills', GenericTemplate> = {
+/** U-265: the item list (read by adapters/items.ts, which also takes the QuickBooks column names). */
+export const GENERIC_ITEMS_TEMPLATE: GenericTemplate = {
+  sheetName: 'Items',
+  description: 'One product or service per row. Item, Type and Account (the income account) are required; inventory items also need an Asset Account and a COGS Account.',
+  columns: [
+    { header: 'Item', required: true, example: 'Consulting', note: 'Unique name.' },
+    { header: 'Type', required: true, example: 'Service', note: 'Service, Inventory Part, Non-inventory Part, Other Charge, Discount or Subtotal.' },
+    { header: 'Description', required: false, example: 'Hourly consulting' },
+    { header: 'Price', required: false, example: '125.00', note: 'Sales price; a discount takes an amount or a percent like 10%.' },
+    { header: 'Cost', required: false, example: '', note: 'Purchase cost.' },
+    { header: 'Account', required: true, example: '4000', note: 'Income account (name or number).' },
+    { header: 'Expense Account', required: false, example: '', note: 'Purchases of non-inventory items (name or number).' },
+    { header: 'COGS Account', required: false, example: '', note: 'Inventory items: cost of goods sold (name or number).' },
+    { header: 'Asset Account', required: false, example: '', note: 'Inventory items: inventory asset (name or number).' },
+    { header: 'Preferred Vendor', required: false, example: '' },
+    { header: 'Sales Tax Code', required: false, example: 'Non', note: 'Tax or Non.' },
+    { header: 'Active Status', required: false, example: 'Active', note: 'Active or Inactive.' },
+  ],
+};
+
+/** U-265: inventory on hand and value as of one date (the report date is required on upload). */
+export const GENERIC_VALUATION_TEMPLATE: GenericTemplate = {
+  sheetName: 'Inventory Valuation',
+  description: 'One inventory item per row, as of one date: what is on hand and its exact value. Each becomes opening stock at that value.',
+  columns: [
+    { header: 'Item', required: true, example: 'Widget' },
+    { header: 'On Hand', required: true, example: '12', note: 'Above 0, at most 4 decimal places.' },
+    { header: 'Asset Value', required: true, example: '180.00', note: 'The value of what is on hand, at most 2 decimal places.' },
+  ],
+};
+
+export const GENERIC_TEMPLATES: Record<'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills' | 'items' | 'inventory_valuation', GenericTemplate> = {
+  items: GENERIC_ITEMS_TEMPLATE,
+  inventory_valuation: GENERIC_VALUATION_TEMPLATE,
   coa: GENERIC_COA_TEMPLATE,
   contacts: GENERIC_CONTACTS_TEMPLATE,
   trial_balance: GENERIC_TB_TEMPLATE,

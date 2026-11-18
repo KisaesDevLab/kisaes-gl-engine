@@ -15,7 +15,85 @@ import type { AccountType } from './accounts.js';
  * Bills Detail", QuickBooks Online and Generic equivalents). Each row becomes
  * a real one-line invoice, credit memo, bill or vendor credit.
  */
-export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills';
+export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills'
+  // U-265 (qbd-mapping-v1): the item list, and inventory on hand and value as of a date.
+  | 'items' | 'inventory_valuation';
+
+/** The engine item kinds an imported item becomes (U-265). */
+export type ImportItemType = 'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal' | 'inventory_part';
+
+/**
+ * items (U-265): one row of an item list (QuickBooks Desktop Item Listing,
+ * QuickBooks Online Products and Services, the Generic template). Accounts are
+ * source account keys (number, else name), resolved at commit like journal lines.
+ */
+export interface CanonicalItemRow {
+  rowNumber: number;
+  /** Full name; a QuickBooks sub-item keeps "Parent:Sub". */
+  name: string;
+  /** The source Type, verbatim. */
+  sourceType: string;
+  /** The engine kind, or null for a source type that is not imported (see skipReason). */
+  itemType: ImportItemType | null;
+  /** Why a row is listed but not imported (sales tax items, groups, payment items). */
+  skipReason?: 'sales_tax' | 'group' | 'payment';
+  description?: string;
+  purchaseDescription?: string;
+  /** Exact decimal text (at most 4 places). */
+  unitPrice?: string;
+  /** Discount items: percent off, exact decimal text. */
+  discountPercent?: string;
+  purchaseCost?: string;
+  /** Source account keys (accountNumber ?? accountName), with their parts. */
+  incomeAccount?: { accountNumber?: string; accountName?: string };
+  expenseAccount?: { accountNumber?: string; accountName?: string };
+  assetAccount?: { accountNumber?: string; accountName?: string };
+  cogsAccount?: { accountNumber?: string; accountName?: string };
+  preferredVendor?: string;
+  isTaxable?: boolean;
+  isActive: boolean;
+  reorderPoint?: string;
+}
+
+/**
+ * inventory_valuation (U-265): on hand and asset value of each inventory item
+ * as of the report date (QuickBooks Desktop Inventory Valuation Summary). Both
+ * exact, as the report shows them; never quantity x average cost.
+ */
+export interface CanonicalValuationRow {
+  rowNumber: number;
+  /** Item full name ("Parent:Sub" for a sub-item). */
+  item: string;
+  /** Exact decimal text, at most 4 places, above 0. */
+  onHand: string;
+  /** Exact decimal text, at most 2 places, 0 or more. */
+  assetValue: string;
+}
+
+/**
+ * How the engine matched an account a file names (U-265, preview.accountMatches):
+ * one entry per distinct source account key over EVERY row of the file (not the
+ * preview sample). `sourceKey` is the key of the batch's accountMap and of the
+ * commit's unmappedAccountKeys: the source account number, else its name.
+ */
+export interface ImportAccountMatch {
+  sourceKey: string;
+  number?: string;
+  name?: string;
+  /**
+   * existing: the company has it (accountId); create: a chart row of this file
+   * that the commit creates; unmatched: neither (a batch commit refuses it
+   * unless the accountMap names an account, or a chart file of the batch has it).
+   */
+  match: 'existing' | 'create' | 'unmatched';
+  accountId?: string;
+  /** How an existing account was found. */
+  matchedBy?: 'number' | 'name';
+  /** Rows (chart, trial balance, item) or journal lines naming it. */
+  rows: number;
+  /** A chart row of type A/R or A/P (Q-P31k). */
+  systemRole?: 'accounts_receivable' | 'accounts_payable';
+}
 
 /** The open-item document a row becomes: by the sign of its open balance. */
 export type OpenItemDocType = 'invoice' | 'credit_memo' | 'bill' | 'vendor_credit';
@@ -51,6 +129,12 @@ export type ImportStatus =
   | 'undone';       // U-261: the batch holding the session was undone
 
 export type ContactKind = 'customer' | 'vendor';
+
+/**
+ * The list a contacts upload holds (U-265): 'other' is a QuickBooks Desktop
+ * Other Names list, imported as vendors (Q-78).
+ */
+export type ContactUploadKind = ContactKind | 'other';
 
 export type TbColumnChoice = 'beginning' | 'adjusted';
 
@@ -89,6 +173,14 @@ export interface CanonicalContactRow {
    *  (account number or name, e.g. Accounting Power's "Account" column).
    *  Commit resolves it against the tenant's chart of accounts. */
   defaultExpenseAccountRaw?: string;
+  /** U-265: false for a name the source marks inactive (it comes in inactive). Absent: active. */
+  isActive?: boolean;
+  /**
+   * U-265: a QuickBooks job row ("Customer:Job"). The engine has no projects
+   * list yet (U-35), so a job is not a contact of its own: the customer is
+   * (created when missing) and the job name stays on what refers to it.
+   */
+  jobOf?: string;
 }
 
 export interface CanonicalTrialBalanceRow {
@@ -158,6 +250,14 @@ export interface ImportPreview {
 
   // Open items (U-264): the exact sum of the open balances.
   openTotal?: string;
+
+  /**
+   * U-265: every account the file names (chart, trial balance, journal, item
+   * files), over all rows, sorted by sourceKey.
+   */
+  accountMatches?: ImportAccountMatch[];
+  /** inventory_valuation (U-265): the exact sum of the asset values. */
+  valuationTotal?: string;
 }
 
 export interface ImportSession {
@@ -190,8 +290,8 @@ export interface ImportSession {
 export interface ImportUploadOptions {
   /** CoA only: when true, existing accountNumbers have name/detailType/description overwritten. */
   updateExistingCoa?: boolean;
-  /** Contacts only: which file the operator is uploading (Customers vs Vendors). */
-  contactKind?: ContactKind;
+  /** Contacts only: which file the operator is uploading (Customers, Vendors, or QBD Other Names, U-265). */
+  contactKind?: ContactUploadKind;
   /** AP TB only: which signed-balance column to use for the opening JE. */
   tbColumn?: TbColumnChoice;
   /** AP TB only: ISO date for the opening JE (file doesn't carry one). */
@@ -250,4 +350,17 @@ export interface ImportCommitResult {
   mergedIntoSystemAccounts?: number;
   /** TB / GL (U-264): lines moved from A/R or A/P to the before-conversion accounts. */
   redirectedLines?: number;
+  /** Contacts / open items (U-265, Q-77): existing contacts of the other kind that became 'both'. */
+  mergedToBoth?: number;
+  /** Contacts (U-265): job rows folded into their customer (no projects list yet). */
+  jobsFolded?: number;
+  /** Contacts / items (U-265): rows brought in inactive. */
+  inactive?: number;
+  /** Items (U-265): rows listed but not imported, by reason. */
+  itemsSkipped?: Partial<Record<'sales_tax' | 'group' | 'payment' | 'exists' | 'no_account', number>>;
+  /** GL (U-265): distinct classes turned into tags through the batch's classMap. */
+  classesMapped?: number;
+  /** inventory_valuation (U-265): items given opening stock, and the exact total value. */
+  itemsValued?: number;
+  valuationTotal?: string;
 }

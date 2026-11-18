@@ -38844,11 +38844,20 @@
                             "properties": {
                               "accountMap": {
                                 "additionalProperties": {
-                                  "format": "uuid",
-                                  "type": "string"
+                                  "anyOf": [
+                                    {
+                                      "format": "uuid",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "create",
+                                      "type": "string"
+                                    }
+                                  ]
                                 },
                                 "propertyNames": {
-                                  "maxLength": 200
+                                  "maxLength": 200,
+                                  "minLength": 1
                                 },
                                 "type": "object"
                               },
@@ -38953,7 +38962,9 @@
                                     "trial_balance",
                                     "gl_transactions",
                                     "open_invoices",
-                                    "unpaid_bills"
+                                    "unpaid_bills",
+                                    "items",
+                                    "inventory_valuation"
                                   ],
                                   "type": "string"
                                 },
@@ -39145,7 +39156,7 @@
         ]
       },
       "post": {
-        "description": "Groups uploaded sessions (same sourceSystem, status uploaded) into one batch, the unit of commit, undo and record. 201 {batch} with status draft. 409 IMPORT_SESSION_IN_BATCH {sessionId, batchId} when a session already belongs to a batch; 409 IMPORT_TERMINAL when a session is no longer uploaded; 400 IMPORT_SOURCE_MISMATCH; 409 IMPORT_PERIOD_OVERLAP {batchId|null, from, to} when two journal files of the batch, or one and a journal file a committed batch holds, cover the same dates; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} when a committed batch holds the same data (by parsed-row hash); 409 IMPORT_FISCAL_YEAR_LOCKED when options.fiscalYearStartMonth is set and the company has transactions.",
+        "description": "Groups uploaded sessions (same sourceSystem, status uploaded) into one batch, the unit of commit, undo and record. 201 {batch} with status draft. 409 IMPORT_SESSION_IN_BATCH {sessionId, batchId} when a session already belongs to a batch; 409 IMPORT_TERMINAL when a session is no longer uploaded; 400 IMPORT_SOURCE_MISMATCH; 409 IMPORT_PERIOD_OVERLAP {batchId|null, from, to} when two journal files of the batch, or one and a journal file a committed batch holds, cover the same dates; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} when a committed batch holds the same data (by parsed-row hash); 409 IMPORT_FISCAL_YEAR_LOCKED when options.fiscalYearStartMonth is set and the company has transactions. U-265 (qbd-mapping-v1): options.accountMap {sourceKey (the source account number, else its name; preview.accountMatches[].sourceKey): account id | \"create\"} (400 IMPORT_ACCOUNT_MAP_INVALID {keys} for an id outside the company); options.classMap {className: {group?, tag}}. A batch never posts to suspense: its commit fails with 422 IMPORT_UNMAPPED_ACCOUNT {unmappedAccountKeys, unmappedCount} for any account it can not resolve. Options can not change after create: to retry with a map, DELETE the failed batch's sessions, upload the files again and create a new batch.",
         "operationId": "post_api_v1_imports_batches",
         "requestBody": {
           "content": {
@@ -39167,11 +39178,20 @@
                     "properties": {
                       "accountMap": {
                         "additionalProperties": {
-                          "format": "uuid",
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "const": "create",
+                              "type": "string"
+                            }
+                          ]
                         },
                         "propertyNames": {
-                          "maxLength": 200
+                          "maxLength": 200,
+                          "minLength": 1
                         },
                         "type": "object"
                       },
@@ -39370,11 +39390,20 @@
                           "properties": {
                             "accountMap": {
                               "additionalProperties": {
-                                "format": "uuid",
-                                "type": "string"
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "create",
+                                    "type": "string"
+                                  }
+                                ]
                               },
                               "propertyNames": {
-                                "maxLength": 200
+                                "maxLength": 200,
+                                "minLength": 1
                               },
                               "type": "object"
                             },
@@ -39479,7 +39508,9 @@
                                   "trial_balance",
                                   "gl_transactions",
                                   "open_invoices",
-                                  "unpaid_bills"
+                                  "unpaid_bills",
+                                  "items",
+                                  "inventory_valuation"
                                 ],
                                 "type": "string"
                               },
@@ -39799,11 +39830,20 @@
                           "properties": {
                             "accountMap": {
                               "additionalProperties": {
-                                "format": "uuid",
-                                "type": "string"
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "create",
+                                    "type": "string"
+                                  }
+                                ]
                               },
                               "propertyNames": {
-                                "maxLength": 200
+                                "maxLength": 200,
+                                "minLength": 1
                               },
                               "type": "object"
                             },
@@ -39908,7 +39948,9 @@
                                   "trial_balance",
                                   "gl_transactions",
                                   "open_invoices",
-                                  "unpaid_bills"
+                                  "unpaid_bills",
+                                  "items",
+                                  "inventory_valuation"
                                 ],
                                 "type": "string"
                               },
@@ -40151,7 +40193,7 @@
     },
     "/api/v1/imports/batches/{id}/commit": {
       "post": {
-        "description": "Checks, then claims the batch (draft or failed -> committing) and answers 202 {batchId}; the batch then posts every post-role session in ONE database transaction (chart of accounts, contacts, trial balance, journal, in that order). Poll GET /imports/batches/:id: it ends committed, or failed with error and nothing posted (a failed batch may be committed again with a new Idempotency-Key; the same key replays the 202). 409 IMPORT_BUSY while another import or undo of the company runs; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt}; 409 IMPORT_PERIOD_OVERLAP; 409 IMPORT_BATCH_UNDONE; 409 IMPORT_HAS_ERRORS {sessionId, errors}; 409 IMPORT_COMPANY_NOT_EMPTY; 409 IMPORT_FISCAL_YEAR_LOCKED; 400 IMPORT_BATCH_EMPTY. backupRef names the verified backup the client took first. A date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without it, 403 CLOSING_PASSWORD_INVALID when wrong, 429 when tried too often); with no closing-date password set, staff may send confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).",
+        "description": "Checks, then claims the batch (draft or failed -> committing) and answers 202 {batchId}; the batch then posts every post-role session in ONE database transaction (chart of accounts, contacts, items, trial balance, journal, open invoices, unpaid bills, inventory valuation, in that order; U-265). Poll GET /imports/batches/:id: it ends committed, or failed with error and nothing posted (a failed batch may be committed again with a new Idempotency-Key; the same key replays the 202). 409 IMPORT_BUSY while another import or undo of the company runs; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt}; 409 IMPORT_PERIOD_OVERLAP; 409 IMPORT_BATCH_UNDONE; 409 IMPORT_HAS_ERRORS {sessionId, errors}; 409 IMPORT_COMPANY_NOT_EMPTY; 409 IMPORT_FISCAL_YEAR_LOCKED; 400 IMPORT_BATCH_EMPTY; 409 IMPORT_INVENTORY_OFF (inventory items or a valuation while company inventory is off); 409 INVENTORY_PERIOD_CLOSED {closingDate} (a valuation dated on or before the closing date; no password lifts it). Failures after the 202 (batch error): 422 IMPORT_UNMAPPED_ACCOUNT, IMPORT_UNKNOWN_ITEM, IMPORT_ITEM_NOT_INVENTORY, IMPORT_VALUATION_MISMATCH (U-265). backupRef names the verified backup the client took first. A date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without it, 403 CLOSING_PASSWORD_INVALID when wrong, 429 when tried too often); with no closing-date password set, staff may send confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).",
         "operationId": "post_api_v1_imports_batches_by_id_commit",
         "parameters": [
           {

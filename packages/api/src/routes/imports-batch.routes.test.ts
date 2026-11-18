@@ -111,14 +111,17 @@ describe('batch commit (U-261)', () => {
 
   it('a row error names the session and row; nothing is posted', async () => {
     const coa = await upload(c, 'coa.csv', COA_CSV, 'coa');
-    // 9999 does not exist and suspense is off: the journal fails at its first entry.
+    // 9999 does not exist: a batch never posts to suspense (U-265); every unmapped key is listed.
     const gl = await upload(c, 'gl.csv', glCsv(2025, [1], '9999'), 'gl_transactions', { unmappedAccountsToSuspense: false });
     const before = await companySnapshot(c);
     const b = await createBatch([coa, gl]);
     await commit(b['id']);
     const out = await get(`/batches/${b['id']}`);
     expect(out.json['batch'].status).toBe('failed');
-    expect(out.json['error']).toMatchObject({ code: 'IMPORT_UNKNOWN_ACCOUNT', sessionId: gl, rowNumber: expect.any(Number) });
+    expect(out.json['error']).toMatchObject({
+      code: 'IMPORT_UNMAPPED_ACCOUNT', sessionId: gl, rowNumber: expect.any(Number),
+      details: { unmappedAccountKeys: ['9999'], unmappedCount: 1 },
+    });
     expect(await companySnapshot(c)).toEqual(before);
   });
 
