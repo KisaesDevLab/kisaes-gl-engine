@@ -29,6 +29,8 @@ export const importStatusSchema = z.enum([
   'committed',
   'failed',
   'cancelled',
+  // U-261: the batch holding the session was undone.
+  'undone',
 ]);
 
 export const contactKindSchema = z.enum(['customer', 'vendor']);
@@ -100,6 +102,9 @@ export const importBatchCommitSchema = z.object({
   /** Staff confirmation for a closed period when the company has no closing-date password. */
   confirmClosedPeriod: z.boolean().optional(),
 });
+
+/** U-261: undo takes the same body (backupRef of the backup taken before the undo). */
+export const importBatchUndoSchema = importBatchCommitSchema;
 
 export const importBatchListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),

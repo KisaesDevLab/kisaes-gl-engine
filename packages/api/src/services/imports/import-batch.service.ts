@@ -31,13 +31,17 @@
 
 import { and, asc, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { db, type DbOrTx, type Tx } from '../../db/index.js';
-import { importBatches, importSessions, transactions, companies } from '../../db/schema/index.js';
+import { importBatches, importSessions, importRows, transactions, companies } from '../../db/schema/index.js';
 import type { ImportCommitResult } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
 import { claimAndRecord } from '../idempotency.service.js';
 import { runWithoutIdempotency } from '../idempotency-context.js';
 import { runWithLockContext, clearLockContextSecrets } from '../lock-context.js';
-import type { LockDateContext } from '../ledger.service.js';
+import { checkLockDate, type LockDateContext, type LockOverride } from '../ledger.service.js';
+import { auditLog, auditLogMany } from '../../middleware/audit.js';
+import {
+  loadCreatedSets, findUndoBlockers, deleteBatchRows, beforeImages, takeCommitStamps, type CommitStamps, type UndoBlocker,
+} from './import-undo.service.js';
 import {
   sortSessionsForCommit, commitSessionInBatch, assertNotAlreadyCommitted, assertNoCommittedOverlap,
   toSessionDto, type BatchPriorValues,
@@ -311,6 +315,57 @@ export interface CommitRequest {
   backupRef?: string | null;
   /** The closed-period context the job posts with (copied; the request's own is wiped when it answers). */
   lockContext?: LockDateContext;
+  /** Set by the synchronous closed-period check (U-262): audited once, by the job, for the whole batch. */
+  override?: LockOverride;
+}
+
+// ── Closed periods (U-262) ────────────────────────────────────────
+
+/** The earliest date a commit posts on: trial balance report dates and journal first dates of 'post' sessions. */
+function earliestPostingDate(sessions: SessionRow[]): string | null {
+  let min: string | null = null;
+  for (const s of sessions) {
+    if (s.role !== 'post') continue;
+    const d = s.kind === 'trial_balance' ? s.reportDate : s.kind === 'gl_transactions' ? s.dateFrom : null;
+    if (d && (min === null || d < min)) min = d;
+  }
+  return min;
+}
+
+/**
+ * The synchronous closed-period check before the 202 (review S2): the
+ * earliest posting date against the closing date, with the request's
+ * closing-date password or staff confirmation. 423 TB_PERIOD_LOCKED, 403
+ * CLOSING_PASSWORD_INVALID (audited as a failed attempt; the route's limiter
+ * answers 429). A permitted override is returned, not audited: the job writes
+ * one closing_date_override row for the whole batch.
+ */
+async function closedPeriodCheck(req: CommitRequest, earliest: string | null): Promise<LockOverride | undefined> {
+  if (!earliest) return undefined;
+  return await checkLockDate(db, req.tenantId, earliest, req.companyId, req.lockContext ?? { userType: 'staff', userId: req.userId }, {
+    deferAudit: true,
+  });
+}
+
+/** The job's own closed-period context: the request's, with per-posting override audits turned off. */
+function jobLockContext(req: CommitRequest): LockDateContext {
+  const base = req.lockContext ?? { userType: 'staff' as const, userId: req.userId, overrideConfirmed: false };
+  const ctx: LockDateContext = { ...base, batchOverrideAudit: true };
+  if (base.verifiedClosingPasswordHashes) ctx.verifiedClosingPasswordHashes = new Set(base.verifiedClosingPasswordHashes);
+  return ctx;
+}
+
+/** The one closing_date_override audit row of a batch commit or undo (U-262). Never the password. */
+async function auditBatchOverride(tx: Tx, req: CommitRequest, operation: 'commit' | 'undo'): Promise<void> {
+  const o = req.override;
+  if (!o) return;
+  await auditLog(req.tenantId, 'override', 'closing_date_override', req.batchId,
+    { lockDate: o.lockDate, lockDateSetBy: o.lockDateSetBy, lockDateSetAt: o.lockDateSetAt },
+    {
+      txnDate: o.txnDate, method: o.method, overrideConfirmed: o.method === 'confirmed',
+      importBatchId: req.batchId, operation, companyId: req.companyId,
+    },
+    req.userId, tx);
 }
 
 /**
@@ -382,6 +437,7 @@ export async function startCommit(req: CommitRequest): Promise<{ batchId: string
   const b = await loadBatch(db, req.tenantId, req.companyId, req.batchId);
   const sessions = await loadSessions(db, req.batchId);
   await precheckCommit(req.tenantId, req.companyId, b, sessions);
+  req.override = await closedPeriodCheck(req, earliestPostingDate(sessions));
   await claimForCommit(req);
   setProgress(req.batchId, 'queued', 0, sessions.length);
   scheduleCommitJob(req);
@@ -488,6 +544,9 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
       await tx.update(importSessions).set({ status: 'committed', committedAt: new Date(), updatedAt: new Date() })
         .where(inArray(importSessions.id, refs));
     }
+    // What undo compares against (database clock, review: one stamp in SQL).
+    priorValues.stamps = await takeCommitStamps(tx, tenantId, batchId, Object.keys(priorValues.accounts ?? {}));
+    await auditBatchOverride(tx, req, 'commit');
     const now = new Date();
     await tx.update(importBatches).set({
       status: 'committed', result: { sessions: results } as never, error: null,
@@ -497,10 +556,11 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     return results;
   });
 
+  const jobCtx = req.lockContext ? jobLockContext(req) : undefined;
   try {
     // The batch routes pass an explicit context; the old one-session commit
     // runs in its request, which carries none (the hard 423, as before).
-    return req.lockContext ? await runWithLockContext(req.lockContext, run) : await run();
+    return jobCtx ? await runWithLockContext(jobCtx, run) : await run();
   } catch (e) {
     const err = errorOf(e, currentSession);
     await db.update(importBatches).set({ status: 'failed', error: err as never, updatedAt: new Date() })
@@ -509,6 +569,7 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
   } finally {
     progressByBatch.delete(batchId);
     if (req.lockContext) clearLockContextSecrets(req.lockContext);
+    if (jobCtx) clearLockContextSecrets(jobCtx);
   }
 }
 
@@ -563,6 +624,140 @@ export async function commitSingleSession(
       status: 'failed', commitResult: { error: message, created: 0 } as never, updatedAt: new Date(),
     }).where(eq(importSessions.id, sessionId));
     throw e;
+  }
+}
+
+// ── Undo (U-261, review B2) ───────────────────────────────────────
+
+function undoBlocked(blockers: UndoBlocker[]): AppError {
+  return AppError.conflict('Something imported has been used since, so this import can\'t be undone. Restore the backup taken before the import instead.',
+    'IMPORT_UNDO_BLOCKED', { blockers: blockers.slice(0, 100), blockerCount: blockers.length });
+}
+
+/** The earliest date of a transaction the batch posted (the undo changes balances from then on). */
+async function earliestBatchTxnDate(ex: DbOrTx, tenantId: string, batchId: string): Promise<string | null> {
+  const r = await ex.execute(sql`SELECT MIN(txn_date)::text AS d FROM transactions WHERE tenant_id = ${tenantId} AND import_batch_id = ${batchId}`);
+  return (r.rows as Array<{ d: string | null }>)[0]?.d ?? null;
+}
+
+/**
+ * Starts an undo: the batch must be committed; the closed-period check and
+ * the blockers run synchronously (409 IMPORT_UNDO_BLOCKED before any
+ * claim); then committed -> undoing in its own transaction and 202. The job
+ * re-checks the blockers under the lock and ends undone, or back at
+ * committed with error.
+ */
+export async function startUndo(req: CommitRequest): Promise<{ batchId: string }> {
+  const b = await loadBatch(db, req.tenantId, req.companyId, req.batchId);
+  if (b.status === 'committing' || b.status === 'undoing') throw busy({ batchId: b.id, status: b.status });
+  if (b.status === 'undone') throw AppError.conflict('This import was already undone.', 'IMPORT_BATCH_UNDONE', { batchId: b.id });
+  if (b.status !== 'committed') {
+    throw AppError.conflict('Only a committed import can be undone.', 'IMPORT_BATCH_NOT_COMMITTED', { batchId: b.id, status: b.status });
+  }
+  req.override = await closedPeriodCheck(req, await earliestBatchTxnDate(db, req.tenantId, req.batchId));
+  const stamps = ((b.priorValues as BatchPriorValues | null) ?? {}).stamps ?? {};
+  await db.transaction(async (tx) => {
+    const created = await loadCreatedSets(tx, req.tenantId, req.batchId);
+    const { blockers } = await findUndoBlockers(tx, req.tenantId, req.batchId, created, stamps);
+    if (blockers.length > 0) throw undoBlocked(blockers);
+  });
+  await db.transaction(async (tx) => {
+    if (!(await tryCompanyImportLock(tx, req.companyId))) throw busy();
+    const locked = await loadBatch(tx, req.tenantId, req.companyId, req.batchId, true);
+    const [other] = await tx.select({ id: importBatches.id, status: importBatches.status }).from(importBatches).where(and(
+      eq(importBatches.tenantId, req.tenantId), eq(importBatches.companyId, req.companyId), ne(importBatches.id, req.batchId),
+      inArray(importBatches.status, ['committing', 'undoing']),
+    )).limit(1);
+    if (other) throw busy({ batchId: other.id, status: other.status });
+    if (locked.status !== 'committed') throw busy({ batchId: locked.id, status: locked.status });
+    await tx.update(importBatches).set({ status: 'undoing', error: null, updatedAt: new Date() }).where(eq(importBatches.id, req.batchId));
+    await claimAndRecord(tx, 'import_batch', req.batchId);
+  });
+  setProgress(req.batchId, 'undo queued', 0, 1);
+  __batchJobs.last = runWithoutIdempotency(() => new Promise<void>((resolve) => {
+    setImmediate(() => { void runUndoJob(req).catch(() => undefined).finally(resolve); });
+  }));
+  return { batchId: req.batchId };
+}
+
+/** The undo job: ONE transaction under the company import lock. On failure the batch goes back to committed with error. */
+export async function runUndoJob(req: CommitRequest): Promise<void> {
+  const { tenantId, companyId, userId, batchId } = req;
+  const jobCtx = jobLockContext(req);
+  const run = () => db.transaction(async (tx) => {
+    if (!(await tryCompanyImportLock(tx, companyId))) throw busy();
+    const b = await loadBatch(tx, tenantId, companyId, batchId, true);
+    const prior = (b.priorValues as BatchPriorValues | null) ?? {};
+    setProgress(batchId, 'checking', 0, 3);
+    // Lock the batch's transactions first, then look for blockers (review B2).
+    const created = await loadCreatedSets(tx, tenantId, batchId, true);
+    const { blockers, dead } = await findUndoBlockers(tx, tenantId, batchId, created, prior.stamps ?? {});
+    if (blockers.length > 0) throw undoBlocked(blockers);
+    // The closed-period rule for every date the undo changes (the request's context; one audit row below).
+    const dates = (await tx.execute(sql`SELECT DISTINCT txn_date::text AS d FROM transactions WHERE tenant_id = ${tenantId} AND import_batch_id = ${batchId}`)).rows as Array<{ d: string }>;
+    for (const { d } of dates) await checkLockDate(tx, tenantId, d, companyId, undefined, { deferAudit: true });
+
+    setProgress(batchId, 'deleting', 1, 3);
+    const images = await beforeImages(tx, tenantId, created);
+    await deleteBatchRows(tx, tenantId, created, dead);
+
+    setProgress(batchId, 'restoring', 2, 3);
+    for (const [id, a] of Object.entries(prior.accounts ?? {})) {
+      await tx.execute(sql`UPDATE accounts SET name = ${a.name}, account_type = ${a.accountType}, detail_type = ${a.detailType},
+        description = ${a.description}, parent_id = ${a.parentId}, updated_at = now() WHERE tenant_id = ${tenantId} AND id = ${id}`);
+    }
+    for (const [id, a] of Object.entries(prior.adoptedSystemAccounts ?? {})) {
+      await tx.execute(sql`UPDATE accounts SET system_tag = ${a.systemTag}, is_system = ${a.isSystem ?? false}, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND id = ${id}`);
+    }
+    if (prior.fiscalYearStartMonth !== undefined) {
+      await tx.update(companies).set({ fiscalYearStartMonth: prior.fiscalYearStartMonth, updatedAt: new Date() })
+        .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+    }
+
+    // One audit row per deleted record with its before-image, then one for the batch.
+    const rows: Parameters<typeof auditLogMany>[1][number][] = [];
+    for (const t of images.transactions as Array<Record<string, unknown>>) rows.push({ action: 'delete', entityType: 'transaction', entityId: String(t['id']), before: t, after: { importBatchUndo: batchId } });
+    for (const [type, list] of [['account', images.accounts], ['contact', images.contacts], ['item', images.items], ['tag', images.tags], ['tag_group', images.tag_groups]] as const) {
+      for (const r of list as Array<Record<string, unknown>>) rows.push({ action: 'delete', entityType: type, entityId: String(r['id']), before: r, after: { importBatchUndo: batchId } });
+    }
+    if (rows.length > 0) await auditLogMany(tenantId, rows, userId, tx);
+    await auditBatchOverride(tx, req, 'undo');
+    await auditLog(tenantId, 'update', 'import_batch', batchId, { status: 'committed' }, {
+      status: 'undone', deleted: {
+        transactions: created.txns.length, accounts: created.accounts.length, contacts: created.contacts.length,
+        items: created.items.length, tags: created.tags.length, tagGroups: created.tagGroups.length,
+      },
+      removedLinks: {
+        paymentApplications: dead.paymentApplications.length, billPaymentApplications: dead.billPaymentApplications.length,
+        vendorCreditApplications: dead.vendorCreditApplications.length, depositLines: dead.depositLines.length, taxLines: dead.taxLines.length,
+      },
+      backupRef: req.backupRef ?? null,
+    }, userId, tx);
+
+    // Sessions stay as the record, marked undone; their parsed rows go (privacy, S8).
+    const sessionIds = (await tx.select({ id: importSessions.id }).from(importSessions).where(eq(importSessions.batchId, batchId))).map((s) => s.id);
+    if (sessionIds.length > 0) {
+      await tx.update(importSessions).set({ status: 'undone', activeCommit: false, updatedAt: new Date() }).where(inArray(importSessions.id, sessionIds));
+      await tx.delete(importRows).where(inArray(importRows.sessionId, sessionIds));
+    }
+    const now = new Date();
+    await tx.update(importBatches).set({
+      status: 'undone', undoneAt: now, undoneBy: userId, updatedAt: now, error: null,
+      result: { ...((b.result as Record<string, unknown> | null) ?? {}), undo: { backupRef: req.backupRef ?? null } } as never,
+    }).where(eq(importBatches.id, batchId));
+  });
+  try {
+    await runWithLockContext(jobCtx, run);
+  } catch (e) {
+    const err = errorOf(e, null);
+    await db.update(importBatches).set({ status: 'committed', error: err as never, updatedAt: new Date() })
+      .where(and(eq(importBatches.id, batchId), eq(importBatches.status, 'undoing')));
+    throw toAppError(err, e);
+  } finally {
+    progressByBatch.delete(batchId);
+    if (req.lockContext) clearLockContextSecrets(req.lockContext);
+    clearLockContextSecrets(jobCtx);
   }
 }
 

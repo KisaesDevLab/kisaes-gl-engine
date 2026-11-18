@@ -29,10 +29,14 @@ import {
   importBatchCreateSchema,
   importBatchCommitSchema,
   importBatchListQuerySchema,
+  importBatchUndoSchema,
 } from '@kis-books/shared';
 import { validate } from '../middleware/validate.js';
 import { describe } from '../middleware/describe.js';
 import { idempotent } from '../middleware/idempotent.js';
+import { closingPasswordLimiter } from '../middleware/closing-password-limiter.js';
+import { lockContextMiddleware, getLockContext } from '../services/lock-context.js';
+import type { LockDateContext } from '../services/ledger.service.js';
 import { AppError } from '../utils/errors.js';
 import * as importsService from '../services/imports/imports.service.js';
 import * as batchService from '../services/imports/import-batch.service.js';
@@ -225,7 +229,37 @@ importsRouter.get('/batches/:id', describe({
   res.json(await batchService.getBatch(req.tenantId, req.companyId, id));
 });
 
+/**
+ * Commit, undo and verify are company-admin acts (U-263, review S4): the
+ * tenant role owner, or a super admin (as reconciliation undo, U-190).
+ * Ahead of idempotent(), so a replay needs the right too.
+ */
+function requireImportAdmin(req: Request, _res: Response, next: NextFunction): void {
+  if (req.isSuperAdmin || req.userRole === 'owner') {
+    next();
+    return;
+  }
+  next(AppError.forbidden('Only a company administrator can commit or undo an import.', 'IMPORT_ADMIN_REQUIRED'));
+}
+
+/** The closed-period context the batch job runs with, copied from the request's (U-262). */
+function batchLockContext(req: Request): LockDateContext {
+  const reqCtx = getLockContext();
+  return {
+    userType: req.userType === 'client' ? 'client' : 'staff',
+    userId: req.userId,
+    overrideConfirmed: (req.body as { confirmClosedPeriod?: unknown } | undefined)?.confirmClosedPeriod === true,
+    ...(reqCtx?.closingPassword !== undefined ? { closingPassword: reqCtx.closingPassword } : {}),
+  };
+}
+
+const CLOSED_PERIOD_DOC = 'A date on or before the closing date needs closingPassword (423 TB_PERIOD_LOCKED without it, '
+  + '403 CLOSING_PASSWORD_INVALID when wrong, 429 when tried too often); with no closing-date password set, staff may send '
+  + 'confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per '
+  + 'batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).';
+
 importsRouter.post('/batches/:id/commit',
+  requireImportAdmin, closingPasswordLimiter, lockContextMiddleware,
   idempotent({ successStatus: 202, replay: async (req) => ({ batchId: req.params['id'] }) }),
   validate(importBatchCommitSchema), describe({
     summary: 'Commit an import batch in the background (imports-batch-v1)',
@@ -236,9 +270,9 @@ importsRouter.post('/batches/:id/commit',
       + 'another import or undo of the company runs; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt}; 409 '
       + 'IMPORT_PERIOD_OVERLAP; 409 IMPORT_BATCH_UNDONE; 409 IMPORT_HAS_ERRORS {sessionId, errors}; 409 '
       + 'IMPORT_COMPANY_NOT_EMPTY; 409 IMPORT_FISCAL_YEAR_LOCKED; 400 IMPORT_BATCH_EMPTY. backupRef names the verified '
-      + 'backup the client took first.',
+      + 'backup the client took first. ' + CLOSED_PERIOD_DOC,
     tags: ['Imports'],
-    body: importBatchCommitSchema,
+    body: importBatchCommitSchema.extend({ closingPassword: z.string().optional() }),
     response: z.object({ batchId: z.string().uuid() }),
   }), async (req, res) => {
     const batchId = uuidParam.parse(req.params['id']);
@@ -248,7 +282,38 @@ importsRouter.post('/batches/:id/commit',
       userId: req.userId,
       batchId,
       backupRef: req.body.backupRef ?? null,
-      lockContext: { userType: req.userType === 'client' ? 'client' : 'staff', userId: req.userId, overrideConfirmed: false },
+      lockContext: batchLockContext(req),
+    });
+    res.status(202).json(out);
+  });
+
+importsRouter.post('/batches/:id/undo',
+  requireImportAdmin, closingPasswordLimiter, lockContextMiddleware,
+  idempotent({ successStatus: 202, replay: async (req) => ({ batchId: req.params['id'] }) }),
+  validate(importBatchUndoSchema), describe({
+    summary: 'Undo a committed import batch in the background (imports-batch-v1)',
+    description: 'Removes everything the batch created in ONE database transaction (a hard delete; stored balances move '
+      + 'back exactly) and restores what it changed (accounts, the fiscal year month). Checks run before the 202: 409 '
+      + 'IMPORT_UNDO_BLOCKED {blockers:[{kind, id, reason, target?}], blockerCount} when something imported has been used '
+      + 'since: reconciled, deposited, payment_applied, bill_paid, credit_applied, bank_match, tax_filed, billed, '
+      + 'used_by_other_transaction, used_by_void_transaction, edited, changed_since, inventory_used, payroll, attached or '
+      + 'linked (the advice is to restore the backup taken before the import). Voided payment applications are removed with '
+      + 'the batch; the voided payment stays. Then committed -> undoing and 202 {batchId}; poll GET: undone, or back to '
+      + 'committed with error. 409 IMPORT_BATCH_NOT_COMMITTED, IMPORT_BATCH_UNDONE, IMPORT_BUSY. Sessions become undone, '
+      + 'their parsed rows are deleted, and the same data may be imported again. One delete audit row per removed record '
+      + '(before-image) and one for the batch. ' + CLOSED_PERIOD_DOC,
+    tags: ['Imports'],
+    body: importBatchUndoSchema.extend({ closingPassword: z.string().optional() }),
+    response: z.object({ batchId: z.string().uuid() }),
+  }), async (req, res) => {
+    const batchId = uuidParam.parse(req.params['id']);
+    const out = await batchService.startUndo({
+      tenantId: req.tenantId,
+      companyId: req.companyId,
+      userId: req.userId,
+      batchId,
+      backupRef: req.body.backupRef ?? null,
+      lockContext: batchLockContext(req),
     });
     res.status(202).json(out);
   });
