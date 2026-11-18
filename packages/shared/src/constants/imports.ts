@@ -209,6 +209,41 @@ export const UNPAID_BILL_TYPE_MAP: Record<string, 'charge' | 'credit' | 'either'
   'check': 'either',
 };
 
+/**
+ * Item list Type column -> engine item kind (U-265), lowercased; QuickBooks
+ * Desktop Item Listing, QuickBooks Online Products and Services and the Generic
+ * template labels. A `skip:` entry is listed in the preview but not imported
+ * (the engine keeps sales tax in its own lists; groups and payment items have
+ * no engine kind). A Type not listed is a row error (IMPORT_UNKNOWN_TYPE).
+ */
+export const ITEM_TYPE_MAP: Record<string, 'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal' | 'inventory_part'
+  | 'skip:sales_tax' | 'skip:group' | 'skip:payment'> = {
+  'service': 'service',
+  'inventory part': 'inventory_part',
+  'inventory assembly': 'inventory_part',
+  'inventory': 'inventory_part',
+  'inventory_part': 'inventory_part',
+  'non-inventory part': 'non_inventory',
+  'non-inventory': 'non_inventory',
+  'noninventory': 'non_inventory',
+  'non_inventory': 'non_inventory',
+  'other charge': 'other_charge',
+  'other_charge': 'other_charge',
+  'discount': 'discount',
+  'subtotal': 'subtotal',
+  'sales tax item': 'skip:sales_tax',
+  'sales tax group': 'skip:sales_tax',
+  'group': 'skip:group',
+  'bundle': 'skip:group',
+  'payment': 'skip:payment',
+};
+
+/**
+ * QB Desktop Journal Types whose Name and Memo carry an employee's name
+ * (Q-P31m): both are dropped at parse time, so the name is never stored.
+ */
+export const QBD_PAYCHECK_TYPES: ReadonlySet<string> = new Set(['paycheck', 'payroll check', 'payroll adjustment']);
+
 /** transactions.source values written by this importer. */
 export const IMPORT_SOURCE_TAGS = {
   AP_GL: 'accounting_power_import',

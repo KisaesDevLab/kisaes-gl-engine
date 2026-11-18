@@ -16,6 +16,9 @@ export const importKindSchema = z.enum([
   // U-264 (qbd-open-items-v1): A/R and A/P open items as of a date.
   'open_invoices',
   'unpaid_bills',
+  // U-265 (qbd-mapping-v1): the item list; inventory on hand and value as of a date.
+  'items',
+  'inventory_valuation',
 ]);
 
 export const sourceSystemSchema = z.enum([
@@ -38,11 +41,14 @@ export const importStatusSchema = z.enum([
 
 export const contactKindSchema = z.enum(['customer', 'vendor']);
 
+/** U-265: a contacts upload's list; 'other' (QuickBooks Desktop Other Names) imports as vendors (Q-78). */
+export const contactUploadKindSchema = z.enum(['customer', 'vendor', 'other']);
+
 export const tbColumnChoiceSchema = z.enum(['beginning', 'adjusted']);
 
 export const importUploadOptionsSchema = z.object({
   updateExistingCoa: z.boolean().optional(),
-  contactKind: contactKindSchema.optional(),
+  contactKind: contactUploadKindSchema.optional(),
   tbColumn: tbColumnChoiceSchema.optional(),
   /**
    * Required when uploading an Accounting Power trial balance — the
@@ -88,9 +94,13 @@ export const importBatchOptionsSchema = z.object({
   conversionDate: isoDate.optional(),
   /** Refuse the commit unless the company has no transactions (409 IMPORT_COMPANY_NOT_EMPTY). */
   requireEmptyCompany: z.boolean().optional(),
-  /** Source account key -> account id. */
-  accountMap: z.record(z.string().max(200), z.string().uuid()).optional(),
-  /** Source class name -> {group?, tag}. */
+  /**
+   * Source account key (the number, else the name: preview.accountMatches[].sourceKey) -> an account id of the
+   * company, or "create" (U-265): a chart row of the batch is created as a new account even when the company has
+   * one with its name. A key a batch commit can't resolve fails it (422 IMPORT_UNMAPPED_ACCOUNT), never suspense.
+   */
+  accountMap: z.record(z.string().min(1).max(200), z.union([z.string().uuid(), z.literal('create')])).optional(),
+  /** Source class name -> {group?, tag}: journal lines of that class get the tag (in the group), created when missing (U-265). */
   classMap: z.record(z.string().max(200), z.object({ group: z.string().max(100).optional(), tag: z.string().min(1).max(100) })).optional(),
 }).strict();
 

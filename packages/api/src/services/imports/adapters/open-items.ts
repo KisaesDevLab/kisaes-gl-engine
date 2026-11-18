@@ -44,7 +44,8 @@ const NAME_LABELS: Record<OpenItemKind, string[]> = {
   unpaid_bills: ['name', 'vendor', 'vendor name', 'vendor display name', 'supplier'],
 };
 
-async function readGrid(buf: Buffer, sourceSystem: SourceSystem): Promise<string[][]> {
+/** The cells of an upload: .xlsx (raw number values, S7) or CSV (Latin-1 for QuickBooks Desktop). Shared by the U-265 parsers. */
+export async function readGrid(buf: Buffer, sourceSystem: SourceSystem): Promise<string[][]> {
   if (buf.length >= 2 && buf[0] === 0x50 && buf[1] === 0x4b) return parseXlsxBuffer(buf, { numberText: xlsxNumberText });
   // QuickBooks Desktop writes Latin-1 (ISO-8859-1); the others UTF-8.
   const text = sourceSystem === 'quickbooks_desktop' ? buf.toString('latin1') : buf.toString('utf8');
@@ -104,7 +105,7 @@ const AS_OF_RE = /([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2
  * "As of …" (QuickBooks prints it under the title), else the first date there
  * (a "prepared on" date above the title must not win over "As of").
  */
-function scrapeReportDate(grid: string[][], headerIdx: number): string | null {
+export function scrapeReportDate(grid: string[][], headerIdx: number): string | null {
   let first: string | null = null;
   for (let i = 0; i < headerIdx; i++) {
     for (const cell of grid[i] ?? []) {
@@ -173,6 +174,9 @@ function parseGrid(
           const t = (r[c] ?? '').trim();
           if (!t) continue;
           if (/^total\b/i.test(t)) groups.length = Math.min(groups.length, c);
+          // U-265: QuickBooks prints a customer's own rows, beside its jobs, under "<Customer> - Other":
+          // they belong to the customer, not to a contact of that name.
+          else if (c > 0 && groups[c - 1] && t === `${groups[c - 1]} - Other`) groups.length = c;
           else { groups.length = c; groups[c] = t; }
           break;
         }

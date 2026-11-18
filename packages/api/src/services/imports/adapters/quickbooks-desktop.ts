@@ -33,7 +33,9 @@ import {
   type CanonicalGlLine,
   type CanonicalTrialBalanceRow,
   type ContactKind,
+  type ContactUploadKind,
   type ImportValidationError,
+  QBD_PAYCHECK_TYPES,
 } from '@kis-books/shared';
 import { parseCsvText } from '../../payroll-parse.service.js';
 import { Decimal, importAmountError, importAmountText, isImportAmount, parseImportAmount } from '../import-amount.js';
@@ -226,15 +228,27 @@ export function parseCoa(buf: Buffer): { rows: CanonicalCoaRow[]; errors: Import
 //   First Name | ... | Last Name | Bill from 1..5 | ... | Main Phone | ...
 // The name column is "Vendor" (or "Customer" on the customer list).
 
+/**
+ * U-265: `kind` 'other' reads an Other Names list (name column "Other Name",
+ * else "Name") as vendors (Q-78). Inactive names come in inactive (they were
+ * left out before). A customer list's job rows ("Customer:Job") carry jobOf:
+ * the engine has no projects list yet (U-35), so commit folds a job into its
+ * customer.
+ */
 export function parseContacts(
   buf: Buffer,
-  kind: ContactKind,
+  kind: ContactUploadKind,
 ): { rows: CanonicalContactRow[]; errors: ImportValidationError[] } {
   const rows: CanonicalContactRow[] = [];
   const errors: ImportValidationError[] = [];
   const grid = parseCsvText(bufferToText(buf));
-  const nameLabel = kind === 'customer' ? 'Customer' : 'Vendor';
-  const headerRowIdx = findHeaderRow(grid, [nameLabel]);
+  const labels = kind === 'customer' ? ['Customer'] : kind === 'vendor' ? ['Vendor'] : ['Other Name', 'Name'];
+  let nameLabel = labels[0]!;
+  let headerRowIdx = -1;
+  for (const l of labels) {
+    headerRowIdx = findHeaderRow(grid, [l]);
+    if (headerRowIdx !== -1) { nameLabel = l; break; }
+  }
   if (headerRowIdx === -1) {
     errors.push({
       rowNumber: 0,
@@ -243,6 +257,7 @@ export function parseContacts(
     });
     return { rows, errors };
   }
+  const contactType: ContactKind = kind === 'customer' ? 'customer' : 'vendor';
   const header = grid[headerRowIdx]!;
   const iName = colOf(header, nameLabel);
   const iCompany = colOf(header, 'Company');
@@ -256,12 +271,15 @@ export function parseContacts(
     const rowNumber = i + 1;
     const displayName = (r[iName] ?? '').trim();
     if (!displayName || /^total\b/i.test(displayName)) continue;
-    // QB Desktop lists can include inactive rows; skip explicit inactives.
-    if (iActive !== -1 && /^inactive$/i.test((r[iActive] ?? '').trim())) continue;
+    // U-265: an inactive name comes in inactive (it was left out before).
+    const inactive = iActive !== -1 && /^inactive$/i.test((r[iActive] ?? '').trim());
+    const colon = kind === 'customer' ? displayName.indexOf(':') : -1;
     rows.push({
       rowNumber,
       displayName,
-      contactType: kind,
+      contactType,
+      ...(inactive ? { isActive: false } : {}),
+      ...(colon > 0 ? { jobOf: displayName.slice(0, colon).trim() } : {}),
       fullName: iCompany !== -1 ? (r[iCompany] ?? '').trim() || undefined : undefined,
       phone: iPhone !== -1 ? (r[iPhone] ?? '').trim() || undefined : undefined,
       email: iEmail !== -1 ? (r[iEmail] ?? '').trim() || undefined : undefined,
@@ -423,6 +441,13 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
       return;
     }
     const sourceCode = QBD_TXN_TYPE_LABELS[g.type.toLowerCase()] ?? `QBD:${g.type || 'Journal'}`;
+    // Q-P31m (U-265): a paycheck's Name and Memo name the employee; neither is kept, so the
+    // name never reaches import_rows, the preview or the posted memo.
+    const paycheck = QBD_PAYCHECK_TYPES.has(g.type.toLowerCase());
+    if (paycheck) {
+      g.name = '';
+      for (const l of g.legs) { l.name = ''; l.memo = ''; }
+    }
     const lines: CanonicalGlLine[] = g.legs.map((l) => {
       const acct = splitQbdAccount(l.account);
       return {
