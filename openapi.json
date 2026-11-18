@@ -38844,11 +38844,20 @@
                             "properties": {
                               "accountMap": {
                                 "additionalProperties": {
-                                  "format": "uuid",
-                                  "type": "string"
+                                  "anyOf": [
+                                    {
+                                      "format": "uuid",
+                                      "type": "string"
+                                    },
+                                    {
+                                      "const": "create",
+                                      "type": "string"
+                                    }
+                                  ]
                                 },
                                 "propertyNames": {
-                                  "maxLength": 200
+                                  "maxLength": 200,
+                                  "minLength": 1
                                 },
                                 "type": "object"
                               },
@@ -38953,7 +38962,9 @@
                                     "trial_balance",
                                     "gl_transactions",
                                     "open_invoices",
-                                    "unpaid_bills"
+                                    "unpaid_bills",
+                                    "items",
+                                    "inventory_valuation"
                                   ],
                                   "type": "string"
                                 },
@@ -39167,11 +39178,20 @@
                     "properties": {
                       "accountMap": {
                         "additionalProperties": {
-                          "format": "uuid",
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "const": "create",
+                              "type": "string"
+                            }
+                          ]
                         },
                         "propertyNames": {
-                          "maxLength": 200
+                          "maxLength": 200,
+                          "minLength": 1
                         },
                         "type": "object"
                       },
@@ -39370,11 +39390,20 @@
                           "properties": {
                             "accountMap": {
                               "additionalProperties": {
-                                "format": "uuid",
-                                "type": "string"
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "create",
+                                    "type": "string"
+                                  }
+                                ]
                               },
                               "propertyNames": {
-                                "maxLength": 200
+                                "maxLength": 200,
+                                "minLength": 1
                               },
                               "type": "object"
                             },
@@ -39479,7 +39508,9 @@
                                   "trial_balance",
                                   "gl_transactions",
                                   "open_invoices",
-                                  "unpaid_bills"
+                                  "unpaid_bills",
+                                  "items",
+                                  "inventory_valuation"
                                 ],
                                 "type": "string"
                               },
@@ -39799,11 +39830,20 @@
                           "properties": {
                             "accountMap": {
                               "additionalProperties": {
-                                "format": "uuid",
-                                "type": "string"
+                                "anyOf": [
+                                  {
+                                    "format": "uuid",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "const": "create",
+                                    "type": "string"
+                                  }
+                                ]
                               },
                               "propertyNames": {
-                                "maxLength": 200
+                                "maxLength": 200,
+                                "minLength": 1
                               },
                               "type": "object"
                             },
@@ -39908,7 +39948,9 @@
                                   "trial_balance",
                                   "gl_transactions",
                                   "open_invoices",
-                                  "unpaid_bills"
+                                  "unpaid_bills",
+                                  "items",
+                                  "inventory_valuation"
                                 ],
                                 "type": "string"
                               },
