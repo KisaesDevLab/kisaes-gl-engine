@@ -318,6 +318,11 @@ importsRouter.post('/batches/:id/commit',
       + 'overlapping journal meanwhile, and 422 IMPORT_VALUATION_REQUIRED {sessionId, accounts [{sourceKey, balance}]} '
       + 'for a conversion batch with no inventory valuation whose conversion-date trial balance shows an inventory '
       + 'asset balance. The committed batch keeps result.dateCheck; the journal result has skippedBeforeHistory. '
+      + 'P31 review (imports-review-fixes-v1): a batch error\'s message says only the code and the row ("The import '
+      + 'stopped at row N (CODE)."), never a name or an amount (details keep the mapping lists); a batch of kind '
+      + 'transactions deletes its sessions\' parsed rows in the commit transaction (it has no tie-out); a batch a job '
+      + 'left committing or undoing for over 60 s, with no job running, is settled first (failed IMPORT_INTERRUPTED, or '
+      + 'committed) instead of answering IMPORT_BUSY. '
       + 'backupRef names the verified '
       + 'backup the client took first. ' + CLOSED_PERIOD_DOC,
     tags: ['Imports'],
@@ -350,7 +355,9 @@ importsRouter.post('/batches/:id/undo',
       + 'the batch; the voided payment stays. Then committed -> undoing and 202 {batchId}; poll GET: undone, or back to '
       + 'committed with error. 409 IMPORT_BATCH_NOT_COMMITTED, IMPORT_BATCH_UNDONE, IMPORT_BUSY. Sessions become undone, '
       + 'their parsed rows are deleted, and the same data may be imported again. One delete audit row per removed record '
-      + '(before-image) and one for the batch. ' + CLOSED_PERIOD_DOC,
+      + '(before-image) and one for the batch. The job locks the accounts, contacts, items, tags and tag groups the batch '
+      + 'created before it looks for blockers; a posting on one of those accounts that waited for the undo fails with 409 '
+      + 'ACCOUNT_NOT_FOUND instead of leaving lines on a deleted account (P31 review). ' + CLOSED_PERIOD_DOC,
     tags: ['Imports'],
     body: importBatchUndoSchema.extend({ closingPassword: z.string().optional() }),
     response: z.object({ batchId: z.string().uuid() }),
@@ -436,7 +443,9 @@ importsRouter.post('/batches/:id/verify', requireImportAdmin, validate(importTie
     + 'else null), sourceRow, accountId, transactionId, itemId, diffExact, quantityDiff?}] (up to 20, ids only, never names)} unless every difference is exactly 0. Else 200 {batch, tieout}: the '
     + 'batch is verified (verifiedAt, verifiedBy), keeps the tie-out, and the stored parsed rows of its sessions are deleted '
     + '(review S8); one audit row. Verifying a verified batch answers 200 with what it kept. 409 IMPORT_BUSY while another '
-    + 'import or undo of the company runs. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED). ' + TIEOUT_DOC,
+    + 'import or undo of the company runs (checked before the tie-out is computed: the tie-out is computed under the '
+    + 'company import lock, in the transaction that marks the batch verified and deletes its rows; P31 review S2). '
+    + 'Owner or super admin only (403 IMPORT_ADMIN_REQUIRED). ' + TIEOUT_DOC,
   tags: ['Imports'],
   body: importTieoutRequestSchema,
   response: z.object({ batch: batchSchema, tieout: tieoutSchema }),

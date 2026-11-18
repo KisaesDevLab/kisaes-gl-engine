@@ -1781,4 +1781,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * "<sessionId>:<first row>"; session result {created, skipped, documents}. Closing date, undo and re-import as
    * imports-batch-v1; never overlap-checked.
    */
-  'imports-transactions-v1',];
+  'imports-transactions-v1',
+  /**
+   * U-273 (ClientLedger P31 combined review fixes; no migration). Verify computes the tie-out under the company import
+   * lock, in the transaction that marks the batch verified and deletes its rows (409 IMPORT_BUSY is now answered before
+   * any tie-out). The undo job locks the accounts, contacts, items, tags and tag groups the batch created before its
+   * blocker sweep; a posting on such an account that waited fails 409 ACCOUNT_NOT_FOUND (no orphan lines). A batch left
+   * committing or undoing for over 60 s with no running job and a free lock is settled before the next commit or undo
+   * (failed IMPORT_INTERRUPTED, or committed), not only at engine start. A batch of kind transactions deletes its parsed
+   * rows in the commit transaction. Stored batch errors (and the old commit's session commitResult.error) say only
+   * "The import stopped at row N (CODE)."; details keep their lists, without accountKey. Journal overlap (409
+   * IMPORT_PERIOD_OVERLAP) counts committed journals of every source system. Inventory asset accounts are the
+   * company's (and tenant-wide ones). QuickBooks Online Paycheck / Payroll Check / Payroll Adjustment rows keep no
+   * Name or Memo (Q-P31m). Open-item amounts are formatted exactly.
+   */
+  'imports-review-fixes-v1',];
