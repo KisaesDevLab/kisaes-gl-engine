@@ -98,7 +98,11 @@ export async function companySnapshot(co: Co): Promise<Record<string, unknown>> 
   const lines = await db.execute(sql`
     SELECT jl.id, jl.transaction_id, jl.account_id, jl.debit::text, jl.credit::text, jl.tag_id, jl.contact_id
     FROM journal_lines jl WHERE jl.tenant_id = ${co.tenantId} ORDER BY jl.id`);
-  const [co2] = await db.select({ m: companies.fiscalYearStartMonth, lock: companies.lockDate }).from(companies)
+  const [co2] = await db.select({
+    m: companies.fiscalYearStartMonth, lock: companies.lockDate,
+    // U-264: the document counters an import may advance (undo restores them).
+    invoiceNext: companies.invoiceNextNumber, documentNumbers: companies.documentNumbers,
+  }).from(companies)
     .where(eq(companies.id, co.companyId));
   return {
     tb,

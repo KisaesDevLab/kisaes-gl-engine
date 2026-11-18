@@ -83,9 +83,31 @@ export const GENERIC_TXN_TEMPLATE: GenericTemplate = {
   ],
 };
 
-export const GENERIC_TEMPLATES: Record<'coa' | 'contacts' | 'trial_balance' | 'gl_transactions', GenericTemplate> = {
+/** U-264: open items (read by adapters/open-items.ts, which also takes the QuickBooks column names). */
+function openItemsTemplate(kind: 'open_invoices' | 'unpaid_bills'): GenericTemplate {
+  const ar = kind === 'open_invoices';
+  return {
+    sheetName: ar ? 'Open Invoices' : 'Unpaid Bills',
+    description: ar
+      ? 'One unpaid invoice, credit memo or unapplied payment per row, as of one date. Each becomes an open invoice (positive Open Balance) or credit memo (negative).'
+      : 'One unpaid bill or vendor credit per row, as of one date. Each becomes an open bill (positive Open Balance) or vendor credit (negative).',
+    columns: [
+      { header: 'Type', required: true, example: ar ? 'Invoice' : 'Bill', note: ar ? 'Invoice, Credit Memo or Payment' : 'Bill or Credit' },
+      { header: 'Date', required: true, example: '2026-09-15', note: 'YYYY-MM-DD or MM/DD/YYYY.' },
+      { header: 'Num', required: false, example: ar ? '1001' : 'B-55', note: 'Kept on the document.' },
+      { header: 'Name', required: true, example: ar ? 'Joplin Regional Stockyards' : 'Staples', note: ar ? 'Customer.' : 'Vendor.' },
+      { header: 'Due Date', required: false, example: '2026-10-15' },
+      { header: 'Amount', required: false, example: '1200.00', note: 'The original amount; kept in the memo.' },
+      { header: 'Open Balance', required: true, example: '1000.00', note: 'Still owed; negative for a credit.' },
+    ],
+  };
+}
+
+export const GENERIC_TEMPLATES: Record<'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills', GenericTemplate> = {
   coa: GENERIC_COA_TEMPLATE,
   contacts: GENERIC_CONTACTS_TEMPLATE,
   trial_balance: GENERIC_TB_TEMPLATE,
   gl_transactions: GENERIC_TXN_TEMPLATE,
+  open_invoices: openItemsTemplate('open_invoices'),
+  unpaid_bills: openItemsTemplate('unpaid_bills'),
 };

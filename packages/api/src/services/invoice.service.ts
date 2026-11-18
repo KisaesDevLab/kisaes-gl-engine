@@ -590,11 +590,14 @@ export async function createInvoice(tenantId: string, input: CreateInvoiceInput,
  */
 export async function createInvoiceWithWarnings(
   tenantId: string, input: CreateInvoiceInput, userId?: string, companyId?: string,
+  /** The caller's transaction (U-264, review S3): the invoice posts in it, as createBill's outerTx. Default: its own. */
+  outerTx?: Tx,
 ) {
   if (input.releaseBillableSourceLineIds?.length) {
     throw AppError.badRequest('releaseBillableSourceLineIds is for editing an invoice', 'VALIDATION_ERROR');
   }
-  return await billing.mapBillableDbErrors(() => db.transaction(async (tx) => {
+  const inTx = <T>(fn: (tx: Tx) => Promise<T>) => (outerTx ? fn(outerTx) : db.transaction(fn));
+  return await billing.mapBillableDbErrors(() => inTx(async (tx) => {
     await claimIdempotency(tx);
     // Billable costs (U-128): their sources are locked (id order) and
     // checked before anything posts; claimed in this transaction below.

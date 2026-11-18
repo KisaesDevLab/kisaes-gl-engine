@@ -13,6 +13,9 @@ export const importKindSchema = z.enum([
   'contacts',
   'trial_balance',
   'gl_transactions',
+  // U-264 (qbd-open-items-v1): A/R and A/P open items as of a date.
+  'open_invoices',
+  'unpaid_bills',
 ]);
 
 export const sourceSystemSchema = z.enum([
@@ -48,6 +51,8 @@ export const importUploadOptionsSchema = z.object({
    * IMPORT_BAD_DATE when missing.
    */
   tbReportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').optional(),
+  /** Open items (U-264): the report's as-of date when the file carries none. */
+  reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').optional(),
 });
 
 /**

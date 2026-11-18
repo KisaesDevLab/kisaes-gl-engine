@@ -12,6 +12,7 @@
 import ExcelJS from 'exceljs';
 import {
   QBO_TYPE_TEXT_MAP,
+  SOURCE_SYSTEM_ROLE_TYPES,
   QBO_TXN_TYPE_LABELS,
   type CanonicalCoaRow,
   type CanonicalContactRow,
@@ -182,6 +183,7 @@ function buildCoaRow(
     description: description || undefined,
     parentName,
     ...(accountNumber ? { accountNumber } : {}),
+    ...(SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()] ? { systemRole: SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()] } : {}),
   };
 }
 

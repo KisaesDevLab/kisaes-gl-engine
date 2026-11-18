@@ -27,8 +27,11 @@ import {
   type CanonicalCoaRow,
   type CanonicalContactRow,
   type CanonicalGlEntry,
+  type CanonicalOpenItemRow,
   type CanonicalTrialBalanceRow,
   type ContactKind,
+  type CreateInvoiceInput,
+  type CreateCreditMemoInput,
   type ImportCommitResult,
   type ImportKind,
   type ImportPreview,
@@ -46,6 +49,7 @@ import * as ap from './adapters/accounting-power.js';
 import * as qbo from './adapters/quickbooks-online.js';
 import * as qbd from './adapters/quickbooks-desktop.js';
 import * as generic from './adapters/generic.js';
+import { parseOpenItems, openItemsTotal } from './adapters/open-items.js';
 import { postTransaction } from '../ledger.service.js';
 import { Decimal } from 'decimal.js';
 
@@ -92,12 +96,21 @@ export function computeRowHash(
   return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-/** First and last entry date of a journal file (null for other kinds or an empty file). */
+/** The open-item kinds (U-264). */
+export function isOpenItemKind(kind: string): kind is 'open_invoices' | 'unpaid_bills' {
+  return kind === 'open_invoices' || kind === 'unpaid_bills';
+}
+
+/**
+ * First and last date a file posts on: a journal file's entry dates, an
+ * open-item file's document dates (U-264); null for other kinds or an empty
+ * file. Overlap checks read journal files only.
+ */
 function glDateRange(kind: ImportKind, parsed: unknown): { from: string | null; to: string | null } {
-  if (kind !== 'gl_transactions') return { from: null, to: null };
+  if (kind !== 'gl_transactions' && !isOpenItemKind(kind)) return { from: null, to: null };
   let from: string | null = null;
   let to: string | null = null;
-  for (const e of (parsed as CanonicalGlEntry[]) ?? []) {
+  for (const e of (parsed as Array<{ date?: string }>) ?? []) {
     if (!e.date) continue;
     if (from === null || e.date < from) from = e.date;
     if (to === null || e.date > to) to = e.date;
@@ -264,6 +277,8 @@ const MAX_ROWS_PER_KIND: Record<ImportKind, number> = {
   contacts: 10_000,
   trial_balance: 5_000,
   gl_transactions: 50_000,
+  open_invoices: 20_000,
+  unpaid_bills: 20_000,
 };
 
 function enforceRowCap(kind: ImportKind, count: number): void {
@@ -393,6 +408,16 @@ function buildPreview(
       totalCredit: totalCredit.toFixed(4),
     };
   }
+  if (isOpenItemKind(kind)) {
+    const rows = (parsed as CanonicalOpenItemRow[]) ?? [];
+    return {
+      totalRows: rows.length,
+      errorCount,
+      sampleRows: rows.slice(0, MAX_PREVIEW_ROWS),
+      ...(reportDate ? { reportDate } : {}),
+      openTotal: openItemsTotal(rows),
+    };
+  }
   const rows = (parsed as { rowNumber: number }[]) ?? [];
   return {
     totalRows: rows.length,
@@ -416,6 +441,15 @@ async function dispatchParse(
   sourceSystem: SourceSystem,
   options: ImportUploadOptions,
 ): Promise<ParseResult> {
+  // Open items (U-264): one parser for QuickBooks Desktop, QuickBooks Online
+  // and the Generic template; the report's own date wins over options.reportDate.
+  if (isOpenItemKind(kind)) {
+    if (sourceSystem === 'accounting_power') {
+      throw AppError.badRequest(`Accounting Power does not support kind="${kind}" in this version.`, 'IMPORT_WRONG_KIND');
+    }
+    const { rows, errors, reportDate } = await parseOpenItems(buf, kind, sourceSystem);
+    return { parsed: rows, errors, reportDate: reportDate ?? options.reportDate ?? null, rowCount: rows.length };
+  }
   if (sourceSystem === 'accounting_power') {
     if (kind === 'coa') {
       const { rows, errors } = ap.parseCoa(buf);
@@ -710,6 +744,11 @@ async function validateAgainstDb(
     const dates = Array.from(new Set(entries.map((e) => e.date)));
     errs.push(...(await checkLockDate(tenantId, companyId, dates)));
     return errs;
+  }
+  if (isOpenItemKind(kind)) {
+    // Names are matched at commit (the contacts may come in the same batch).
+    const dates = Array.from(new Set(((parsedAny as CanonicalOpenItemRow[]) ?? []).map((r) => r.date)));
+    return await checkLockDate(tenantId, companyId, dates);
   }
   return [];
 }
@@ -1079,7 +1118,9 @@ export async function commitSession(
 // ── Batch commit core (U-261) ─────────────────────────────────────
 
 /** Posting order inside a batch: what later sessions resolve against comes first. */
-const KIND_ORDER: Record<string, number> = { coa: 0, contacts: 1, trial_balance: 2, gl_transactions: 3 };
+const KIND_ORDER: Record<string, number> = {
+  coa: 0, contacts: 1, trial_balance: 2, gl_transactions: 3, open_invoices: 4, unpaid_bills: 5,
+};
 
 export function sortSessionsForCommit<T extends { kind: string; createdAt: Date }>(sessions: T[]): T[] {
   return [...sessions].sort((a, b) =>
@@ -1098,8 +1139,57 @@ export interface BatchPriorValues {
   fiscalYearStartMonth?: number | null;
   /** Taken at the end of the commit, for undo's changed-since checks (U-261). */
   stamps?: import('./import-undo.service.js').CommitStamps;
-  /** An existing untagged account the commit adopted as the suspense account. */
+  /** An existing untagged account the commit adopted as the suspense account (or as A/R or A/P, U-264). */
   adoptedSystemAccounts?: Record<string, { systemTag: string | null; isSystem: boolean | null }>;
+  /**
+   * U-264: the invoice and credit memo counters open items with no number
+   * advanced, before and after (null: the setting was absent). Undo puts a
+   * counter back only while it still reads `after`, so a change made since
+   * (a document numbered later, a new prefix) is never lost.
+   */
+  counters?: {
+    invoice?: { before: number | null; after: number | null };
+    creditMemo?: { before: number | null; after: number | null };
+  };
+}
+
+/**
+ * What the sessions of one batch share (U-264, qbd-open-items-v1). With an
+ * open_invoices (or unpaid_bills) file in the batch, A/R (or A/P) history goes
+ * to "Receivables before conversion" (or "Payables before conversion"): the
+ * chart's A/R and A/P accounts merge into the system account, and trial
+ * balance and journal lines on them post to the before-conversion account,
+ * which the open items then clear (P31 design a).
+ */
+export interface BatchShared {
+  openItems: { ar: boolean; ap: boolean };
+  /** Source chart keys merged into a system account: `n:<number>` / `name:<lowercased name>` -> account id. */
+  aliases: Map<string, string>;
+  /** The before-conversion accounts this batch used (found or created). */
+  historyAccounts: { ar?: string; ap?: string };
+  /** Source account keys whose trial balance or journal lines were moved there. */
+  redirectedKeys: Set<string>;
+}
+
+export function newBatchShared(kinds: string[]): BatchShared {
+  return {
+    openItems: { ar: kinds.includes('open_invoices'), ap: kinds.includes('unpaid_bills') },
+    aliases: new Map(),
+    historyAccounts: {},
+    redirectedKeys: new Set(),
+  };
+}
+
+/** The batch result fields a batch with open items adds (U-264): for the tie-out (E3) and the desktop. */
+export function batchSharedResult(shared: BatchShared | undefined): Record<string, unknown> {
+  if (!shared || (!shared.historyAccounts.ar && !shared.historyAccounts.ap && shared.redirectedKeys.size === 0)) return {};
+  return {
+    historyAccounts: {
+      ar: shared.historyAccounts.ar ?? null,
+      ap: shared.historyAccounts.ap ?? null,
+    },
+    redirectedAccountKeys: [...shared.redirectedKeys].sort(),
+  };
 }
 
 export interface CommitSessionContext {
@@ -1110,6 +1200,8 @@ export interface CommitSessionContext {
   batchId: string;
   priorValues: BatchPriorValues;
   progress: ProgressFn;
+  /** U-264: shared across the batch's sessions (absent: no open-item behaviour). */
+  shared?: BatchShared;
 }
 
 /**
@@ -1136,6 +1228,9 @@ export async function commitSessionInBatch(
   }
   if (row.kind === 'gl_transactions') {
     return await commitGl(ctx, row.fileHash, row.sourceSystem as SourceSystem, parsed as CanonicalGlEntry[], options);
+  }
+  if (isOpenItemKind(row.kind)) {
+    return await commitOpenItems(ctx, row.kind, row.sourceSystem as SourceSystem, parsed as CanonicalOpenItemRow[]);
   }
   throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
 }
@@ -1171,6 +1266,93 @@ async function stampTransactions(tx: Tx, tenantId: string, batchId: string, ids:
   }
 }
 
+// ── Before-conversion accounts (U-264) ────────────────────────────
+
+/**
+ * The history accounts of design (a): plain other-current accounts (no
+ * system tag, so documents may post to them and journal entries edit them
+ * freely), found by name and type or created by the batch.
+ */
+export const HISTORY_ACCOUNT_SPECS = {
+  ar: {
+    name: 'Receivables before conversion', accountType: 'asset', detailType: 'other_current_asset',
+    description: 'Receivables history from before the switch. The open invoices brought in clear it: 0.00 at the conversion date.',
+  },
+  ap: {
+    name: 'Payables before conversion', accountType: 'liability', detailType: 'other_current_liability',
+    description: 'Payables history from before the switch. The unpaid bills brought in clear it: 0.00 at the conversion date.',
+  },
+} as const;
+
+async function historyAccount(ctx: CommitSessionContext, side: 'ar' | 'ap'): Promise<string> {
+  const shared = ctx.shared;
+  if (!shared) throw AppError.internal('Open items need the batch context.');
+  const known = shared.historyAccounts[side];
+  if (known) return known;
+  const { tx, tenantId, companyId, batchId } = ctx;
+  const spec = HISTORY_ACCOUNT_SPECS[side];
+  const [found] = await tx.select({ id: accounts.id }).from(accounts).where(and(
+    eq(accounts.tenantId, tenantId),
+    or(eq(accounts.companyId, companyId), isNull(accounts.companyId)),
+    eq(accounts.accountType, spec.accountType),
+    sql`lower(${accounts.name}) = ${spec.name.toLowerCase()}`,
+  )).orderBy(asc(accounts.createdAt), asc(accounts.id)).limit(1);
+  let id = found?.id;
+  if (!id) {
+    const [created] = await tx.insert(accounts).values({
+      tenantId, companyId, name: spec.name, accountType: spec.accountType, detailType: spec.detailType,
+      description: spec.description, importBatchId: batchId,
+    }).returning({ id: accounts.id });
+    id = created!.id;
+  }
+  shared.historyAccounts[side] = id;
+  return id;
+}
+
+function aliasKeys(accountNumber: string | undefined | null, name: string | undefined | null): string[] {
+  return [
+    ...(accountNumber ? [`n:${accountNumber}`] : []),
+    ...(name ? [`name:${name.toLowerCase()}`] : []),
+  ];
+}
+
+/** Lays the batch's merged chart rows (aliases) over the number and name lookups. */
+function applyAliases(ctx: CommitSessionContext, byNum: Map<string, string>, byName: Map<string, string>): void {
+  for (const [k, id] of ctx.shared?.aliases ?? []) {
+    if (k.startsWith('n:')) byNum.set(k.slice(2), id);
+    else if (k.startsWith('name:')) byName.set(k.slice(5), id);
+  }
+}
+
+/**
+ * With open items in the batch, a trial balance or journal line that lands on
+ * an A/R (or A/P) account (system tag or detail type) posts to the
+ * before-conversion account instead. Null when the batch has no open items.
+ */
+function historyRedirect(
+  ctx: CommitSessionContext,
+  acctRows: Array<{ id: string; systemTag: string | null; detailType: string | null }>,
+): { to: (id: string, key: string) => Promise<string>; count: () => number } | null {
+  const shared = ctx.shared;
+  if (!shared || (!shared.openItems.ar && !shared.openItems.ap)) return null;
+  const sideOf = new Map<string, 'ar' | 'ap'>();
+  for (const a of acctRows) {
+    if (shared.openItems.ar && (a.systemTag === 'accounts_receivable' || a.detailType === 'accounts_receivable')) sideOf.set(a.id, 'ar');
+    if (shared.openItems.ap && (a.systemTag === 'accounts_payable' || a.detailType === 'accounts_payable')) sideOf.set(a.id, 'ap');
+  }
+  let moved = 0;
+  return {
+    to: async (id, key) => {
+      const side = sideOf.get(id);
+      if (!side) return id;
+      moved++;
+      shared.redirectedKeys.add(key);
+      return historyAccount(ctx, side);
+    },
+    count: () => moved,
+  };
+}
+
 // ── Commit kinds ──────────────────────────────────────────────────
 // Each runs inside the batch transaction (ctx.tx) and stamps what it creates
 // with ctx.batchId (U-261).
@@ -1204,8 +1386,50 @@ async function commitCoa(
   // existing accountNumbers cleanly. Accounts without a number (QBO
   // imports) get a fresh row each time — within-tenant uniqueness
   // for those is the operator's responsibility.
+  // U-264 (Q-P31k): with open items in the batch, the source's A/R and A/P
+  // accounts merge into the company's one system account of that role (its
+  // lines then go to the before-conversion account); with none tagged yet,
+  // the first such row becomes it. Elsewhere they import as plain accounts.
+  let merged = 0;
+  const roleAccount = new Map<string, string>();
+  const mergeRole = (role: CanonicalCoaRow['systemRole']) => !!role && !!ctx.shared
+    && ((role === 'accounts_receivable' && ctx.shared.openItems.ar) || (role === 'accounts_payable' && ctx.shared.openItems.ap));
+
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
+    if (mergeRole(r.systemRole)) {
+      const role = r.systemRole!;
+      let target = roleAccount.get(role) ?? await findSystemAccountId(tenantId, role, tx);
+      if (target) {
+        merged++;
+      } else {
+        const [ins] = await tx.insert(accounts).values({
+          tenantId, companyId, accountNumber: r.accountNumber ?? null, name: r.name, accountType: r.accountType,
+          detailType: role, description: r.description ?? null, isSystem: true, systemTag: role, importBatchId: batchId,
+        }).onConflictDoNothing().returning({ id: accounts.id });
+        if (ins) {
+          target = ins.id;
+          created++;
+        } else {
+          // Its number is an existing untagged account: that account takes the role (undo gives it back).
+          const [same] = await tx.select().from(accounts)
+            .where(and(eq(accounts.tenantId, tenantId), eq(accounts.accountNumber, r.accountNumber!))).limit(1);
+          if (!same || same.systemTag) {
+            throw AppError.conflict(`Account number "${r.accountNumber}" is already used by another system account.`,
+              'IMPORT_SYSTEM_ACCOUNT_CONFLICT', { rowNumber: r.rowNumber });
+          }
+          (ctx.priorValues.adoptedSystemAccounts ??= {})[same.id] = { systemTag: same.systemTag ?? null, isSystem: same.isSystem ?? null };
+          await tx.update(accounts).set({ systemTag: role, isSystem: true, updatedAt: new Date() })
+            .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, same.id)));
+          target = same.id;
+          merged++;
+        }
+      }
+      roleAccount.set(role, target);
+      for (const k of aliasKeys(r.accountNumber, r.name)) ctx.shared!.aliases.set(k, target);
+      if ((i + 1) % 200 === 0) ctx.progress('coa', i + 1, rows.length);
+      continue;
+    }
     const insertResult = await tx
       .insert(accounts)
       .values({
@@ -1257,6 +1481,7 @@ async function commitCoa(
     parentOf.set(a.id, a.parentId ?? null);
   }
   for (const r of rows) {
+    if (mergeRole(r.systemRole)) continue; // merged into a system account: its parent stays as it is
     let parentId: string | null = null;
     if (r.parentNumber) parentId = byNum.get(r.parentNumber) ?? null;
     if (!parentId && r.parentName) parentId = byName.get(r.parentName.toLowerCase()) ?? null;
@@ -1272,7 +1497,7 @@ async function commitCoa(
     parentOf.set(childId, parentId);
   }
 
-  return { created, skipped, updated };
+  return { created, skipped, updated, ...(merged > 0 ? { mergedIntoSystemAccounts: merged } : {}) };
 }
 
 async function commitContacts(
@@ -1420,6 +1645,8 @@ async function commitTrialBalance(
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
     byName.set(a.name.toLowerCase(), a.id);
   }
+  applyAliases(ctx, byNum, byName);
+  const redirect = historyRedirect(ctx, acctRows);
   // Lines naming an account this CoA does not have go to suspense (default)
   // so the opening JE still balances and the work is reviewable, instead of
   // aborting the whole import. Resolved lazily: a file that maps cleanly
@@ -1433,6 +1660,7 @@ async function commitTrialBalance(
     let id =
       (r.accountNumber && byNum.get(r.accountNumber)) ||
       (r.accountName && byName.get(r.accountName.toLowerCase()));
+    if (id && redirect) id = await redirect.to(id, r.accountNumber ?? r.accountName ?? '?');
     if (!id) {
       const key = r.accountNumber ?? r.accountName ?? '?';
       if (!fallbackOn) {
@@ -1473,6 +1701,7 @@ async function commitTrialBalance(
   return {
     created: 1,
     skipped: 0,
+    ...(redirect && redirect.count() > 0 ? { redirectedLines: redirect.count() } : {}),
     ...(unmappedKeys.size > 0
       ? { unmappedToSuspense: unmappedKeys.size, unmappedAccountKeys: [...unmappedKeys].sort() }
       : {}),
@@ -1548,6 +1777,8 @@ async function commitGl(
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
     byName.set(a.name.toLowerCase(), a.id);
   }
+  applyAliases(ctx, byNum, byName);
+  const redirect = historyRedirect(ctx, acctRows);
 
   // Resolve (and auto-create) every tag named across the file up front, so a
   // single tag referenced by many rows is created once. The Generic importer
@@ -1602,6 +1833,7 @@ async function commitGl(
       let id =
         (line.accountNumber && byNum.get(line.accountNumber)) ||
         (line.accountName && byName.get(line.accountName.toLowerCase()));
+      if (id && redirect) id = await redirect.to(id, line.accountNumber ?? line.accountName ?? '?');
       if (!id) {
         const key = line.accountNumber ?? line.accountName ?? '?';
         if (!fallbackOn) {
@@ -1670,8 +1902,163 @@ async function commitGl(
   return {
     created, skipped, voidsReversed, vendorsMatched,
     ...(tagsCreated ? { tagsCreated } : {}),
+    ...(redirect && redirect.count() > 0 ? { redirectedLines: redirect.count() } : {}),
     ...(unmappedKeys.size > 0
       ? { unmappedToSuspense: unmappedKeys.size, unmappedAccountKeys: [...unmappedKeys].sort() }
       : {}),
   };
+}
+
+// ── Open items (U-264, qbd-open-items-v1) ─────────────────────────
+
+const SOURCE_LABEL: Record<string, string> = {
+  quickbooks_desktop: 'QuickBooks Desktop',
+  quickbooks_online: 'QuickBooks Online',
+  generic: 'the import file',
+  accounting_power: 'Accounting Power',
+};
+
+/** The memo of an imported open item: where it came from, its number and, when partly paid, its original amount. */
+function openItemMemo(sourceSystem: string, r: CanonicalOpenItemRow): string {
+  const open = new Decimal(r.openBalance).abs();
+  const original = r.originalAmount !== undefined ? new Decimal(r.originalAmount).abs() : null;
+  const parts = [`Open balance brought in from ${SOURCE_LABEL[sourceSystem] ?? sourceSystem}`, `${r.sourceType}${r.number ? ` ${r.number}` : ''}`];
+  if (original && !original.equals(open)) parts.push(`original amount ${original.toFixed(2)}, open ${open.toFixed(2)}`);
+  return parts.join('; ');
+}
+
+/** The invoice and credit memo counters (null: not set). */
+async function readCounters(ctx: CommitSessionContext): Promise<{ invoice: number | null; creditMemo: number | null }> {
+  const [co] = await ctx.tx.select({ invoiceNextNumber: companies.invoiceNextNumber, documentNumbers: companies.documentNumbers })
+    .from(companies).where(and(eq(companies.tenantId, ctx.tenantId), eq(companies.id, ctx.companyId))).limit(1);
+  const cm = (co?.documentNumbers as Record<string, { next?: number }> | null | undefined)?.['credit_memo']?.next;
+  return { invoice: co?.invoiceNextNumber ?? null, creditMemo: typeof cm === 'number' ? cm : null };
+}
+
+/**
+ * Each open item becomes a real one-line document whose line goes to the
+ * before-conversion account (P31 design a): an invoice or credit memo
+ * (open_invoices), a bill or vendor credit (unpaid_bills), for the open
+ * balance exactly, with the source number, date and due date. A name not
+ * found among the company's customers (or vendors) is created, stamped with
+ * the batch. Posts through the invoice, credit memo, bill and vendor credit
+ * services in the batch transaction (review S3), without sales tax.
+ */
+async function commitOpenItems(
+  ctx: CommitSessionContext,
+  kind: 'open_invoices' | 'unpaid_bills',
+  sourceSystem: SourceSystem,
+  rows: CanonicalOpenItemRow[],
+): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
+  if (rows.length === 0) return { created: 0, skipped: 0 };
+  // A row with no number takes the next invoice or credit memo number: undo gives it back.
+  const claims = kind === 'open_invoices' && rows.some((r) => !r.number);
+  const countersBefore = claims ? await readCounters(ctx) : null;
+  const historyId = await historyAccount(ctx, kind === 'open_invoices' ? 'ar' : 'ap');
+  const { createInvoiceWithWarnings } = await import('../invoice.service.js');
+  const { createCreditMemoWithWarnings } = await import('../credit-memo.service.js');
+  const { createBill } = await import('../bill.service.js');
+  const { createVendorCredit } = await import('../vendor-credit.service.js');
+
+  // Names: the company's customers (or vendors), both-kind contacts too; the exact type first.
+  const want = kind === 'open_invoices' ? 'customer' : 'vendor';
+  const existing = await tx.select({ id: contacts.id, displayName: contacts.displayName, contactType: contacts.contactType })
+    .from(contacts).where(and(
+      eq(contacts.tenantId, tenantId),
+      or(eq(contacts.companyId, companyId), isNull(contacts.companyId)),
+      inArray(contacts.contactType, [want, 'both']),
+    )).orderBy(asc(contacts.createdAt), asc(contacts.id));
+  const byName = new Map<string, string>();
+  for (const c of [...existing.filter((e) => e.contactType === want), ...existing.filter((e) => e.contactType !== want)]) {
+    const k = c.displayName.trim().toLowerCase();
+    if (!byName.has(k)) byName.set(k, c.id);
+  }
+
+  const documents: Partial<Record<CanonicalOpenItemRow['docType'], number>> = {};
+  let contactsCreated = 0;
+  const posted: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    const key = r.name.trim().toLowerCase();
+    let contactId = byName.get(key);
+    if (!contactId) {
+      const [c] = await tx.insert(contacts).values({
+        tenantId, companyId, contactType: want, displayName: r.name.trim(), importBatchId: batchId,
+      }).returning({ id: contacts.id });
+      contactId = c!.id;
+      byName.set(key, contactId);
+      contactsCreated++;
+    }
+    const amount = new Decimal(r.openBalance).abs().toFixed(2);
+    const memo = openItemMemo(sourceSystem, r);
+    const description = r.docType === 'invoice' || r.docType === 'bill' ? 'Open balance brought in' : 'Open credit brought in';
+    let id: string;
+    let total: string;
+    try {
+      if (r.docType === 'invoice') {
+        const input = {
+          contactId, txnDate: r.date, ...(r.dueDate ? { dueDate: r.dueDate } : {}), memo, warnOnly: true,
+          ...(r.number ? { txnNumber: r.number } : {}),
+          lines: [{ accountId: historyId, description, quantity: '1', unitPrice: amount, isTaxable: false }],
+        } as CreateInvoiceInput;
+        const { invoice } = await createInvoiceWithWarnings(tenantId, input, userId, companyId, tx);
+        id = invoice.id;
+        total = String(invoice.total);
+      } else if (r.docType === 'credit_memo') {
+        const input = {
+          contactId, txnDate: r.date, memo, warnOnly: true, ...(r.number ? { txnNumber: r.number } : {}),
+          lines: [{ accountId: historyId, description, quantity: '1', unitPrice: amount }],
+        } as CreateCreditMemoInput;
+        const { transaction } = await createCreditMemoWithWarnings(tenantId, input, userId, companyId, tx);
+        id = transaction.id;
+        total = String(transaction.total);
+      } else if (r.docType === 'bill') {
+        const bill = await createBill(tenantId, {
+          contactId, txnDate: r.date, ...(r.dueDate ? { dueDate: r.dueDate } : {}), memo,
+          ...(r.number ? { vendorInvoiceNumber: r.number } : {}),
+          lines: [{ accountId: historyId, amount, description }],
+        } as never, userId, companyId, tx);
+        id = bill.id;
+        total = String(bill.total);
+      } else {
+        const credit = await createVendorCredit(tenantId, {
+          contactId, txnDate: r.date, memo, ...(r.number ? { vendorInvoiceNumber: r.number } : {}),
+          lines: [{ accountId: historyId, amount, description }],
+        } as never, userId, companyId, tx);
+        id = credit.id;
+        total = String(credit.total);
+      }
+    } catch (err) {
+      // The batch transaction rolls back; the error names the row.
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new AppError(
+        err instanceof AppError && (err.statusCode === 423 || err.statusCode === 403) ? err.statusCode : 422,
+        `Failed posting the open item at row ${r.rowNumber}: ${msg}`,
+        err instanceof AppError ? (err.code ?? 'IMPORT_POST_FAILED') : 'IMPORT_POST_FAILED',
+        { ...(err instanceof AppError ? (err.details ?? {}) : {}), rowNumber: r.rowNumber, originalError: msg },
+      );
+    }
+    // Exactly the open balance, or nothing posts (a price level, tax or rounding would change it).
+    if (!new Decimal(total).equals(amount)) {
+      throw AppError.unprocessableEntity(`The open item at row ${r.rowNumber} posted ${total}, not ${amount}.`,
+        'IMPORT_OPEN_ITEM_AMOUNT', { rowNumber: r.rowNumber });
+    }
+    posted.push(id);
+    documents[r.docType] = (documents[r.docType] ?? 0) + 1;
+    if ((i + 1) % 100 === 0) ctx.progress(kind, i + 1, rows.length);
+  }
+  await stampTransactions(tx, tenantId, batchId, posted);
+  if (countersBefore) {
+    const after = await readCounters(ctx);
+    const k = (ctx.priorValues.counters ??= {});
+    if (after.invoice !== countersBefore.invoice) {
+      k.invoice = { before: k.invoice?.before ?? countersBefore.invoice, after: after.invoice };
+    }
+    if (after.creditMemo !== countersBefore.creditMemo) {
+      k.creditMemo = { before: k.creditMemo ? k.creditMemo.before : countersBefore.creditMemo, after: after.creditMemo };
+    }
+  }
+  ctx.progress(kind, rows.length, rows.length);
+  return { created: posted.length, skipped: 0, documents, ...(contactsCreated > 0 ? { contactsCreated } : {}) };
 }

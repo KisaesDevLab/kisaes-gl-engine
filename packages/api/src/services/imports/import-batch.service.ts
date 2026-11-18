@@ -44,7 +44,7 @@ import {
 } from './import-undo.service.js';
 import {
   sortSessionsForCommit, commitSessionInBatch, assertNotAlreadyCommitted, assertNoCommittedOverlap,
-  toSessionDto, type BatchPriorValues,
+  toSessionDto, newBatchShared, batchSharedResult, type BatchPriorValues,
 } from './imports.service.js';
 
 export type BatchKind = 'conversion' | 'single' | 'transactions';
@@ -327,7 +327,9 @@ function earliestPostingDate(sessions: SessionRow[]): string | null {
   let min: string | null = null;
   for (const s of sessions) {
     if (s.role !== 'post') continue;
-    const d = s.kind === 'trial_balance' ? s.reportDate : s.kind === 'gl_transactions' ? s.dateFrom : null;
+    // Open items (U-264) post on their document dates: dateFrom is the earliest.
+    const d = s.kind === 'trial_balance' ? s.reportDate
+      : s.kind === 'gl_transactions' || s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom : null;
     if (d && (min === null || d < min)) min = d;
   }
   return min;
@@ -520,12 +522,14 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     }
 
     const results: Record<string, ImportCommitResult> = {};
+    // U-264: open-item files in the batch send A/R and A/P history to the before-conversion accounts.
+    const shared = newBatchShared(posting.map((s) => s.kind));
     let done = 0;
     for (const s of posting) {
       currentSession = s.id;
       setProgress(batchId, s.kind, done, posting.length);
       const r = await commitSessionInBatch({
-        tx, tenantId, companyId, userId, batchId, priorValues,
+        tx, tenantId, companyId, userId, batchId, priorValues, shared,
         progress: (step, d, t) => setProgress(batchId, `${step} ${d}/${t}`, done, posting.length),
       }, s);
       results[s.id] = r;
@@ -550,7 +554,7 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     await auditBatchOverride(tx, req, 'commit');
     const now = new Date();
     await tx.update(importBatches).set({
-      status: 'committed', result: { sessions: results } as never, error: null,
+      status: 'committed', result: { sessions: results, ...batchSharedResult(shared) } as never, error: null,
       priorValues: priorValues as never, companyWasEmpty,
       committedAt: now, committedBy: userId, updatedAt: now,
     }).where(eq(importBatches.id, batchId));
@@ -714,6 +718,25 @@ export async function runUndoJob(req: CommitRequest): Promise<void> {
     if (prior.fiscalYearStartMonth !== undefined) {
       await tx.update(companies).set({ fiscalYearStartMonth: prior.fiscalYearStartMonth, updatedAt: new Date() })
         .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+    }
+    // U-264: the counters open items with no number advanced go back, each
+    // only while it still reads what the commit left (a number taken since,
+    // or a prefix changed since, stays).
+    const inv = prior.counters?.invoice;
+    if (inv && inv.after !== null) {
+      await tx.execute(sql`UPDATE companies SET invoice_next_number = ${inv.before}, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND id = ${companyId} AND invoice_next_number = ${inv.after}`);
+    }
+    const cm = prior.counters?.creditMemo;
+    if (cm && cm.after !== null) {
+      await tx.execute(cm.before === null
+        ? sql`UPDATE companies SET document_numbers = CASE
+              WHEN (document_numbers->'credit_memo') - 'next' = '{}'::jsonb THEN document_numbers - 'credit_memo'
+              ELSE document_numbers #- '{credit_memo,next}' END, updated_at = now()
+            WHERE tenant_id = ${tenantId} AND id = ${companyId} AND (document_numbers->'credit_memo'->>'next') = ${String(cm.after)}`
+        : sql`UPDATE companies SET document_numbers = jsonb_set(document_numbers, '{credit_memo,next}', to_jsonb(${cm.before}::int)),
+              updated_at = now()
+            WHERE tenant_id = ${tenantId} AND id = ${companyId} AND (document_numbers->'credit_memo'->>'next') = ${String(cm.after)}`);
     }
 
     // One audit row per deleted record with its before-image, then one for the batch.
