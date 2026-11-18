@@ -426,9 +426,10 @@ function errorOf(e: unknown, sessionId: string | null): BatchError {
 }
 
 /** The error a failed job leaves, as an AppError (the old one-session commit rethrows it). */
-function toAppError(err: BatchError, original: unknown): AppError {
+function toAppError(err: BatchError, original: unknown): unknown {
   if (original instanceof AppError) return original;
-  return new AppError(err.status ?? 500, err.message, err.code, err.details);
+  if (err.code === 'IMPORT_ALREADY_COMMITTED') return new AppError(409, err.message, err.code, err.details);
+  return original;
 }
 
 /**
