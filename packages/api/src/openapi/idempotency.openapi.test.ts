@@ -220,7 +220,7 @@ export const IDEMPOTENCY_PAYROLL_POST_V1_ROUTES = [
 ].sort();
 
 /** Keyed by imports-batch-v1 (U-261): a batch commit runs once per key. */
-export const IDEMPOTENCY_IMPORTS_BATCH_V1_ROUTES = ['post /api/v1/imports/batches/{id}/commit'];
+export const IDEMPOTENCY_IMPORTS_BATCH_V1_ROUTES = ['post /api/v1/imports/batches/{id}/commit', 'post /api/v1/imports/batches/{id}/undo'];
 
 const ALL_KEYED_ROUTES = [
   ...IDEMPOTENCY_IMPORTS_BATCH_V1_ROUTES,

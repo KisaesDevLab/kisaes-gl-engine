@@ -41,7 +41,7 @@ import {
 } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
 // Unmapped TB/GL accounts land here instead of failing the import.
-import { getSuspenseAccountId } from '../system-accounts.service.js';
+import { findSystemAccountId, getOrCreateSystemAccount, SUSPENSE_TAG } from '../system-accounts.service.js';
 import * as ap from './adapters/accounting-power.js';
 import * as qbo from './adapters/quickbooks-online.js';
 import * as qbd from './adapters/quickbooks-desktop.js';
@@ -238,7 +238,7 @@ async function ensureTags(
   return { map, created: toCreate.length };
 }
 
-const TERMINAL_STATUSES: readonly ImportStatus[] = ['committed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES: readonly ImportStatus[] = ['committed', 'failed', 'cancelled', 'undone'];
 
 function isTerminal(s: string): boolean {
   return TERMINAL_STATUSES.includes(s as ImportStatus);
@@ -1096,6 +1096,10 @@ export interface BatchPriorValues {
     parentId: string | null; updatedAtAfter?: string | null;
   }>;
   fiscalYearStartMonth?: number | null;
+  /** Taken at the end of the commit, for undo's changed-since checks (U-261). */
+  stamps?: import('./import-undo.service.js').CommitStamps;
+  /** An existing untagged account the commit adopted as the suspense account. */
+  adoptedSystemAccounts?: Record<string, { systemTag: string | null; isSystem: boolean | null }>;
 }
 
 export interface CommitSessionContext {
@@ -1134,6 +1138,28 @@ export async function commitSessionInBatch(
     return await commitGl(ctx, row.fileHash, row.sourceSystem as SourceSystem, parsed as CanonicalGlEntry[], options);
   }
   throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
+}
+
+/**
+ * The suspense account for unmapped lines, found or made in the batch
+ * transaction (a rollback leaves none behind). One the batch creates is
+ * stamped with it (undo removes it); an untagged account it adopts keeps its
+ * prior tag in prior_values.
+ */
+async function batchSuspenseAccount(ctx: CommitSessionContext): Promise<string> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
+  const existing = await findSystemAccountId(tenantId, SUSPENSE_TAG, tx);
+  if (existing) return existing;
+  const before = new Map((await tx.select({ id: accounts.id, systemTag: accounts.systemTag, isSystem: accounts.isSystem })
+    .from(accounts).where(eq(accounts.tenantId, tenantId))).map((a) => [a.id, a]));
+  const id = await getOrCreateSystemAccount(tenantId, SUSPENSE_TAG, companyId, userId, tx);
+  const prior = before.get(id);
+  if (!prior) {
+    await tx.update(accounts).set({ importBatchId: batchId }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)));
+  } else {
+    (ctx.priorValues.adoptedSystemAccounts ??= {})[id] = { systemTag: prior.systemTag ?? null, isSystem: prior.isSystem ?? null };
+  }
+  return id;
 }
 
 /** Stamps transactions a session posted with the batch id, in chunks (one UPDATE per chunk, not per row). */
@@ -1416,7 +1442,7 @@ async function commitTrialBalance(
           { rowNumber: r.rowNumber },
         );
       }
-      suspenseAccountId ??= await getSuspenseAccountId(tenantId, companyId, userId);
+      suspenseAccountId ??= await batchSuspenseAccount(ctx);
       unmappedKeys.add(key);
       id = suspenseAccountId;
     }
@@ -1586,7 +1612,7 @@ async function commitGl(
             { rowNumber: e.rowNumber, failedAtIndex: idx, accountKey: line.accountNumber ?? line.accountName },
           );
         }
-        suspenseAccountId ??= await getSuspenseAccountId(tenantId, companyId, userId);
+        suspenseAccountId ??= await batchSuspenseAccount(ctx);
         unmappedKeys.add(key);
         id = suspenseAccountId;
       }

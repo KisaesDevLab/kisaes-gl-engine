@@ -187,6 +187,10 @@ export const REFUSE_PREFIXES: readonly string[] = [
   // account names (previews, mappings, sessions), so the whole module is
   // refused while the viewer has any hidden account. No CONVERTED entries.
   '/api/v1/payroll-import',
+  // U-263 (ClientLedger P31): Bulk Imports read and post balances on every
+  // account (previews, tie-out) and undo deletes on any of them, so the whole
+  // module is refused while the viewer has any hidden account. No CONVERTED entries.
+  '/api/v1/imports',
 ];
 
 /**

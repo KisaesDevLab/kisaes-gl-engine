@@ -20,7 +20,8 @@ export type ImportStatus =
   | 'committed'     // commit succeeded; commitResult populated
   | 'failed'        // commit threw; partial state possible (caller should
                     //   inspect commitResult.error and consider rollback)
-  | 'cancelled';    // operator deleted before commit
+  | 'cancelled'     // operator deleted before commit
+  | 'undone';       // U-261: the batch holding the session was undone
 
 export type ContactKind = 'customer' | 'vendor';
 
