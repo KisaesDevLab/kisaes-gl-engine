@@ -217,7 +217,7 @@ async function contactsNamed(name: string) {
 async function bsDiff(asOf: string) {
   const r = await h.request('GET', `/api/v1/reports/balance-sheet?exact=1&basis=accrual&as_of_date=${asOf}`, c.token);
   expect(r.status, JSON.stringify(r.json)).toBe(200);
-  return dec(r.json.totalAssetsExact).minus(dec(r.json.totalLiabilitiesExact)).minus(dec(r.json.totalEquityExact)).toFixed(4);
+  return dec(r.json['totalAssetsExact']).minus(dec(r.json['totalLiabilitiesExact'])).minus(dec(r.json['totalEquityExact'])).toFixed(4);
 }
 
 describe('U-265 capability and parsers', () => {
