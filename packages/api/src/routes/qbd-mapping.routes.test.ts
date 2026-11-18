@@ -600,3 +600,32 @@ describe('U-265 the old one-session commit keeps its behaviour', () => {
     void inArray;
   });
 });
+
+describe('U-267 tie-out with inventory (imports-tieout-v1)', () => {
+  it('valuation rows tie by source row, Inventory before conversion is 0.00 and the asset accounts equal the valuation', async () => {
+    await inventoryOn();
+    const ref = await importsService.createSession({
+      tenantId: c.tenantId, companyId: c.companyId, userId: c.userId,
+      file: { originalname: 'tb-reference.csv', buffer: Buffer.from(`${TB}\n`, 'latin1') },
+      kind: 'trial_balance', sourceSystem: 'quickbooks_desktop', options: {} as never, role: 'reference',
+    });
+    const { id, batch, error } = await commit([...(await uploadConversion()), ref.session.id]);
+    expect(batch.status, JSON.stringify(error)).toBe('committed');
+    const r = await h.request('POST', `/api/v1/imports/batches/${id}/tieout`, c.token, {}, { 'Idempotency-Key': key() });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const t = r.json as Body;
+    expect(t.allZero, JSON.stringify({ a: t.accounts, b: t.balanceRows, i: t.inventoryItems })).toBe(true);
+    expect(t.inventoryItems.map((x: Body) => [x.item, x.sourceQuantity, x.booksQuantity, x.sourceExact, x.booksExact])).toEqual([
+      ['Widget:Mini', '10.5', '10.5', '11.55', '11.55'], ['Widget', '12', '12', '51.95', '51.95'],
+    ]);
+    expect(t.inventoryItems.every((x: Body) => typeof x.sourceRow === 'number' && x.itemId)).toBe(true);
+    expect(t.totals.inventory).toEqual({ sourceExact: '63.50', booksExact: '63.50', diffExact: '0.00' });
+    expect(t.balanceRows.map((x: Body) => [x.key, x.booksExact, x.diffExact])).toEqual([
+      ['history_ar', '0.00', '0.00'], ['history_ap', '0.00', '0.00'], ['history_inventory', '0.00', '0.00'], ['valuation_vs_asset', '63.50', '0.00'],
+    ]);
+    // The job's invoice went to its customer: the item keeps its source row and name.
+    expect(t.arItems.map((x: Body) => [x.contactName, x.number, x.diffExact])).toEqual([
+      ['Alder Café', '1001', '0.00'], ['Alder Café:Kitchen remodel', '1002', '0.00'], ['Birch & Co', '1003', '0.00'],
+    ]);
+  });
+});
