@@ -44,7 +44,7 @@ import {
 } from './import-undo.service.js';
 import {
   sortSessionsForCommit, commitSessionInBatch, assertNotAlreadyCommitted, assertNoCommittedOverlap,
-  toSessionDto, newBatchShared, batchSharedResult, loadParsedRows, type BatchPriorValues,
+  toSessionDto, newBatchShared, batchSharedResult, loadParsedRows, assertValuationNotNeeded, type BatchPriorValues,
 } from './imports.service.js';
 
 export type BatchKind = 'conversion' | 'single' | 'transactions';
@@ -53,9 +53,16 @@ export type BatchStatus = 'draft' | 'committing' | 'committed' | 'failed' | 'und
 export interface BatchOptions {
   /** 1-12; only in a company with no transactions (else 409 IMPORT_FISCAL_YEAR_LOCKED). Undo restores it. */
   fiscalYearStartMonth?: number;
-  /** Rows dated before this are left out (applied by the QBD adapters, E2c). */
+  /**
+   * U-266: journal rows dated before this are not posted (counted in the
+   * journal result's skippedBeforeHistory and in dateCheck.historySkipped).
+   */
   historyFrom?: string;
-  /** The conversion date: reference files and open items are as of this date (E2c). */
+  /**
+   * U-266: the conversion date. Reference trial balances, open-item reports and
+   * the inventory valuation must be dated it (422 IMPORT_DATE_MISMATCH); journal
+   * rows after it are refused (422 IMPORT_JOURNAL_AFTER_CONVERSION).
+   */
   conversionDate?: string;
   /** Refuse the commit unless the company has no transactions (409 IMPORT_COMPANY_NOT_EMPTY). */
   requireEmptyCompany?: boolean;
@@ -99,8 +106,10 @@ function sessionSummary(s: SessionRow) {
   };
 }
 
-export function toBatchDto(b: BatchRow, sessions: SessionRow[]) {
+export function toBatchDto(b: BatchRow, sessions: SessionRow[], dateCheck?: BatchDateCheck | null) {
   return {
+    // U-266: on create and GET of one batch (not in the list).
+    ...(dateCheck ? { dateCheck } : {}),
     id: b.id,
     companyId: b.companyId,
     sourceSystem: b.sourceSystem,
@@ -174,7 +183,10 @@ async function assertSessionsImportable(ex: DbOrTx, tenantId: string, companyId:
   for (const s of sessions) {
     if (s.role !== 'post') continue;
     if (s.rowHash) await assertNotAlreadyCommitted(ex, tenantId, companyId, s.rowHash, s.id);
-    await assertNoCommittedOverlap(ex, tenantId, companyId, s.sourceSystem, s.dateFrom, s.dateTo, ids);
+    // U-266: journal files only (an open-item file's document dates never overlap a journal).
+    if (s.kind === 'gl_transactions') {
+      await assertNoCommittedOverlap(ex, tenantId, companyId, s.sourceSystem, s.dateFrom, s.dateTo, ids);
+    }
   }
 }
 
@@ -255,6 +267,155 @@ async function assertInventoryReady(tenantId: string, companyId: string, session
   }
 }
 
+// ── Dates (U-266, qbd-dates-v1) ───────────────────────────────────
+
+/** A file whose date does not fit the conversion date (IMPORT_DATE_MISMATCH details.files). */
+export interface DateMismatchFile {
+  sessionId: string;
+  kind: string;
+  role: string;
+  originalFilename: string;
+  reportDate: string | null;
+  /** not_conversion_date: dated another day; no_date: the file has no report date; after_conversion: a posted trial balance after it. */
+  reason: 'not_conversion_date' | 'no_date' | 'after_conversion';
+}
+
+export interface BatchDateWarning {
+  /** IMPORT_HISTORY_GAP: no journal rows between the opening balances and the first journal row. IMPORT_JOURNAL_BEFORE_OPENING: journal rows on or before the opening balance date (they count twice). */
+  code: 'IMPORT_HISTORY_GAP' | 'IMPORT_JOURNAL_BEFORE_OPENING';
+  message: string;
+  openingBalanceDate: string;
+  firstJournalDate: string;
+  /** IMPORT_HISTORY_GAP: whole days with no rows between the two dates. */
+  days?: number;
+}
+
+/** U-266: what the batch's dates mean for the commit, shown before it (create, GET) and kept in result.dateCheck. */
+export interface BatchDateCheck {
+  conversionDate: string | null;
+  historyFrom: string | null;
+  /** Journal rows dated before historyFrom: never posted. */
+  historySkipped: number;
+  /** The earliest posted trial balance (the opening balances), or null. */
+  openingBalanceDate: string | null;
+  /** The first journal row that posts (on or after historyFrom), or null. */
+  firstJournalDate: string | null;
+  warnings: BatchDateWarning[];
+}
+
+const isoDay = (iso: string): number => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return Date.UTC(y!, m! - 1, d!) / 86_400_000;
+};
+
+/** Report dates of a session that must be the conversion date (reference trial balances, open items, valuation). */
+function mustBeConversionDate(s: SessionRow): boolean {
+  if (s.kind === 'trial_balance') return s.role === 'reference';
+  return s.kind === 'open_invoices' || s.kind === 'unpaid_bills' || s.kind === 'inventory_valuation';
+}
+
+const MAX_LISTED_ROWS = 500;
+
+/**
+ * U-266: the date refusals, before any commit (at create and again before the
+ * 202). Inert without conversionDate and historyFrom, so other batches and the
+ * old one-session commit are unchanged.
+ * - 400 IMPORT_BAD_DATE: historyFrom after conversionDate.
+ * - 422 IMPORT_DATE_MISMATCH {conversionDate, files[]}: a reference trial
+ *   balance, an open-item report or an inventory valuation not dated the
+ *   conversion date (or with no date), or a posted trial balance after it.
+ * - 422 IMPORT_JOURNAL_AFTER_CONVERSION {conversionDate, rows[{sessionId,
+ *   rowNumber, code, message, date}] (<= 500), rowCount}: journal rows after it.
+ */
+async function assertBatchDates(ex: DbOrTx, sessions: SessionRow[], options: BatchOptions): Promise<void> {
+  const conv = options.conversionDate;
+  if (conv && options.historyFrom && options.historyFrom > conv) {
+    throw AppError.badRequest(`The history start (${options.historyFrom}) is after the conversion date (${conv}).`, 'IMPORT_BAD_DATE', {
+      historyFrom: options.historyFrom, conversionDate: conv,
+    });
+  }
+  if (!conv) return;
+  const files: DateMismatchFile[] = [];
+  for (const s of sessions) {
+    const base = { sessionId: s.id, kind: s.kind, role: s.role, originalFilename: s.originalFilename, reportDate: s.reportDate };
+    if (mustBeConversionDate(s)) {
+      if (!s.reportDate) files.push({ ...base, reason: 'no_date' });
+      else if (s.reportDate !== conv) files.push({ ...base, reason: 'not_conversion_date' });
+    } else if (s.kind === 'trial_balance' && s.role === 'post' && s.reportDate && s.reportDate > conv) {
+      files.push({ ...base, reason: 'after_conversion' });
+    }
+  }
+  if (files.length > 0) {
+    throw AppError.unprocessableEntity(
+      `${files.length} file(s) are not dated the conversion date (${conv}): ${files.map((f) => f.originalFilename).join(', ')}.`,
+      'IMPORT_DATE_MISMATCH', { conversionDate: conv, files },
+    );
+  }
+  const late = sessions.filter((s) => s.role === 'post' && s.kind === 'gl_transactions' && s.dateTo && s.dateTo > conv);
+  if (late.length === 0) return;
+  const r = await ex.execute(sql`
+    SELECT r.session_id::text AS "sessionId", (r.data->>'rowNumber')::int AS "rowNumber", r.data->>'date' AS date,
+           count(*) OVER ()::int AS total
+    FROM import_rows r
+    WHERE r.session_id IN (${sql.join(late.map((s) => sql`${s.id}::uuid`), sql`, `)}) AND r.data->>'date' > ${conv}
+    ORDER BY r.session_id, r.row_no LIMIT ${MAX_LISTED_ROWS}`);
+  const rows = r.rows as Array<{ sessionId: string; rowNumber: number; date: string; total: number }>;
+  const rowCount = rows[0]?.total ?? 0;
+  if (rowCount === 0) return;
+  throw AppError.unprocessableEntity(
+    `${rowCount} journal row(s) are dated after the conversion date (${conv}). Export the journal through the conversion date.`,
+    'IMPORT_JOURNAL_AFTER_CONVERSION', {
+      conversionDate: conv, rowCount,
+      rows: rows.map((x) => ({
+        sessionId: x.sessionId, rowNumber: x.rowNumber, date: x.date, code: 'IMPORT_JOURNAL_AFTER_CONVERSION',
+        message: `Dated ${x.date}, after the conversion date ${conv}.`,
+      })),
+    },
+  );
+}
+
+/**
+ * U-266: rows skipped by historyFrom, the opening balance date, the first
+ * journal row that posts, and the warnings (never refusals): a gap between
+ * the opening balances and that row, or journal rows on or before the
+ * opening balances. Reads import_rows, so only while they exist (draft,
+ * failed); a committed batch keeps it in result.dateCheck.
+ */
+export async function computeDateCheck(ex: DbOrTx, sessions: SessionRow[], options: BatchOptions): Promise<BatchDateCheck> {
+  const from = options.historyFrom ?? null;
+  const gl = sessions.filter((s) => s.role === 'post' && s.kind === 'gl_transactions' && s.dateFrom);
+  let historySkipped = 0;
+  let firstJournalDate: string | null = null;
+  if (gl.length > 0) {
+    const ids = sql.join(gl.map((s) => sql`${s.id}::uuid`), sql`, `);
+    const r = await ex.execute(sql`
+      SELECT count(*) FILTER (WHERE ${from}::text IS NOT NULL AND r.data->>'date' < ${from})::int AS skipped,
+             min(r.data->>'date') FILTER (WHERE ${from}::text IS NULL OR r.data->>'date' >= ${from}) AS first
+      FROM import_rows r WHERE r.session_id IN (${ids})`);
+    const row = (r.rows as Array<{ skipped: number; first: string | null }>)[0];
+    historySkipped = row?.skipped ?? 0;
+    firstJournalDate = row?.first ?? null;
+  }
+  const tbs = sessions.filter((s) => s.role === 'post' && s.kind === 'trial_balance' && s.reportDate).map((s) => s.reportDate!).sort();
+  const openingBalanceDate = tbs[0] ?? null;
+  const warnings: BatchDateWarning[] = [];
+  if (openingBalanceDate && firstJournalDate) {
+    const days = isoDay(firstJournalDate) - isoDay(openingBalanceDate) - 1;
+    if (days > 0) {
+      warnings.push({
+        code: 'IMPORT_HISTORY_GAP', openingBalanceDate, firstJournalDate, days,
+        message: `The journal starts ${firstJournalDate}, ${days} day(s) after the opening balances of ${openingBalanceDate}. Anything entered in between is missing.`,
+      });
+    } else if (days < 0) {
+      warnings.push({
+        code: 'IMPORT_JOURNAL_BEFORE_OPENING', openingBalanceDate, firstJournalDate,
+        message: `The journal has rows on or before the opening balances of ${openingBalanceDate}; they count twice. Start the history the day after (historyFrom).`,
+      });
+    }
+  }
+  return { conversionDate: options.conversionDate ?? null, historyFrom: from, historySkipped, openingBalanceDate, firstJournalDate, warnings };
+}
+
 // ── Create ────────────────────────────────────────────────────────
 
 export interface CreateBatchInput {
@@ -289,6 +450,7 @@ export async function createBatch(tenantId: string, companyId: string, userId: s
       throw AppError.conflict('The fiscal year can only be set by an import into a company with no transactions.', 'IMPORT_FISCAL_YEAR_LOCKED');
     }
     await assertAccountMap(tx, tenantId, companyId, options.accountMap);
+    await assertBatchDates(tx, sessions, options);
     const [b] = await tx.insert(importBatches).values({
       tenantId, companyId, sourceSystem: input.sourceSystem, kind: input.kind, status: 'draft',
       options: options as never,
@@ -298,7 +460,7 @@ export async function createBatch(tenantId: string, companyId: string, userId: s
     }).returning();
     await tx.update(importSessions).set({ batchId: b!.id, updatedAt: new Date() }).where(inArray(importSessions.id, ids));
     const after = await loadSessions(tx, b!.id);
-    return toBatchDto(b!, after);
+    return toBatchDto(b!, after, await computeDateCheck(tx, after, options));
   });
 }
 
@@ -309,7 +471,12 @@ export async function getBatch(tenantId: string, companyId: string, id: string):
 }> {
   const b = await loadBatch(db, tenantId, companyId, id);
   const sessions = await loadSessions(db, id);
-  const batch = toBatchDto(b, sessions);
+  // U-266: live while the parsed rows exist (draft, failed), else as the commit kept it.
+  const kept = ((b.result as Record<string, unknown> | null)?.['dateCheck'] as BatchDateCheck | undefined) ?? null;
+  const dateCheck = b.status === 'draft' || b.status === 'failed'
+    ? await computeDateCheck(db, sessions, (b.options as BatchOptions | null) ?? {})
+    : kept;
+  const batch = toBatchDto(b, sessions, dateCheck);
   const running = b.status === 'committing' || b.status === 'undoing';
   const progress = running
     ? (progressByBatch.get(id) ?? { step: 'waiting', done: 0, total: 0 })
@@ -378,15 +545,19 @@ export interface CommitRequest {
 // ── Closed periods (U-262) ────────────────────────────────────────
 
 /** The earliest date a commit posts on: trial balance report dates and journal first dates of 'post' sessions. */
-function earliestPostingDate(sessions: SessionRow[]): string | null {
+function earliestPostingDate(sessions: SessionRow[], historyFrom?: string): string | null {
   let min: string | null = null;
   for (const s of sessions) {
     if (s.role !== 'post') continue;
+    // U-266: journal rows before historyFrom never post; a file wholly before it posts nothing.
+    if (s.kind === 'gl_transactions' && historyFrom && s.dateTo && s.dateTo < historyFrom) continue;
+    const glFrom = s.dateFrom && historyFrom && s.dateFrom < historyFrom ? historyFrom : s.dateFrom;
     // Open items (U-264) post on their document dates: dateFrom is the earliest.
     const d = s.kind === 'trial_balance' ? s.reportDate
-      : s.kind === 'gl_transactions' || s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom
-        // U-265: opening stock is dated the valuation's report date.
-        : s.kind === 'inventory_valuation' && s.rowCount > 0 ? s.reportDate : null;
+      : s.kind === 'gl_transactions' ? glFrom
+        : s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom
+          // U-265: opening stock is dated the valuation's report date.
+          : s.kind === 'inventory_valuation' && s.rowCount > 0 ? s.reportDate : null;
     if (d && (min === null || d < min)) min = d;
   }
   return min;
@@ -452,6 +623,7 @@ async function precheckCommit(tenantId: string, companyId: string, b: BatchRow, 
   await assertSessionsImportable(db, tenantId, companyId, sessions);
   await assertInventoryReady(tenantId, companyId, sessions);
   const options = (b.options as BatchOptions | null) ?? {};
+  await assertBatchDates(db, sessions, options);
   if (options.requireEmptyCompany || options.fiscalYearStartMonth !== undefined) {
     const empty = await isCompanyEmpty(db, tenantId, companyId);
     if (!empty && options.requireEmptyCompany) {
@@ -498,7 +670,7 @@ export async function startCommit(req: CommitRequest): Promise<{ batchId: string
   const b = await loadBatch(db, req.tenantId, req.companyId, req.batchId);
   const sessions = await loadSessions(db, req.batchId);
   await precheckCommit(req.tenantId, req.companyId, b, sessions);
-  req.override = await closedPeriodCheck(req, earliestPostingDate(sessions));
+  req.override = await closedPeriodCheck(req, earliestPostingDate(sessions, ((b.options as BatchOptions | null) ?? {}).historyFrom));
   await claimForCommit(req);
   setProgress(req.batchId, 'queued', 0, sessions.length);
   scheduleCommitJob(req);
@@ -563,6 +735,10 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     const options = (b.options as BatchOptions | null) ?? {};
     const sessions = sortSessionsForCommit(await loadSessions(tx, batchId, true));
     const posting = sessions.filter((s) => s.role === 'post');
+    // U-266: the re-import refusals again, under the company lock: another batch may have committed an
+    // overlapping journal between this batch's precheck and its claim (only identical rows have an index).
+    await assertSessionsImportable(tx, tenantId, companyId, sessions);
+    const dateCheck = await computeDateCheck(tx, sessions, options);
     const companyWasEmpty = await isCompanyEmpty(tx, tenantId, companyId);
     if (options.requireEmptyCompany && !companyWasEmpty) {
       throw AppError.conflict('This import needs a company with no transactions.', 'IMPORT_COMPANY_NOT_EMPTY');
@@ -582,7 +758,7 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     const results: Record<string, ImportCommitResult> = {};
     // U-264: open-item files in the batch send A/R and A/P history to the before-conversion accounts.
     const shared = newBatchShared(posting.map((s) => s.kind), {
-      strict: !req.legacy, accountMap: options.accountMap, classMap: options.classMap,
+      strict: !req.legacy, accountMap: options.accountMap, classMap: options.classMap, historyFrom: options.historyFrom,
     });
     let done = 0;
     for (const s of posting) {
@@ -603,6 +779,17 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
       }
     }
     currentSession = null;
+    // U-266: a conversion whose conversion-date trial balance carries an inventory asset balance needs the
+    // valuation file. Checked after the posting (the batch's chart and inventory parts name the asset
+    // accounts); a refusal rolls all of it back. Accounting Power has no valuation kind.
+    if (b.kind === 'conversion' && !req.legacy && b.sourceSystem !== 'accounting_power'
+      && !posting.some((s) => s.kind === 'inventory_valuation')) {
+      const tbs = sessions.filter((s) => s.kind === 'trial_balance'
+        && (s.role === 'reference' || (options.conversionDate !== undefined && s.reportDate === options.conversionDate)));
+      if (tbs.length > 0) {
+        await assertValuationNotNeeded({ tx, tenantId, companyId, userId, batchId, priorValues, shared, progress: () => undefined }, tbs);
+      }
+    }
     // Reference files are never posted; they become part of the record.
     const refs = sessions.filter((s) => s.role !== 'post').map((s) => s.id);
     if (refs.length > 0) {
@@ -614,7 +801,7 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     await auditBatchOverride(tx, req, 'commit');
     const now = new Date();
     await tx.update(importBatches).set({
-      status: 'committed', result: { sessions: results, ...batchSharedResult(shared) } as never, error: null,
+      status: 'committed', result: { sessions: results, ...batchSharedResult(shared), ...(req.legacy ? {} : { dateCheck }) } as never, error: null,
       priorValues: priorValues as never, companyWasEmpty,
       committedAt: now, committedBy: userId, updatedAt: now,
     }).where(eq(importBatches.id, batchId));

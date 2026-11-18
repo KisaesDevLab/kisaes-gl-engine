@@ -1713,5 +1713,26 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * (valuation dated on or before the closing date). Batch order: chart, contacts, items, trial balance, journal, open
    * invoices, unpaid bills, inventory valuation. Generic templates for items and inventory_valuation.
    */
-  'qbd-mapping-v1',];
+  'qbd-mapping-v1',
+  /**
+   * U-266 (ClientLedger P31 E2c): conversion-date checks, history start and multi-year journals for import batches.
+   * With options.conversionDate, POST /imports/batches and its commit (before the 202) refuse 422 IMPORT_DATE_MISMATCH
+   * {conversionDate, files [{sessionId, kind, role, originalFilename, reportDate, reason not_conversion_date|no_date|
+   * after_conversion}]} when a reference trial balance, an open-item report or the inventory valuation is not dated
+   * the conversion date or has no date (a posted trial balance may be earlier, never later), and 422
+   * IMPORT_JOURNAL_AFTER_CONVERSION {conversionDate, rowCount, rows [{sessionId, rowNumber, date, code, message}] (up
+   * to 500)} for journal rows after it; 400 IMPORT_BAD_DATE when historyFrom is after conversionDate. Journal rows
+   * dated before options.historyFrom are not posted (journal result skippedBeforeHistory; they need no mapping; the
+   * closing-date check starts at historyFrom). batch.dateCheck {conversionDate, historyFrom, historySkipped,
+   * openingBalanceDate (earliest posted trial balance), firstJournalDate (first posted journal row), warnings [{code
+   * IMPORT_HISTORY_GAP (days > 0 between them) | IMPORT_JOURNAL_BEFORE_OPENING, message, openingBalanceDate,
+   * firstJournalDate, days?}]} on create and GET (live while draft or failed; kept in result.dateCheck once committed);
+   * warnings never block. Several journal files per batch, each within the per-file caps; overlapping journal files
+   * in one batch or with a committed journal file of the same source are refused (409 IMPORT_PERIOD_OVERLAP), also
+   * re-checked inside the commit job under the company lock; open-item files are never overlap-checked. A conversion
+   * batch (not Accounting Power) with no inventory valuation whose conversion-date trial balance (reference, or posted
+   * on the conversion date) shows a nonzero balance on an inventory asset account (tagged, or an inventory part's)
+   * fails after the 202 with 422 IMPORT_VALUATION_REQUIRED {sessionId, accounts [{sourceKey, balance}]}.
+   */
+  'qbd-dates-v1',];
 

@@ -176,7 +176,17 @@ const batchSessionSchema = z.object({
   reportDate: z.string().nullable(), dateFrom: z.string().nullable(), dateTo: z.string().nullable(),
   commitResult: z.record(z.unknown()).nullable(), committedAt: z.string().nullable(),
 });
+const dateWarningSchema = z.object({
+  code: z.enum(['IMPORT_HISTORY_GAP', 'IMPORT_JOURNAL_BEFORE_OPENING']), message: z.string(),
+  openingBalanceDate: z.string(), firstJournalDate: z.string(), days: z.number().int().optional(),
+});
+/** U-266 (qbd-dates-v1). */
+const dateCheckSchema = z.object({
+  conversionDate: z.string().nullable(), historyFrom: z.string().nullable(), historySkipped: z.number().int(),
+  openingBalanceDate: z.string().nullable(), firstJournalDate: z.string().nullable(), warnings: z.array(dateWarningSchema),
+});
 const batchSchema = z.object({
+  dateCheck: dateCheckSchema.nullable().optional(),
   id: z.string().uuid(), companyId: z.string().uuid(), sourceSystem: sourceSystemSchema,
   kind: importBatchKindSchema, status: importBatchStatusSchema, options: importBatchOptionsSchema,
   result: z.record(z.unknown()).nullable(), error: batchErrorSchema.nullable(), backupRef: z.string().nullable(),
@@ -203,7 +213,16 @@ importsRouter.post('/batches', validate(importBatchCreateSchema), describe({
     + '(400 IMPORT_ACCOUNT_MAP_INVALID {keys} for an id outside the company); options.classMap {className: {group?, tag}}. '
     + 'A batch never posts to suspense: its commit fails with 422 IMPORT_UNMAPPED_ACCOUNT {unmappedAccountKeys, '
     + 'unmappedCount} for any account it can not resolve. Options can not change after create: to retry with a map, '
-    + 'DELETE the failed batch\'s sessions, upload the files again and create a new batch.',
+    + 'DELETE the failed batch\'s sessions, upload the files again and create a new batch. U-266 (qbd-dates-v1): with '
+    + 'options.conversionDate, 422 IMPORT_DATE_MISMATCH {conversionDate, files [{sessionId, kind, role, originalFilename, '
+    + 'reportDate, reason not_conversion_date|no_date|after_conversion}]} when a reference trial balance, an open-item '
+    + 'report or the inventory valuation is not dated the conversion date (or a posted trial balance is after it); 422 '
+    + 'IMPORT_JOURNAL_AFTER_CONVERSION {conversionDate, rowCount, rows [{sessionId, rowNumber, date, code, message}] (up '
+    + 'to 500)} for journal rows after it; 400 IMPORT_BAD_DATE when historyFrom is after conversionDate. Journal rows '
+    + 'before options.historyFrom are not posted. batch.dateCheck {conversionDate, historyFrom, historySkipped, '
+    + 'openingBalanceDate, firstJournalDate, warnings [{code IMPORT_HISTORY_GAP|IMPORT_JOURNAL_BEFORE_OPENING, message, '
+    + 'openingBalanceDate, firstJournalDate, days?}]} (warnings never block). Several journal files per batch (one per '
+    + 'year); their dates may not overlap each other or a committed journal file (409 IMPORT_PERIOD_OVERLAP).',
   tags: ['Imports'],
   body: importBatchCreateSchema,
   response: z.object({ batch: batchSchema }),
@@ -285,7 +304,12 @@ importsRouter.post('/batches/:id/commit',
       + 'IMPORT_COMPANY_NOT_EMPTY; 409 IMPORT_FISCAL_YEAR_LOCKED; 400 IMPORT_BATCH_EMPTY; 409 IMPORT_INVENTORY_OFF (inventory '
       + 'items or a valuation while company inventory is off); 409 INVENTORY_PERIOD_CLOSED {closingDate} (a valuation dated '
       + 'on or before the closing date; no password lifts it). Failures after the 202 (batch error): 422 '
-      + 'IMPORT_UNMAPPED_ACCOUNT, IMPORT_UNKNOWN_ITEM, IMPORT_ITEM_NOT_INVENTORY, IMPORT_VALUATION_MISMATCH (U-265). '
+      + 'IMPORT_UNMAPPED_ACCOUNT, IMPORT_UNKNOWN_ITEM, IMPORT_ITEM_NOT_INVENTORY, IMPORT_VALUATION_MISMATCH (U-265); '
+      + 'U-266: the date refusals of create again before the 202 (422 IMPORT_DATE_MISMATCH, '
+      + 'IMPORT_JOURNAL_AFTER_CONVERSION); after the 202, 409 IMPORT_PERIOD_OVERLAP when another batch committed an '
+      + 'overlapping journal meanwhile, and 422 IMPORT_VALUATION_REQUIRED {sessionId, accounts [{sourceKey, balance}]} '
+      + 'for a conversion batch with no inventory valuation whose conversion-date trial balance shows an inventory '
+      + 'asset balance. The committed batch keeps result.dateCheck; the journal result has skippedBeforeHistory. '
       + 'backupRef names the verified '
       + 'backup the client took first. ' + CLOSED_PERIOD_DOC,
     tags: ['Imports'],
