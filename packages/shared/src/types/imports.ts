@@ -93,9 +93,17 @@ export interface ImportAccountMatch {
   matchedBy?: 'number' | 'name';
   /** Rows (chart, trial balance, item) or journal lines naming it. */
   rows: number;
-  /** A chart row of type A/R or A/P (Q-P31k). */
-  systemRole?: 'accounts_receivable' | 'accounts_payable';
+  /** A chart row of type A/R or A/P (Q-P31k), or QuickBooks' Retained Earnings (U-272). */
+  systemRole?: SourceSystemRole;
 }
+
+/**
+ * The system role a source chart row stands for (U-264, U-272). In a batch an
+ * A/R or A/P row merges into the company's account of that role when the batch
+ * has open items; a retained earnings row merges in every batch (unless the
+ * accountMap says "create").
+ */
+export type SourceSystemRole = 'accounts_receivable' | 'accounts_payable' | 'retained_earnings';
 
 /** The open-item document a row becomes: by the sign of its open balance. */
 export type OpenItemDocType = 'invoice' | 'credit_memo' | 'bill' | 'vendor_credit';
@@ -195,8 +203,10 @@ export interface CanonicalCoaRow {
    * Online). In a batch with open-item files the account merges into the
    * company's system account of that role (Q-P31k), or becomes it when the
    * company has none; elsewhere it imports as before (a plain account).
+   * U-272: 'retained_earnings' (QuickBooks' Retained Earnings) merges into the
+   * company's retained earnings account in every batch.
    */
-  systemRole?: 'accounts_receivable' | 'accounts_payable';
+  systemRole?: SourceSystemRole;
 }
 
 export interface CanonicalContactRow {

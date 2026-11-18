@@ -1737,10 +1737,20 @@ async function commitCoa(
   // accounts merge into the company's one system account of that role (its
   // lines then go to the before-conversion account); with none tagged yet,
   // the first such row becomes it. Elsewhere they import as plain accounts.
+  // U-272: QuickBooks' Retained Earnings merges into the company's retained
+  // earnings account in every batch (its prior years' income lands there, as the
+  // reports fold it), unless the accountMap says "create" for that row.
   let merged = 0;
   const roleAccount = new Map<string, string>();
-  const mergeRole = (role: CanonicalCoaRow['systemRole']) => !!role && !!ctx.shared
-    && ((role === 'accounts_receivable' && ctx.shared.openItems.ar) || (role === 'accounts_payable' && ctx.shared.openItems.ap));
+  const mergeRow = (r: CanonicalCoaRow) => {
+    const role = r.systemRole;
+    if (!role || !ctx.shared) return false;
+    if (role === 'retained_earnings') {
+      const key = sourceAccountKey(r.accountNumber, r.name);
+      return ctx.shared.strict && !(key && ctx.shared.accountMap[key] === 'create');
+    }
+    return (role === 'accounts_receivable' && ctx.shared.openItems.ar) || (role === 'accounts_payable' && ctx.shared.openItems.ap);
+  };
 
   // U-265: a chart row the batch's accountMap sends to an existing account is not created:
   // its lines resolve to that account (as a merged system row's do). In a batch, a chart row
@@ -1768,7 +1778,7 @@ async function commitCoa(
       skipped++;
       continue;
     }
-    if (mergeRole(r.systemRole)) {
+    if (mergeRow(r)) {
       const role = r.systemRole!;
       let target = roleAccount.get(role) ?? await findSystemAccountId(tenantId, role, tx);
       if (target) {
@@ -1859,7 +1869,7 @@ async function commitCoa(
     parentOf.set(a.id, a.parentId ?? null);
   }
   for (const r of rows) {
-    if (mergeRole(r.systemRole) || mappedRows.has(r.rowNumber)) continue; // merged or mapped: its parent stays as it is
+    if (mergeRow(r) || mappedRows.has(r.rowNumber)) continue; // merged or mapped: its parent stays as it is
     let parentId: string | null = null;
     if (r.parentNumber) parentId = byNum.get(r.parentNumber) ?? null;
     if (!parentId && r.parentName) parentId = byName.get(r.parentName.toLowerCase()) ?? null;

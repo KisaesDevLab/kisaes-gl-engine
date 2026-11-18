@@ -294,6 +294,23 @@ export const SOURCE_SYSTEM_ROLE_TYPES: Record<string, 'accounts_receivable' | 'a
   'accounts payable (a/p)': 'accounts_payable',
 };
 
+/**
+ * U-272: a source chart row that is QuickBooks' own Retained Earnings account.
+ * QuickBooks Desktop lists it with the plain Type "Equity", so the rule is the
+ * equity type AND the name QuickBooks gives it ("Retained Earnings", number
+ * stripped); QuickBooks Online marks it by Detail type "Retained Earnings"
+ * (any name). A renamed QBD account is not detected (map it with accountMap).
+ */
+export function sourceRetainedEarnings(
+  accountType: string,
+  name: string,
+  detailTypeText?: string,
+): 'retained_earnings' | undefined {
+  if (accountType !== 'equity') return undefined;
+  if ((detailTypeText ?? '').trim().toLowerCase() === 'retained earnings') return 'retained_earnings';
+  return name.trim().replace(/\s+/g, ' ').toLowerCase() === 'retained earnings' ? 'retained_earnings' : undefined;
+}
+
 /** QB Desktop Account List CSV header signature. */
 export const QBD_COA_HEADER_REQUIRED = ['Account', 'Type'] as const;
 
