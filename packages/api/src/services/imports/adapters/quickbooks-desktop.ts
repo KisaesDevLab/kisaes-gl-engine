@@ -24,6 +24,7 @@
 import {
   QBD_TYPE_TEXT_MAP,
   QBD_TXN_TYPE_LABELS,
+  SOURCE_SYSTEM_ROLE_TYPES,
   QBD_COA_HEADER_REQUIRED,
   QBD_GL_HEADER_REQUIRED,
   type CanonicalCoaRow,
@@ -198,12 +199,14 @@ export function parseCoa(buf: Buffer): { rows: CanonicalCoaRow[]; errors: Import
       continue;
     }
     const description = iDesc !== -1 ? (r[iDesc] ?? '').trim() || undefined : undefined;
+    const systemRole = SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()];
     rows.push({
       rowNumber,
       name,
       accountType,
       description,
       ...(accountNumber ? { accountNumber } : {}),
+      ...(systemRole ? { systemRole } : {}),
     });
   }
   if (rows.length === 0 && errors.length === 0 && grid.length > headerRowIdx + 1) {

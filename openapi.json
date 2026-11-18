@@ -38951,7 +38951,9 @@
                                     "coa",
                                     "contacts",
                                     "trial_balance",
-                                    "gl_transactions"
+                                    "gl_transactions",
+                                    "open_invoices",
+                                    "unpaid_bills"
                                   ],
                                   "type": "string"
                                 },
@@ -39475,7 +39477,9 @@
                                   "coa",
                                   "contacts",
                                   "trial_balance",
-                                  "gl_transactions"
+                                  "gl_transactions",
+                                  "open_invoices",
+                                  "unpaid_bills"
                                 ],
                                 "type": "string"
                               },
@@ -39902,7 +39906,9 @@
                                   "coa",
                                   "contacts",
                                   "trial_balance",
-                                  "gl_transactions"
+                                  "gl_transactions",
+                                  "open_invoices",
+                                  "unpaid_bills"
                                 ],
                                 "type": "string"
                               },

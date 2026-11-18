@@ -173,6 +173,40 @@ export const AP_JOURNAL_LABELS: Record<string, string> = {
   PR: 'AP:PR', // Payroll
 };
 
+/**
+ * Open-item report Type column → the sign the row must carry (U-264).
+ * 'charge' rows are positive (invoice / bill), 'credit' rows negative (credit
+ * memo / vendor credit), 'either' rows follow their sign. A Type not listed
+ * is a row error (IMPORT_UNKNOWN_TYPE). Keys are lowercased; QuickBooks
+ * Desktop, QuickBooks Online and the Generic template labels.
+ */
+export const OPEN_INVOICE_TYPE_MAP: Record<string, 'charge' | 'credit' | 'either'> = {
+  'invoice': 'charge',
+  'statement charge': 'charge',
+  'credit memo': 'credit',
+  // An unapplied customer payment: a credit memo, never a customer payment (P31 spike C9).
+  'payment': 'credit',
+  'general journal': 'either',
+  'journal entry': 'either',
+  'check': 'either',
+};
+
+export const UNPAID_BILL_TYPE_MAP: Record<string, 'charge' | 'credit' | 'either'> = {
+  'bill': 'charge',
+  'item receipt': 'charge',
+  'credit': 'credit',
+  'bill credit': 'credit',
+  'vendor credit': 'credit',
+  // An unapplied bill payment: a vendor credit.
+  'bill pmt -check': 'credit',
+  'bill pmt -cc': 'credit',
+  'bill payment (check)': 'credit',
+  'bill payment (credit card)': 'credit',
+  'general journal': 'either',
+  'journal entry': 'either',
+  'check': 'either',
+};
+
 /** transactions.source values written by this importer. */
 export const IMPORT_SOURCE_TAGS = {
   AP_GL: 'accounting_power_import',
@@ -211,6 +245,17 @@ export const AP_GL_HEADER_REQUIRED = [
   'Debit Amount',
   'Credit Amount',
 ] as const;
+
+/**
+ * Account-list Type text that marks an A/R or A/P account (U-264), lowercased,
+ * QuickBooks Desktop and Online labels.
+ */
+export const SOURCE_SYSTEM_ROLE_TYPES: Record<string, 'accounts_receivable' | 'accounts_payable'> = {
+  'accounts receivable': 'accounts_receivable',
+  'accounts receivable (a/r)': 'accounts_receivable',
+  'accounts payable': 'accounts_payable',
+  'accounts payable (a/p)': 'accounts_payable',
+};
 
 /** QB Desktop Account List CSV header signature. */
 export const QBD_COA_HEADER_REQUIRED = ['Account', 'Type'] as const;

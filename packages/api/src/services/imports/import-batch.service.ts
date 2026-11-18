@@ -44,7 +44,7 @@ import {
 } from './import-undo.service.js';
 import {
   sortSessionsForCommit, commitSessionInBatch, assertNotAlreadyCommitted, assertNoCommittedOverlap,
-  toSessionDto, type BatchPriorValues,
+  toSessionDto, newBatchShared, batchSharedResult, type BatchPriorValues,
 } from './imports.service.js';
 
 export type BatchKind = 'conversion' | 'single' | 'transactions';
@@ -327,7 +327,9 @@ function earliestPostingDate(sessions: SessionRow[]): string | null {
   let min: string | null = null;
   for (const s of sessions) {
     if (s.role !== 'post') continue;
-    const d = s.kind === 'trial_balance' ? s.reportDate : s.kind === 'gl_transactions' ? s.dateFrom : null;
+    // Open items (U-264) post on their document dates: dateFrom is the earliest.
+    const d = s.kind === 'trial_balance' ? s.reportDate
+      : s.kind === 'gl_transactions' || s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom : null;
     if (d && (min === null || d < min)) min = d;
   }
   return min;
@@ -520,12 +522,14 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     }
 
     const results: Record<string, ImportCommitResult> = {};
+    // U-264: open-item files in the batch send A/R and A/P history to the before-conversion accounts.
+    const shared = newBatchShared(posting.map((s) => s.kind));
     let done = 0;
     for (const s of posting) {
       currentSession = s.id;
       setProgress(batchId, s.kind, done, posting.length);
       const r = await commitSessionInBatch({
-        tx, tenantId, companyId, userId, batchId, priorValues,
+        tx, tenantId, companyId, userId, batchId, priorValues, shared,
         progress: (step, d, t) => setProgress(batchId, `${step} ${d}/${t}`, done, posting.length),
       }, s);
       results[s.id] = r;
@@ -550,7 +554,7 @@ export async function runCommitJob(req: CommitRequest): Promise<Record<string, I
     await auditBatchOverride(tx, req, 'commit');
     const now = new Date();
     await tx.update(importBatches).set({
-      status: 'committed', result: { sessions: results } as never, error: null,
+      status: 'committed', result: { sessions: results, ...batchSharedResult(shared) } as never, error: null,
       priorValues: priorValues as never, companyWasEmpty,
       committedAt: now, committedBy: userId, updatedAt: now,
     }).where(eq(importBatches.id, batchId));
@@ -714,6 +718,15 @@ export async function runUndoJob(req: CommitRequest): Promise<void> {
     if (prior.fiscalYearStartMonth !== undefined) {
       await tx.update(companies).set({ fiscalYearStartMonth: prior.fiscalYearStartMonth, updatedAt: new Date() })
         .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+    }
+    // U-264: the document counters open items may have advanced (a number
+    // taken since is skipped by the counter's own in-use check).
+    if (prior.counters) {
+      await tx.update(companies).set({
+        invoiceNextNumber: prior.counters.invoiceNextNumber,
+        documentNumbers: (prior.counters.documentNumbers ?? {}) as never,
+        updatedAt: new Date(),
+      }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
     }
 
     // One audit row per deleted record with its before-image, then one for the batch.

@@ -9,7 +9,34 @@
 
 import type { AccountType } from './accounts.js';
 
-export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions';
+/**
+ * open_invoices / unpaid_bills (U-264, qbd-open-items-v1): the A/R and A/P
+ * open items as of a date (QuickBooks Desktop "Open Invoices" and "Unpaid
+ * Bills Detail", QuickBooks Online and Generic equivalents). Each row becomes
+ * a real one-line invoice, credit memo, bill or vendor credit.
+ */
+export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills';
+
+/** The open-item document a row becomes: by the sign of its open balance. */
+export type OpenItemDocType = 'invoice' | 'credit_memo' | 'bill' | 'vendor_credit';
+
+export interface CanonicalOpenItemRow {
+  rowNumber: number;
+  /** The report's Type, verbatim (e.g. "Invoice", "Payment", "Credit"). */
+  sourceType: string;
+  docType: OpenItemDocType;
+  /** ISO YYYY-MM-DD: the document's own date. */
+  date: string;
+  /** The source document number (kept on the document). */
+  number?: string;
+  /** Customer (open_invoices) or vendor (unpaid_bills) name. */
+  name: string;
+  dueDate?: string;
+  /** Exact decimal text, signed as the report shows it (credits negative). */
+  openBalance: string;
+  /** Exact decimal text, when the report has an Amount column. */
+  originalAmount?: string;
+}
 
 export type SourceSystem = 'accounting_power' | 'quickbooks_online' | 'quickbooks_desktop' | 'generic';
 
@@ -39,6 +66,13 @@ export interface CanonicalCoaRow {
   parentName?: string;
   /** Accounting Power's `SubAccount Of` column. */
   parentNumber?: string;
+  /**
+   * U-264: the source account's type is A/R or A/P (QuickBooks Desktop and
+   * Online). In a batch with open-item files the account merges into the
+   * company's system account of that role (Q-P31k), or becomes it when the
+   * company has none; elsewhere it imports as before (a plain account).
+   */
+  systemRole?: 'accounts_receivable' | 'accounts_payable';
 }
 
 export interface CanonicalContactRow {
@@ -121,6 +155,9 @@ export interface ImportPreview {
   tbColumn?: TbColumnChoice;
   totalDebit?: string;
   totalCredit?: string;
+
+  // Open items (U-264): the exact sum of the open balances.
+  openTotal?: string;
 }
 
 export interface ImportSession {
@@ -168,6 +205,11 @@ export interface ImportUploadOptions {
    * failure.
    */
   unmappedAccountsToSuspense?: boolean;
+  /**
+   * Open items only (U-264): the report's "as of" date when the file carries
+   * none (a QuickBooks Desktop report's own date wins).
+   */
+  reportDate?: string;
 }
 
 export interface ImportCommitResult {
@@ -200,4 +242,12 @@ export interface ImportCommitResult {
   failedAtIndex?: number;
   /** Per-row errors blocking commit (for /commit dry-run). */
   blockingErrors?: ImportValidationError[];
+  /** Open items (U-264): documents created by type. */
+  documents?: Partial<Record<OpenItemDocType, number>>;
+  /** Open items (U-264): names not found, created as customers or vendors. */
+  contactsCreated?: number;
+  /** CoA (U-264): A/R or A/P accounts merged into the company's system account. */
+  mergedIntoSystemAccounts?: number;
+  /** TB / GL (U-264): lines moved from A/R or A/P to the before-conversion accounts. */
+  redirectedLines?: number;
 }
