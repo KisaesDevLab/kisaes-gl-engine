@@ -546,13 +546,25 @@ export async function computeAccountMatches(
 ): Promise<ImportAccountMatch[] | undefined> {
   if (!['coa', 'trial_balance', 'gl_transactions', 'items'].includes(kind)) return undefined;
   const refs = accountRefsOf(kind, parsed);
-  const acctRows = await ex.select({ id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name })
-    .from(accounts).where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))));
+  const acctRows = await ex.select({ id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name, accountType: accounts.accountType })
+    .from(accounts).where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))))
+    .orderBy(asc(accounts.createdAt), asc(accounts.id));
   const byNum = new Map<string, string>();
   const byName = new Map<string, string>();
+  const byNameType = new Map<string, string>();
   for (const a of acctRows) {
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
-    byName.set(a.name.toLowerCase(), a.id); // as the commit resolves names
+    // As a batch commit resolves names: the oldest account of that name (of that type, for a chart row).
+    const k = a.name.toLowerCase();
+    if (!byName.has(k)) byName.set(k, a.id);
+    if (!byNameType.has(`${a.accountType}:${k}`)) byNameType.set(`${a.accountType}:${k}`, a.id);
+  }
+  const chartTypes = new Map<string, string>();
+  if (kind === 'coa') {
+    for (const r of (parsed as CanonicalCoaRow[]) ?? []) {
+      const key = sourceAccountKey(r.accountNumber, r.name);
+      if (key && !r.accountNumber) chartTypes.set(key, r.accountType);
+    }
   }
   const out = new Map<string, ImportAccountMatch>();
   for (const r of refs) {
@@ -568,7 +580,11 @@ export async function computeAccountMatches(
     };
     const numHit = r.accountNumber ? byNum.get(r.accountNumber) : undefined;
     const nameHit = r.accountName ? byName.get(r.accountName.toLowerCase()) : undefined;
+    // A chart row with no number is the company's account of that name and type (a batch adopts it, U-265).
+    const chartHit = kind === 'coa' && chartTypes.has(key) && r.accountName
+      ? byNameType.get(`${chartTypes.get(key)}:${r.accountName.toLowerCase()}`) : undefined;
     if (numHit) Object.assign(m, { match: 'existing', accountId: numHit, matchedBy: 'number' });
+    else if (chartHit) Object.assign(m, { match: 'existing', accountId: chartHit, matchedBy: 'name' });
     else if (kind === 'coa') m.match = 'create';
     else if (nameHit) Object.assign(m, { match: 'existing', accountId: nameHit, matchedBy: 'name' });
     out.set(key, m);
@@ -1540,12 +1556,15 @@ async function inventoryAssetAccountIds(tx: Tx, tenantId: string): Promise<strin
 async function accountResolver(ctx: CommitSessionContext) {
   const { tx, tenantId, companyId } = ctx;
   const acctRows = await tx.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))));
+    .where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))))
+    .orderBy(asc(accounts.createdAt), asc(accounts.id));
   const byNum = new Map<string, string>();
   const byName = new Map<string, string>();
   for (const a of acctRows) {
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
-    byName.set(a.name.toLowerCase(), a.id);
+    // A name several accounts carry resolves to the oldest (preview.accountMatches reports the same one).
+    const k = a.name.toLowerCase();
+    if (!byName.has(k)) byName.set(k, a.id);
   }
   applyAliases(ctx, byNum, byName);
   const map = ctx.shared?.accountMap ?? {};
@@ -1664,8 +1683,21 @@ async function commitCoa(
     && ((role === 'accounts_receivable' && ctx.shared.openItems.ar) || (role === 'accounts_payable' && ctx.shared.openItems.ap));
 
   // U-265: a chart row the batch's accountMap sends to an existing account is not created:
-  // its lines resolve to that account (as a merged system row's do).
+  // its lines resolve to that account (as a merged system row's do). In a batch, a chart row
+  // with no number whose name and type the company already has (QuickBooks files usually carry
+  // no numbers; turning inventory on makes "Inventory Asset" and "Cost of Goods Sold") is that
+  // account, unless the accountMap says "create".
   const mappedRows = new Set<number>();
+  const byNameType = new Map<string, string>();
+  if (ctx.shared?.strict) {
+    const mine = await tx.select({ id: accounts.id, name: accounts.name, accountType: accounts.accountType }).from(accounts)
+      .where(and(eq(accounts.tenantId, tenantId), or(eq(accounts.companyId, companyId), isNull(accounts.companyId))))
+      .orderBy(asc(accounts.createdAt), asc(accounts.id));
+    for (const a of mine) {
+      const k = `${a.accountType}:${a.name.trim().toLowerCase()}`;
+      if (!byNameType.has(k)) byNameType.set(k, a.id);
+    }
+  }
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i]!;
     const mapKey = sourceAccountKey(r.accountNumber, r.name);
@@ -1707,6 +1739,13 @@ async function commitCoa(
       roleAccount.set(role, target);
       for (const k of aliasKeys(r.accountNumber, r.name)) ctx.shared!.aliases.set(k, target);
       if ((i + 1) % 200 === 0) ctx.progress('coa', i + 1, rows.length);
+      continue;
+    }
+    const sameName = !r.accountNumber && mappedTo !== 'create' ? byNameType.get(`${r.accountType}:${r.name.trim().toLowerCase()}`) : undefined;
+    if (sameName) {
+      for (const k of aliasKeys(r.accountNumber, r.name)) ctx.shared!.aliases.set(k, sameName);
+      mappedRows.add(r.rowNumber);
+      skipped++;
       continue;
     }
     const insertResult = await tx
@@ -2373,7 +2412,8 @@ async function commitOpenItems(
     let contactId: string | undefined;
     let job: string | null = null;
     if (names) {
-      const colon = r.name.indexOf(':');
+      // "Customer:Job" is QuickBooks' notation; elsewhere a colon is part of the name.
+      const colon = sourceSystem === 'quickbooks_desktop' || sourceSystem === 'quickbooks_online' ? r.name.indexOf(':') : -1;
       if (!names.find(r.name, want) && colon > 0) {
         job = r.name.slice(colon + 1).trim();
         contactId = (await names.ensure(r.name.slice(0, colon), want)).id;

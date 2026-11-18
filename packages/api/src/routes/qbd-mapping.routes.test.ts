@@ -26,6 +26,7 @@ import { reportsRouter } from './reports.routes.js';
 import * as importsService from '../services/imports/imports.service.js';
 import * as batchService from '../services/imports/import-batch.service.js';
 import { DESKTOP_CAPABILITIES } from '../desktop/capabilities.js';
+import { ensureInventoryAccounts } from '../services/inventory.service.js';
 import { Harness, type Co, key, accountBalance } from './receivables.test-support.js';
 import { companySnapshot, cleanImports, batchRow } from './imports-batch.test-support.js';
 
@@ -214,8 +215,8 @@ async function contactsNamed(name: string) {
   return db.select().from(contacts).where(and(eq(contacts.tenantId, c.tenantId), eq(contacts.displayName, name)));
 }
 
-async function bsDiff(asOf: string) {
-  const r = await h.request('GET', `/api/v1/reports/balance-sheet?exact=1&basis=accrual&as_of_date=${asOf}`, c.token);
+async function bsDiff(asOf: string, basis: 'accrual' | 'cash' = 'accrual') {
+  const r = await h.request('GET', `/api/v1/reports/balance-sheet?exact=1&basis=${basis}&as_of_date=${asOf}`, c.token);
   expect(r.status, JSON.stringify(r.json)).toBe(200);
   return dec(r.json['totalAssetsExact']).minus(dec(r.json['totalLiabilitiesExact'])).minus(dec(r.json['totalEquityExact'])).toFixed(4);
 }
@@ -357,10 +358,68 @@ describe('U-265 QBD conversion with names, items and inventory', () => {
     expect(mv.map((m) => [all.find((x) => x.id === m.itemId)!.name, dec(m.quantity).toFixed(4), dec(m.value).toFixed(2)]).sort())
       .toEqual([['Widget', '12.0000', '51.95'], ['Widget:Mini', '10.5000', '11.55']]);
     expect(result('valuation.csv')).toEqual({ created: 1, skipped: 0, itemsValued: 2, valuationTotal: '63.50' });
-    expect(await bsDiff(CONV)).toBe('0.0000');
+    for (const basis of ['accrual', 'cash'] as const) expect(await bsDiff(CONV, basis), basis).toBe('0.0000');
 
     await undo(id);
     expect((await contactsNamed('Cedar Supply')).map((x) => x.contactType)).toEqual(['customer']);
+    expect(await companySnapshot(c)).toEqual(before);
+  });
+
+  it('QuickBooks without account numbers, inventory turned on in settings: chart rows are the company\'s same-named accounts, history nets to 0.00 on both bases; undo exact', async () => {
+    // As the settings switch does: "Inventory Asset" (tagged) and "Cost of Goods Sold".
+    await db.transaction(async (tx) => {
+      await ensureInventoryAccounts(tx, c.tenantId, c.companyId, c.userId);
+      await tx.update(companies).set({ inventoryEnabled: true }).where(eq(companies.id, c.companyId));
+    });
+    const tagged = (await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'inventory_asset'))))[0]!;
+    const before = await companySnapshot(c);
+    const coa = `,Account,Type,Balance Total,Description
+,Checking,Bank,960.00,
+,Inventory Asset,Other Current Asset,63.50,
+,Opening Balance Equity,Equity,"-1,023.50",
+,Merchandise Sales,Income,0.00,
+,Cost of Goods Sold,Cost of Goods Sold,0.00,
+`;
+    const itemList = `,Item,Description,Type,Cost,Price,Sales Tax Code,Account,COGS Account,Asset Account,Preferred Vendor,Active Status
+,Widget,Blue widget,Inventory Part,4.25,9.99,Tax,Merchandise Sales,Cost of Goods Sold,Inventory Asset,,Active
+,Widget:Mini,Small widget,Inventory Part,1.10,2.50,Tax,Merchandise Sales,Cost of Goods Sold,Inventory Asset,,Active
+`;
+    const tb = `"Trial Balance"
+"As of September 30, 2026"
+,Debit,Credit
+"Checking","1,000.00",
+"Inventory Asset",23.50,
+"Opening Balance Equity",,"1,023.50"
+TOTAL,"1,023.50","1,023.50"
+`;
+    const journal = `,Trans #,Type,Date,Num,Name,Memo,Account,Debit,Credit
+,1,Check,10/01/2026,501,,Restock,Inventory Asset,40.00,
+,,,,,,Restock,Checking,,40.00
+,,,,,,,,40.00,40.00
+`;
+    const chart = await upload('accounts.csv', coa, 'coa');
+    const m = (k: string) => chart.preview.accountMatches!.find((x) => x.sourceKey === k)!;
+    expect([m('Inventory Asset').match, m('Inventory Asset').accountId, m('Inventory Asset').matchedBy]).toEqual(['existing', tagged.id, 'name']);
+    expect(m('Merchandise Sales').match).toBe('create');
+    const ids = [chart.session.id, await uploadId('items.csv', itemList, 'items'), await uploadId('tb.csv', tb, 'trial_balance'),
+      await uploadId('journal.csv', journal, 'gl_transactions'), await uploadId('valuation.csv', VALUATION, 'inventory_valuation')];
+    const { id, batch, error } = await commit(ids);
+    expect(batch.status, JSON.stringify(error)).toBe('committed');
+
+    const named = async (n: string) => db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.name, n)));
+    expect((await named('Inventory Asset')).map((a) => a.id)).toEqual([tagged.id]);
+    expect(await named('Cost of Goods Sold')).toHaveLength(1);
+    const widget = (await db.select().from(items).where(and(eq(items.tenantId, c.tenantId), eq(items.name, 'Widget'))))[0]!;
+    expect(widget.assetAccountId).toBe(tagged.id);
+    const hist = (await accountByName('Inventory before conversion'))!;
+    expect(batch.result.redirectedAccountKeys).toEqual(['Inventory Asset']);
+    expect([await accountBalance(c, hist.id, '2026-09-30'), await accountBalance(c, hist.id, '2026-10-15'), await accountBalance(c, hist.id, CONV)])
+      .toEqual(['23.50', '63.50', '0.00']);
+    expect(await accountBalance(c, tagged.id, CONV)).toBe('63.50');
+    for (const d of ['2026-09-30', '2026-10-15', CONV]) {
+      for (const basis of ['accrual', 'cash'] as const) expect(await bsDiff(d, basis), `${basis} ${d}`).toBe('0.0000');
+    }
+    await undo(id);
     expect(await companySnapshot(c)).toEqual(before);
   });
 
@@ -447,10 +506,12 @@ TOTAL,100.00,100.00
       { accountMap: { '99001': '00000000-0000-4000-8000-000000000000' } });
     expect([bad.status, bad.json['error'].code, bad.json['error'].details.keys]).toEqual([400, 'IMPORT_ACCOUNT_MAP_INVALID', ['99001']]);
 
-    // Mapped (the failed batch's session can't join another batch: upload again).
-    await db.execute(sql`DELETE FROM import_rows WHERE session_id IN (SELECT id FROM import_sessions WHERE tenant_id = ${c.tenantId})`);
-    await db.execute(sql`DELETE FROM import_sessions WHERE tenant_id = ${c.tenantId}`);
-    await db.execute(sql`DELETE FROM import_batches WHERE tenant_id = ${c.tenantId}`);
+    // The retry path the desktop has: a failed batch's options can't change and its session can't join another
+    // batch, so DELETE the session, upload the same file again, and create a new batch with the map.
+    const reused = await createBatch([tb]);
+    expect([reused.status, reused.json['error'].code]).toEqual([409, 'IMPORT_SESSION_IN_BATCH']);
+    const del = await h.request('DELETE', `/api/v1/imports/${tb}`, c.token, undefined, { 'Idempotency-Key': key() });
+    expect([200, 204], JSON.stringify(del.json)).toContain(del.status);
     const tb3 = await uploadId('tb3.csv', unknownTb, 'trial_balance');
     const ok = await commit([tb3], { accountMap: { '91010': c.roles['checking']!, '99001': c.roles['sales']!, 'Mystery Two': c.roles['sales']! } });
     expect(ok.batch.status, JSON.stringify(ok.error)).toBe('committed');
