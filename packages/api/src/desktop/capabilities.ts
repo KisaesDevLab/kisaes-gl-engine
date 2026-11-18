@@ -1751,5 +1751,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * summary. GET .../transactions?limit&cursor&txnType {transactions [{id, txnType, txnDate, txnNumber,
    * vendorInvoiceNumber, status, contactId, contactName, total}], nextCursor, total}.
    */
-  'imports-tieout-v1',];
+  'imports-tieout-v1',
+  /**
+   * U-272 (ClientLedger P31): QuickBooks' Retained Earnings account merges into the company's retained earnings
+   * account (system_tag retained_earnings) in every import batch, as A/R and A/P merge with open items. A QuickBooks
+   * Desktop chart row of Type Equity named "Retained Earnings" (number stripped), or a QuickBooks Online row with Detail
+   * type "Retained Earnings", carries systemRole "retained_earnings" (chart rows and preview.accountMatches). In a batch
+   * it is not created: its trial balance and journal lines post to the company's account (with none tagged, the first
+   * such row becomes it; an untagged account with its number is adopted, given back by undo), so the tie-out shows the
+   * prior years' income on one row. accountMap "create" for that row keeps the old behaviour (a separate account); an
+   * account id sends it there. A renamed QBD account is not detected: map it. The old one-session commit is unchanged.
+   */
+  'qbd-retained-earnings-v1',];
 

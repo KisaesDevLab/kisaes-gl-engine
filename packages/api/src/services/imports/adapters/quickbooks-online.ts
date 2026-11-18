@@ -13,6 +13,7 @@ import ExcelJS from 'exceljs';
 import {
   QBO_TYPE_TEXT_MAP,
   SOURCE_SYSTEM_ROLE_TYPES,
+  sourceRetainedEarnings,
   QBO_TXN_TYPE_LABELS,
   type CanonicalCoaRow,
   type CanonicalContactRow,
@@ -175,6 +176,7 @@ function buildCoaRow(
     parentName = fullName.slice(0, colon).trim();
     name = fullName.slice(colon + 1).trim();
   }
+  const systemRole = SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()] ?? sourceRetainedEarnings(accountType, name, detailType);
   return {
     rowNumber,
     name,
@@ -183,7 +185,7 @@ function buildCoaRow(
     description: description || undefined,
     parentName,
     ...(accountNumber ? { accountNumber } : {}),
-    ...(SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()] ? { systemRole: SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()] } : {}),
+    ...(systemRole ? { systemRole } : {}),
   };
 }
 

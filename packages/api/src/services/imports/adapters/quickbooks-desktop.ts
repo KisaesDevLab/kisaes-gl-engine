@@ -25,6 +25,7 @@ import {
   QBD_TYPE_TEXT_MAP,
   QBD_TXN_TYPE_LABELS,
   SOURCE_SYSTEM_ROLE_TYPES,
+  sourceRetainedEarnings,
   QBD_COA_HEADER_REQUIRED,
   QBD_GL_HEADER_REQUIRED,
   type CanonicalCoaRow,
@@ -201,7 +202,7 @@ export function parseCoa(buf: Buffer): { rows: CanonicalCoaRow[]; errors: Import
       continue;
     }
     const description = iDesc !== -1 ? (r[iDesc] ?? '').trim() || undefined : undefined;
-    const systemRole = SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()];
+    const systemRole = SOURCE_SYSTEM_ROLE_TYPES[typeText.toLowerCase()] ?? sourceRetainedEarnings(accountType, name);
     rows.push({
       rowNumber,
       name,
