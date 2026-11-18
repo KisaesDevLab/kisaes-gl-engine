@@ -706,7 +706,33 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       ]));
     });
 
-    it('QB Desktop: "(1,234.00)" and "$" amounts post exactly (they were a 500)', async () => {
+    it('QBO Journal: a noisy formula totals row still closes its entry; a bad detail line leaves its entry out', async () => {
+      await db.insert(accounts).values([
+        { tenantId, companyId, name: 'Car Wash Checking', accountType: 'asset' },
+        { tenantId, companyId, name: 'Operating Revenue', accountType: 'revenue' },
+      ]);
+      const noise = 0.1 + 0.2;
+      const file = await xlsxFromGrid('journal-u260.xlsx', 'Journal', [
+        ['Journal'], [],
+        [null, 'Date', 'Transaction Type', 'Num', 'Name', 'Memo/Description', 'Account', 'Debit', 'Credit'],
+        [null, '01/02/2025', 'Deposit', null, null, 'Sale 1', 'Car Wash Checking', 1234.5678, null],
+        [null, null, null, null, null, 'Sale 1', 'Operating Revenue', null, '1,234.5678'],
+        [null, null, null, null, null, null, null, noise, noise],
+        [],
+        [null, '01/03/2025', 'Deposit', null, null, 'Sale 2', 'Car Wash Checking', noise, null],
+        [null, null, null, null, null, 'Sale 2', 'Operating Revenue', null, noise],
+        [null, null, null, null, null, null, null, noise, noise],
+      ]);
+      const out = await importsService.createSession({ tenantId, companyId, userId, file, kind: 'gl_transactions',
+        sourceSystem: 'quickbooks_online', options: {} });
+      expect(out.preview.jeGroupCount).toBe(1);
+      expect(out.validationErrors.map((e) => [e.field, e.code])).toEqual([
+        ['Debit', 'IMPORT_AMOUNT_INVALID'], ['Credit', 'IMPORT_AMOUNT_INVALID'],
+      ]);
+      expect(JSON.stringify(out.preview)).toContain('1234.5678');
+    });
+
+    it('QB Desktop: "(1,234.00)" and "$" amounts parse exactly (they were a 500)', async () => {
       await db.insert(accounts).values([
         { tenantId, companyId, accountNumber: '10100', name: 'Checking', accountType: 'asset' },
         { tenantId, companyId, accountNumber: '30000', name: 'Opening Balance Equity', accountType: 'equity' },

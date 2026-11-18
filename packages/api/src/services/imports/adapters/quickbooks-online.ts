@@ -610,7 +610,10 @@ export async function parseGl(
     // QBO totals row: equal debit + credit, both > 0, no account label.
     // It's the marker that the JE just ended; don't include it in the
     // group, but do close the current group (if any).
-    if (!account && debit && credit && debit === credit) {
+    // Structural, never posted: equal cells close the entry even when they
+    // are not exact amounts (a formula total carrying binary noise, U-260).
+    if (!account && debit !== undefined && credit !== undefined
+      && (debit === credit || cellToString(r[iDeb]).trim() === cellToString(r[iCred]).trim())) {
       closeCurrent();
       continue;
     }
