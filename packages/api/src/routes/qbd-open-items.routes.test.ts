@@ -19,7 +19,7 @@ import 'express-async-errors';
 import { and, eq, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db } from '../db/index.js';
-import { accounts, contacts, transactions, billPaymentApplications, vendorCreditApplications } from '../db/schema/index.js';
+import { accounts, contacts, companies, transactions, billPaymentApplications, vendorCreditApplications } from '../db/schema/index.js';
 import { importsRouter } from './imports.routes.js';
 import { invoicesRouter } from './invoices.routes.js';
 import { paymentsRouter } from './payments.routes.js';
@@ -472,6 +472,78 @@ describe.each<Depth>(['journal', 'tb-only'])('QBD conversion with open items, hi
     // The documents' only lines are balance-sheet lines: November adds nothing to the P&L on either basis.
     expect(await net('2026-11-01', '2026-11-30', 'accrual')).toBe('0.00');
     expect(await net('2026-11-01', '2026-11-30', 'cash')).toBe('0.00');
+  });
+});
+
+async function commitFails(sessionIds: string[]) {
+  const r = await h.request('POST', '/api/v1/imports/batches', c.token, { sourceSystem: 'quickbooks_desktop', kind: 'conversion', sessionIds });
+  expect(r.status, JSON.stringify(r.json)).toBe(201);
+  const id = String(r.json['batch'].id);
+  const cm = await h.request('POST', `/api/v1/imports/batches/${id}/commit`, c.token, {}, { 'Idempotency-Key': key() });
+  expect(cm.status, JSON.stringify(cm.json)).toBe(202);
+  await batchService.__batchJobs.last;
+  return batchRow(id);
+}
+
+async function undo(batchId: string) {
+  const u = await h.request('POST', `/api/v1/imports/batches/${batchId}/undo`, c.token, {}, { 'Idempotency-Key': key() });
+  expect(u.status, JSON.stringify(u.json)).toBe(202);
+  await batchService.__batchJobs.last;
+  expect((await batchRow(batchId)).status).toBe('undone');
+}
+
+describe('U-264 outer transaction, system tags and counters', () => {
+  it('a failure after the open items posted rolls all of it back: documents, created contact, history account, claimed number', async () => {
+    const before = await companySnapshot(c);
+    const ids = await uploadConversion('journal');
+    const oi = ids[ids.length - 2]!;
+    batchService.__batchTestHooks.afterSession = ({ sessionId }) => {
+      if (sessionId === oi) throw new Error('synthetic failure after the open invoices');
+    };
+    try {
+      const b = await commitFails(ids);
+      expect(b.status).toBe('failed');
+      expect((b.error as Body).sessionId).toBe(oi);
+    } finally {
+      batchService.__batchTestHooks.afterSession = undefined;
+    }
+    expect(await companySnapshot(c)).toEqual(before);
+    expect(await accountId({ name: 'Receivables before conversion' })).toBeUndefined();
+  });
+
+  it('with no tagged A/R or A/P account: the first QBD A/R row becomes it, the second merges, an untagged account with the A/P number takes the role; undo restores exactly', async () => {
+    await db.update(accounts).set({ systemTag: null, isSystem: false })
+      .where(and(eq(accounts.tenantId, c.tenantId), sql`${accounts.systemTag} IN ('accounts_receivable', 'accounts_payable')`));
+    const [oldAp] = await db.insert(accounts).values({
+      tenantId: c.tenantId, companyId: c.companyId, accountNumber: '92000', name: 'Old payables', accountType: 'liability',
+    }).returning();
+    const before = await companySnapshot(c);
+    const { id } = await commit(await uploadConversion('journal'));
+    const [ar] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'accounts_receivable')));
+    expect([ar!.accountNumber, ar!.detailType, ar!.isSystem, ar!.importBatchId]).toEqual(['91200', 'accounts_receivable', true, id]);
+    expect((await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountNumber, '91250')))).length).toBe(0);
+    const [ap] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.systemTag, 'accounts_payable')));
+    expect(ap!.id).toBe(oldAp!.id);
+    const customers = await Promise.all(['Alder Café', 'Birch & Co', 'Dogwood Ltd'].map((n) => contactId(n, 'customer')));
+    const vendors = await Promise.all(['Birch & Co', 'Cedar Supply'].map((n) => contactId(n, 'vendor')));
+    await arTies(CONV, '1850.00', customers);
+    await apTies(CONV, '1050.00', vendors);
+    expect(await historyBalances(CONV)).toEqual({ ar: '0.00', ap: '0.00' });
+    // The Payment row is still a credit memo on the (new) A/R.
+    expect((await docs(id)).filter((t) => t.txnType === 'credit_memo')).toHaveLength(2);
+    await expectBalanced([CONV]);
+    await undo(id);
+    expect(await companySnapshot(c)).toEqual(before);
+  });
+
+  it('undo gives back only the credit memo number the import took: a prefix set since stays', async () => {
+    const { id } = await commit(await uploadConversion('tb-only'));
+    const [co] = await db.select({ dn: companies.documentNumbers }).from(companies).where(eq(companies.id, c.companyId));
+    expect((co!.dn as Body)['credit_memo']?.next).toEqual(expect.any(Number));
+    await db.execute(sql`UPDATE companies SET document_numbers = jsonb_set(document_numbers, '{credit_memo,prefix}', '"CR-"') WHERE id = ${c.companyId}`);
+    await undo(id);
+    const [after] = await db.select({ dn: companies.documentNumbers }).from(companies).where(eq(companies.id, c.companyId));
+    expect((after!.dn as Body)['credit_memo']).toEqual({ prefix: 'CR-' });
   });
 });
 

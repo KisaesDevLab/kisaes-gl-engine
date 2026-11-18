@@ -183,6 +183,7 @@ export const AP_JOURNAL_LABELS: Record<string, string> = {
 export const OPEN_INVOICE_TYPE_MAP: Record<string, 'charge' | 'credit' | 'either'> = {
   'invoice': 'charge',
   'statement charge': 'charge',
+  'stmt charge': 'charge',
   'credit memo': 'credit',
   // An unapplied customer payment: a credit memo, never a customer payment (P31 spike C9).
   'payment': 'credit',
@@ -200,6 +201,7 @@ export const UNPAID_BILL_TYPE_MAP: Record<string, 'charge' | 'credit' | 'either'
   // An unapplied bill payment: a vendor credit.
   'bill pmt -check': 'credit',
   'bill pmt -cc': 'credit',
+  'bill pmt -ccard': 'credit',
   'bill payment (check)': 'credit',
   'bill payment (credit card)': 'credit',
   'general journal': 'either',

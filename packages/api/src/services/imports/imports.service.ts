@@ -1141,8 +1141,16 @@ export interface BatchPriorValues {
   stamps?: import('./import-undo.service.js').CommitStamps;
   /** An existing untagged account the commit adopted as the suspense account (or as A/R or A/P, U-264). */
   adoptedSystemAccounts?: Record<string, { systemTag: string | null; isSystem: boolean | null }>;
-  /** U-264: the company's document counters before open items took a number (undo restores them). */
-  counters?: { invoiceNextNumber: number | null; documentNumbers: unknown };
+  /**
+   * U-264: the invoice and credit memo counters open items with no number
+   * advanced, before and after (null: the setting was absent). Undo puts a
+   * counter back only while it still reads `after`, so a change made since
+   * (a document numbered later, a new prefix) is never lost.
+   */
+  counters?: {
+    invoice?: { before: number | null; after: number | null };
+    creditMemo?: { before: number | null; after: number | null };
+  };
 }
 
 /**
@@ -1919,12 +1927,12 @@ function openItemMemo(sourceSystem: string, r: CanonicalOpenItemRow): string {
   return parts.join('; ');
 }
 
-/** Saves the document counters once per batch, before an open item may claim a number (undo restores them). */
-async function rememberCounters(ctx: CommitSessionContext): Promise<void> {
-  if (ctx.priorValues.counters) return;
+/** The invoice and credit memo counters (null: not set). */
+async function readCounters(ctx: CommitSessionContext): Promise<{ invoice: number | null; creditMemo: number | null }> {
   const [co] = await ctx.tx.select({ invoiceNextNumber: companies.invoiceNextNumber, documentNumbers: companies.documentNumbers })
     .from(companies).where(and(eq(companies.tenantId, ctx.tenantId), eq(companies.id, ctx.companyId))).limit(1);
-  ctx.priorValues.counters = { invoiceNextNumber: co?.invoiceNextNumber ?? null, documentNumbers: co?.documentNumbers ?? null };
+  const cm = (co?.documentNumbers as Record<string, { next?: number }> | null | undefined)?.['credit_memo']?.next;
+  return { invoice: co?.invoiceNextNumber ?? null, creditMemo: typeof cm === 'number' ? cm : null };
 }
 
 /**
@@ -1944,7 +1952,9 @@ async function commitOpenItems(
 ): Promise<ImportCommitResult> {
   const { tx, tenantId, companyId, userId, batchId } = ctx;
   if (rows.length === 0) return { created: 0, skipped: 0 };
-  await rememberCounters(ctx);
+  // A row with no number takes the next invoice or credit memo number: undo gives it back.
+  const claims = kind === 'open_invoices' && rows.some((r) => !r.number);
+  const countersBefore = claims ? await readCounters(ctx) : null;
   const historyId = await historyAccount(ctx, kind === 'open_invoices' ? 'ar' : 'ap');
   const { createInvoiceWithWarnings } = await import('../invoice.service.js');
   const { createCreditMemoWithWarnings } = await import('../credit-memo.service.js');
@@ -2039,6 +2049,16 @@ async function commitOpenItems(
     if ((i + 1) % 100 === 0) ctx.progress(kind, i + 1, rows.length);
   }
   await stampTransactions(tx, tenantId, batchId, posted);
+  if (countersBefore) {
+    const after = await readCounters(ctx);
+    const k = (ctx.priorValues.counters ??= {});
+    if (after.invoice !== countersBefore.invoice) {
+      k.invoice = { before: k.invoice?.before ?? countersBefore.invoice, after: after.invoice };
+    }
+    if (after.creditMemo !== countersBefore.creditMemo) {
+      k.creditMemo = { before: k.creditMemo ? k.creditMemo.before : countersBefore.creditMemo, after: after.creditMemo };
+    }
+  }
   ctx.progress(kind, rows.length, rows.length);
   return { created: posted.length, skipped: 0, documents, ...(contactsCreated > 0 ? { contactsCreated } : {}) };
 }

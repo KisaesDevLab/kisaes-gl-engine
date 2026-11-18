@@ -99,16 +99,23 @@ export function openItemDate(raw: string | undefined): string | null {
 
 const AS_OF_RE = /([A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2})/;
 
-/** The report's own date: the first date in the lines above the header (QuickBooks prints "As of …"). */
+/**
+ * The report's own date, from the lines above the header: the cell that says
+ * "As of …" (QuickBooks prints it under the title), else the first date there
+ * (a "prepared on" date above the title must not win over "As of").
+ */
 function scrapeReportDate(grid: string[][], headerIdx: number): string | null {
+  let first: string | null = null;
   for (let i = 0; i < headerIdx; i++) {
     for (const cell of grid[i] ?? []) {
       const m = (cell ?? '').match(AS_OF_RE);
       const iso = m ? openItemDate(m[1]) : null;
-      if (iso) return iso;
+      if (!iso) continue;
+      if (/\bas\s+of\b/i.test(cell ?? '')) return iso;
+      first ??= iso;
     }
   }
-  return null;
+  return first;
 }
 
 function docTypeFor(kind: OpenItemKind, negative: boolean): OpenItemDocType {

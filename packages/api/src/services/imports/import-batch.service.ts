@@ -719,14 +719,24 @@ export async function runUndoJob(req: CommitRequest): Promise<void> {
       await tx.update(companies).set({ fiscalYearStartMonth: prior.fiscalYearStartMonth, updatedAt: new Date() })
         .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
     }
-    // U-264: the document counters open items may have advanced (a number
-    // taken since is skipped by the counter's own in-use check).
-    if (prior.counters) {
-      await tx.update(companies).set({
-        invoiceNextNumber: prior.counters.invoiceNextNumber,
-        documentNumbers: (prior.counters.documentNumbers ?? {}) as never,
-        updatedAt: new Date(),
-      }).where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)));
+    // U-264: the counters open items with no number advanced go back, each
+    // only while it still reads what the commit left (a number taken since,
+    // or a prefix changed since, stays).
+    const inv = prior.counters?.invoice;
+    if (inv && inv.after !== null) {
+      await tx.execute(sql`UPDATE companies SET invoice_next_number = ${inv.before}, updated_at = now()
+        WHERE tenant_id = ${tenantId} AND id = ${companyId} AND invoice_next_number = ${inv.after}`);
+    }
+    const cm = prior.counters?.creditMemo;
+    if (cm && cm.after !== null) {
+      await tx.execute(cm.before === null
+        ? sql`UPDATE companies SET document_numbers = CASE
+              WHEN (document_numbers->'credit_memo') - 'next' = '{}'::jsonb THEN document_numbers - 'credit_memo'
+              ELSE document_numbers #- '{credit_memo,next}' END, updated_at = now()
+            WHERE tenant_id = ${tenantId} AND id = ${companyId} AND (document_numbers->'credit_memo'->>'next') = ${String(cm.after)}`
+        : sql`UPDATE companies SET document_numbers = jsonb_set(document_numbers, '{credit_memo,next}', to_jsonb(${cm.before}::int)),
+              updated_at = now()
+            WHERE tenant_id = ${tenantId} AND id = ${companyId} AND (document_numbers->'credit_memo'->>'next') = ${String(cm.after)}`);
     }
 
     // One audit row per deleted record with its before-image, then one for the batch.
