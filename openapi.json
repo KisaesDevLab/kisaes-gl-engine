@@ -40447,7 +40447,7 @@
     },
     "/api/v1/imports/{id}/commit": {
       "post": {
-        "description": "Commits the session as a one-session batch (kind single, U-261) in one database transaction and answers {session, result}. A failure posts nothing and leaves the session failed. 409 IMPORT_SESSION_IN_BATCH when the session belongs to a batch (commit the batch); 409 IMPORT_ALREADY_COMMITTED / IMPORT_PERIOD_OVERLAP (U-263); 409 IMPORT_BUSY while another import of the company runs; 409 IMPORT_HAS_ERRORS; 409 IMPORT_TERMINAL. dryRun validates only.",
+        "description": "Commits the session as a one-session batch (kind single, U-261) in one database transaction and answers {session, result}. A failure posts nothing and leaves the session failed. 409 IMPORT_SESSION_IN_BATCH when the session belongs to a batch (commit the batch); 409 IMPORT_ALREADY_COMMITTED / IMPORT_PERIOD_OVERLAP (U-263); 409 IMPORT_BUSY while another import of the company runs; 409 IMPORT_HAS_ERRORS; 409 IMPORT_TERMINAL. dryRun validates only. A commit (not a dryRun) is owner or super admin only, as a batch commit (403 IMPORT_ADMIN_REQUIRED, U-264).",
         "operationId": "post_api_v1_imports_by_id_commit",
         "parameters": [
           {
