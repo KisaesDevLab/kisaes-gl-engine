@@ -66,8 +66,8 @@ import { AppError } from '../utils/errors.js';
 export const IDEMPOTENT_REPLAYED_HEADER = 'Idempotent-Replayed';
 
 export interface IdempotentOptions {
-  /** The route's success status: 201 for a create, 200 otherwise. */
-  successStatus: 200 | 201;
+  /** The route's success status: 201 for a create, 202 for work accepted to run in the background, 200 otherwise. */
+  successStatus: 200 | 201 | 202;
   /**
    * Reads the record for a replay without a stored body, in the route's
    * response shape. `entity` is what the request recorded (null when it

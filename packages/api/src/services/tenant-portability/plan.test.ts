@@ -197,7 +197,7 @@ describe('rule 2: primary keys (R5)', () => {
     const omit = plan.tables.filter((t) => t.pk === 'omit-pk').map((t) => t.name);
     expect(omit).toEqual(['audit_log']);
     const noPk = plan.tables.filter((t) => t.pk === 'no-pk').map((t) => t.name).sort();
-    expect(noPk).toEqual(['check_signature_users', 'portal_contact_companies', 'tb_aje_sequences', 'tenant_feature_flags', 'transaction_tags']);
+    expect(noPk).toEqual(['check_signature_users', 'import_rows', 'portal_contact_companies', 'tb_aje_sequences', 'tenant_feature_flags', 'transaction_tags']);
   });
 
   it('refuses an integer pk referenced by an FK', async () => {

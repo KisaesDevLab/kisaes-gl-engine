@@ -191,6 +191,8 @@ export const CHILD_TABLES: Record<string, { column: string; parent: string }> = 
   payroll_import_errors: { column: 'session_id', parent: 'payroll_import_sessions' },
   payroll_import_column_mappings: { column: 'session_id', parent: 'payroll_import_sessions' },
   payroll_check_register_rows: { column: 'session_id', parent: 'payroll_import_sessions' },
+  // U-261 (0282): parsed Bulk Import rows, one per row of a session.
+  import_rows: { column: 'session_id', parent: 'import_sessions' },
   accountant_company_exclusions: { column: 'company_id', parent: 'companies' },
   portal_contact_companies: { column: 'company_id', parent: 'companies' },
   portal_settings_per_company: { column: 'company_id', parent: 'companies' },
@@ -579,6 +581,20 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'fs_reports.updated_by': 'identity',
   'fs_style_presets.firm_id': 'excluded-ref:firms',
   'fs_style_presets.created_by': 'identity',
+  // U-261 (0282): Bulk Import batches and what they created.
+  'import_batches.company_id': 'tenant-ref:companies',
+  'import_batches.created_by': 'identity',
+  'import_batches.committed_by': 'identity',
+  'import_batches.undone_by': 'identity',
+  'import_batches.verified_by': 'identity',
+  'import_sessions.batch_id': 'tenant-ref:import_batches',
+  'import_rows.session_id': 'tenant-ref:import_sessions',
+  'accounts.import_batch_id': 'tenant-ref:import_batches',
+  'contacts.import_batch_id': 'tenant-ref:import_batches',
+  'items.import_batch_id': 'tenant-ref:import_batches',
+  'tags.import_batch_id': 'tenant-ref:import_batches',
+  'tag_groups.import_batch_id': 'tenant-ref:import_batches',
+  'transactions.import_batch_id': 'tenant-ref:import_batches',
   'import_sessions.company_id': 'tenant-ref:companies',
   'import_sessions.created_by': 'identity',
   'invoice_templates.company_id': 'tenant-ref:companies',
@@ -815,6 +831,7 @@ export const SECRET_COLUMNS: Record<string, SecretColumnRule> = {
   'extraction_jobs.file_hash': { action: 'keep', reason: 'content hash of the uploaded document' },
   'fs_report_versions.numbers_hash': { action: 'keep', reason: 'content hash of the report numbers' },
   'import_sessions.file_hash': { action: 'keep', reason: 'content hash of the imported file' },
+  'import_sessions.row_hash': { action: 'keep', reason: 'content hash of the parsed rows (re-import refusal, U-263)' },
   'mcp_request_log.api_key_id': { action: 'keep', reason: 'row id of an API key (nulled as an excluded reference), not a credential' },
   'payroll_import_sessions.file_hash': { action: 'keep', reason: 'content hash of the payroll file' },
   'report_instances.share_token': { action: 'redact', reason: 'public share-link token (also nulled by UNIQUE_INDEX_RULES)' },
@@ -849,6 +866,8 @@ export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
   'companies.intake_settings': 'plain',
   'fs_report_versions.settings_json': 'plain',
   'import_sessions.options': 'plain',
+  // U-261: accountMap and classMap name account and tag ids.
+  'import_batches.options': 'contains-ids',
   // Saved report definitions (U-118): ids only at fixed option paths
   // (options.filters.{accountIds,contactIds,tagIds,itemIds},
   // options.tagSplit.tagGroupId, options.columnTagGroupId, options.budgetId).

@@ -315,6 +315,14 @@ async function start() {
     void import('./services/bank-import/import-batch.service.js')
       .then((m) => m.resumeScheduledPostProcessing())
       .catch((err) => { console.error('Bank import post-processing resume failed:', errorSummaryForLog(err)); });
+    // Bulk Import batches (U-261) a crash or restart left committing are
+    // failed (their transaction rolled back), and undoing ones committed.
+    void import('./services/imports/import-batch.service.js')
+      .then(async (m) => {
+        const n = await m.recoverInterruptedBatches();
+        if (n > 0) console.log('[imports] ' + n + ' interrupted import batch(es) settled');
+      })
+      .catch((err) => { console.error('Import batch recovery failed:', errorSummaryForLog(err)); });
     // Bank feed rows an older engine left 'categorizing' (U-173) go back
     // to waiting.
     void import('./services/bank-feed.service.js')
