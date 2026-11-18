@@ -139,8 +139,8 @@ describe('QuickBooks Desktop adapter', () => {
         name: "Betty's Flowers",
       });
       expect(check.lines).toHaveLength(2);
-      expect(check.lines[0]).toMatchObject({ accountNumber: '12000', credit: '623.95', debit: '0' });
-      expect(check.lines[1]).toMatchObject({ accountNumber: '50000', debit: '623.95', credit: '0' });
+      expect(check.lines[0]).toMatchObject({ accountNumber: '12000', credit: '623.95', debit: '0.00' }); // U-260: blank is canonical 0.00
+      expect(check.lines[1]).toMatchObject({ accountNumber: '50000', debit: '623.95', credit: '0.00' });
 
       const deposit = entries[1]!;
       expect(deposit).toMatchObject({ date: '2025-01-31', transactionType: 'Deposit', sourceCode: 'QBD:Deposit' });
@@ -186,6 +186,35 @@ describe('QuickBooks Desktop adapter', () => {
         `,,,,,,,,1600.00,1600.00\r\n`;
       const { entries } = qbd.parseGl(buf(withMemo));
       expect(entries[0]!.memo).toBe('April & May');
+    });
+  });
+
+  describe('exact amounts (U-260)', () => {
+    it('reads "(1,234.00)" and "$" amounts; a leg that is not an amount leaves its entry out with IMPORT_AMOUNT_INVALID', () => {
+      const csv =
+        `"Trans #","Type","Date","Num","Adj","Name","Memo","Account","Debit","Credit"\r\n` +
+        `"10","General Journal","01/02/2025","J1",,,,"12000 ${DOT} Cash","$1,234.5678",""\r\n` +
+        `,,,,,,,"24000 ${DOT} Payroll Liabilities","","1,234.5678"\r\n` +
+        `,,,,,,,,"1,234.5678","1,234.5678"\r\n` +
+        `"11","General Journal","01/03/2025","J2",,,,"12000 ${DOT} Cash","(25.00)",""\r\n` +
+        `,,,,,,,"24000 ${DOT} Payroll Liabilities","","-25.00"\r\n` +
+        `,,,,,,,,"-25.00","-25.00"\r\n` +
+        `"12","General Journal","01/04/2025","J3",,,,"12000 ${DOT} Cash","1.234,56",""\r\n` +
+        `,,,,,,,"24000 ${DOT} Payroll Liabilities","","1234.56"\r\n` +
+        `,,,,,,,,"1234.56","1234.56"\r\n`;
+      const { entries, errors } = qbd.parseGl(buf(csv));
+      expect(entries.map((e) => [e.reference, e.lines.map((l) => `${l.debit}/${l.credit}`)])).toEqual([
+        ['J1', ['1234.5678/0.00', '0.00/1234.5678']],
+        ['J2', ['-25.00/0.00', '0.00/-25.00']],
+      ]);
+      expect(errors).toEqual([expect.objectContaining({ rowNumber: 8, field: 'Debit', code: 'IMPORT_AMOUNT_INVALID' })]);
+    });
+
+    it('trial balance: a bad cell is a row error, not a 500 at validation', () => {
+      const csv = `,"Dec 31, 25"\r\n,"Debit","Credit"\r\n"12000 ${DOT} Cash","1e3",""\r\n"30000 ${DOT} Equity","","(0.0001)"\r\n`;
+      const { rows, errors } = qbd.parseTrialBalance(buf(csv));
+      expect(rows).toEqual([expect.objectContaining({ accountNumber: '30000', credit: '-0.0001' })]);
+      expect(errors).toEqual([expect.objectContaining({ rowNumber: 3, field: 'Debit', code: 'IMPORT_AMOUNT_INVALID' })]);
     });
   });
 });

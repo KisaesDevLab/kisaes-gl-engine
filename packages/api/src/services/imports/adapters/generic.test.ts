@@ -50,8 +50,42 @@ describe('generic import adapter', () => {
       const csv = 'Account Number,Account Name,Debit,Credit\n1000,Checking,5000.00,\n3000,Equity,,5000.00\n';
       const { rows } = await generic.parseTrialBalance(buf(csv));
       expect(rows).toHaveLength(2);
-      expect(rows[0]).toMatchObject({ accountName: 'Checking', debit: '5000' });
-      expect(rows[1]).toMatchObject({ accountName: 'Equity', credit: '5000' });
+      // U-260: canonical exact text (was String(Number(x)) = '5000').
+      expect(rows[0]).toMatchObject({ accountName: 'Checking', debit: '5000.00' });
+      expect(rows[1]).toMatchObject({ accountName: 'Equity', credit: '5000.00' });
+    });
+
+    it('keeps every place and accepts accounting forms; a bad cell is IMPORT_AMOUNT_INVALID (U-260)', async () => {
+      const csv = 'Account Name,Debit,Credit\n'
+        + 'Checking,"$1,234,567,890.1234",\n'
+        + 'Loan,,(0.0001)\n'
+        + 'Equity,,"1,234,567,890.1235"\n'
+        + 'Bad,1e3,\n'
+        + 'Comma,,"1.234,56"\n';
+      const { rows, errors } = await generic.parseTrialBalance(buf(csv));
+      expect(rows.map((r) => [r.accountName, r.debit, r.credit])).toEqual([
+        ['Checking', '1234567890.1234', undefined],
+        ['Loan', undefined, '-0.0001'],
+        ['Equity', undefined, '1234567890.1235'],
+      ]);
+      expect(errors.map((e) => [e.rowNumber, e.field, e.code])).toEqual([
+        [5, 'Debit', 'IMPORT_AMOUNT_INVALID'],
+        [6, 'Credit', 'IMPORT_AMOUNT_INVALID'],
+      ]);
+    });
+
+    it('xlsx: number cells are read as their raw value, not the 15-digit display', async () => {
+      const ExcelJS = (await import('exceljs')).default;
+      const wb = new ExcelJS.Workbook();
+      const ws = wb.addWorksheet('TB');
+      ws.addRow(['Account Name', 'Debit', 'Credit']);
+      ws.addRow(['Checking', 123456789012.34, null]);
+      ws.addRow(['Equity', null, 0.1 + 0.2]);
+      ws.getCell('B2').numFmt = '#,##0';
+      const { rows, errors } = await generic.parseTrialBalance(Buffer.from(await wb.xlsx.writeBuffer()));
+      expect(rows).toEqual([expect.objectContaining({ accountName: 'Checking', debit: '123456789012.34' })]);
+      // 0.30000000000000004 is refused, not rounded to 0.3.
+      expect(errors).toEqual([expect.objectContaining({ rowNumber: 3, field: 'Credit', code: 'IMPORT_AMOUNT_INVALID' })]);
     });
   });
 
@@ -99,6 +133,22 @@ describe('generic import adapter', () => {
       const { entries, errors } = await generic.parseGl(buf(csv));
       expect(entries).toHaveLength(0);
       expect(errors.map((e) => e.code).sort()).toEqual(['IMPORT_BAD_AMOUNT', 'IMPORT_BAD_DATE']);
+    });
+
+    it('signed Amount: CR/DR, U+2212, trailing minus and 4 places, exactly (U-260)', async () => {
+      const csv =
+        'Date,Account,Amount,Offset Account\n' +
+        '2026-07-01,Checking,"1,234.5678 CR",Sales\n' +
+        '2026-07-02,Checking,50.10 DR,Sales\n' +
+        '2026-07-03,Checking,−12.5,Sales\n' +
+        '2026-07-04,Checking,7-,Sales\n' +
+        '2026-07-05,Checking,1.23456,Sales\n' +
+        '2026-07-06,Checking,-(5),Sales\n';
+      const { entries, errors } = await generic.parseGl(buf(csv));
+      expect(entries.map((e) => [e.lines[0]!.debit, e.lines[0]!.credit])).toEqual([
+        ['0', '1234.5678'], ['50.10', '0'], ['0', '12.50'], ['0', '7.00'],
+      ]);
+      expect(errors.map((e) => [e.rowNumber, e.code])).toEqual([[6, 'IMPORT_AMOUNT_INVALID'], [7, 'IMPORT_AMOUNT_INVALID']]);
     });
 
     it('errors when the header row is missing', async () => {

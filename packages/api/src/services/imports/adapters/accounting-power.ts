@@ -22,6 +22,7 @@ import {
   type TbColumnChoice,
 } from '@kis-books/shared';
 import { parseCsvText } from '../../payroll-parse.service.js';
+import { Decimal, importAmountError, importAmountText, isImportAmount, parseImportAmount } from '../import-amount.js';
 import type { CanonicalContactRow, ContactKind } from '@kis-books/shared';
 
 // ── Shared helpers ────────────────────────────────────────────────
@@ -44,13 +45,17 @@ function toIsoDate(raw: string): string | null {
   return `${y}-${mm!.padStart(2, '0')}-${dd!.padStart(2, '0')}`;
 }
 
-/** Parse an AP amount string ("123,415.81", "-2,021.92", "0.00") → decimal string. */
-function toDecimal(raw: string | undefined): string {
-  if (!raw) return '0';
-  const cleaned = raw.replace(/,/g, '').trim();
-  if (cleaned === '' || cleaned === '-') return '0';
-  return cleaned;
+/**
+ * An AP amount ("123,415.81", "-2,021.92", "0.00", "") as canonical decimal
+ * text, exactly (U-260); blank is "0.00". Not an amount: null, and the
+ * caller reports IMPORT_AMOUNT_INVALID.
+ */
+function toDecimal(raw: string | undefined): string | null {
+  const d = parseImportAmount(raw);
+  return isImportAmount(d) ? importAmountText(d) : null;
 }
+
+const isZero = (s: string) => new Decimal(s).isZero();
 
 /** Header rows are required to start with these column names in this order. */
 function requireHeader(actual: string[], expected: readonly string[]): ImportValidationError | null {
@@ -193,25 +198,19 @@ export function parseTrialBalance(
     const accountName = (r[descIdx] ?? '').trim();
     if (!accountNumber) continue;
 
-    const raw = (r[balanceIdx] ?? '').trim();
-    const cleaned = raw.replace(/,/g, '');
-    const value = parseFloat(cleaned);
-    if (Number.isNaN(value)) {
-      errors.push({
-        rowNumber,
-        field: targetCol,
-        code: 'IMPORT_BAD_AMOUNT',
-        message: `Could not parse "${raw}" as a number for "${accountNumber}".`,
-      });
+    // U-260: one signed balance, exact (a trailing CR is a credit, DR a debit); blank is 0.
+    const value = parseImportAmount(r[balanceIdx], { signed: true });
+    if (!isImportAmount(value)) {
+      errors.push(importAmountError(rowNumber, targetCol, r[balanceIdx]));
       continue;
     }
-    if (value === 0) continue; // zero-balance accounts contribute nothing.
+    if (value.isZero()) continue; // zero-balance accounts contribute nothing.
 
-    if (value > 0) {
-      rows.push({ rowNumber, accountNumber, accountName, debit: cleaned });
+    if (value.isPositive()) {
+      rows.push({ rowNumber, accountNumber, accountName, debit: importAmountText(value) });
     } else {
-      // Strip the leading minus; the magnitude lives in `credit`.
-      rows.push({ rowNumber, accountNumber, accountName, credit: Math.abs(value).toFixed(4) });
+      // The magnitude lives in `credit`.
+      rows.push({ rowNumber, accountNumber, accountName, credit: importAmountText(value.abs()) });
     }
   }
 
@@ -279,6 +278,7 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
 
   // Bucket all lines by (journal, date, reference)
   const buckets = new Map<string, RawGlLine[]>();
+  const invalidKeys = new Set<string>();
   for (let i = 1; i < grid.length; i++) {
     const r = grid[i]!;
     const journal = (r[iJournal] ?? '').trim();
@@ -287,6 +287,15 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
     const accountNumber = (r[iAcct] ?? '').trim();
     if (!journal || !date || !accountNumber) continue;
     const key = `${journal} ${date} ${reference}`;
+    const debit = toDecimal(r[iDeb]);
+    const credit = toDecimal(r[iCred]);
+    if (debit === null || credit === null) {
+      // U-260: the whole entry is left out; the row error blocks the commit.
+      if (debit === null) errors.push(importAmountError(i + 1, 'Debit Amount', r[iDeb]));
+      if (credit === null) errors.push(importAmountError(i + 1, 'Credit Amount', r[iCred]));
+      invalidKeys.add(key);
+      continue;
+    }
     const line: RawGlLine = {
       rowNumber: i + 1,
       journal,
@@ -295,8 +304,8 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
       description: (r[iDesc] ?? '').trim(),
       accountNumber,
       accountName: (r[iName] ?? '').trim(),
-      debit: toDecimal(r[iDeb]),
-      credit: toDecimal(r[iCred]),
+      debit,
+      credit,
       memo: (r[iMemo] ?? '').trim(),
     };
     if (!buckets.has(key)) buckets.set(key, []);
@@ -306,7 +315,8 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
   // Emit one or two entries per bucket. A bucket whose lines split into
   // void-memoed and non-void-memoed halves yields two entries — the
   // original (non-void lines) and the reversing entry (void lines).
-  for (const lines of buckets.values()) {
+  for (const [key, lines] of buckets) {
+    if (invalidKeys.has(key)) continue;
     const voidLines = lines.filter((l) => VOID_MEMO_RE.test(l.memo));
     const originalLines = lines.filter((l) => !VOID_MEMO_RE.test(l.memo));
 
@@ -317,7 +327,7 @@ export function parseGl(buf: Buffer): { entries: CanonicalGlEntry[]; errors: Imp
       // layer rejects a transaction whose totals are both zero ("must
       // have non-zero amounts"), which failed the whole import. Drop the
       // zero lines; if the entire entry is zero, skip it silently.
-      group = group.filter((l) => parseFloat(l.debit) !== 0 || parseFloat(l.credit) !== 0);
+      group = group.filter((l) => !isZero(l.debit) || !isZero(l.credit));
       if (group.length === 0) return null;
       const first = group[0]!;
       const iso = toIsoDate(first.date);

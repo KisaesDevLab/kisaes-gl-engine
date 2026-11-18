@@ -73,7 +73,7 @@ export function parseCsvText(text: string, delimiter = ','): string[][] {
 
 export async function parseXlsxBuffer(
   buffer: Buffer,
-  options?: { sheetName?: string; sheetIndex?: number },
+  options?: { sheetName?: string; sheetIndex?: number; numberText?: (n: number) => string },
 ): Promise<string[][]> {
   // Reject anything that doesn't have the zip header for xlsx/docx. We
   // dropped xls (the 1997 OLE compound-document format) support when
@@ -93,6 +93,9 @@ export async function parseXlsxBuffer(
     ? workbook.getWorksheet(options.sheetName)
     : workbook.worksheets[options?.sheetIndex ?? 0];
   if (!sheet) throw AppError.badRequest('Excel file has no sheets');
+  // Number cells: payroll's 15-significant-digit text by default; imports
+  // pass xlsxNumberText (the shortest round-trip string, U-260).
+  const numberText = options?.numberText ?? numericCellText;
 
   // Cap the row scan — an adversarial workbook claiming millions of rows
   // shouldn't fan out into unbounded work even if exceljs would otherwise
@@ -119,12 +122,12 @@ export async function parseXlsxBuffer(
         } else if (obj.text !== undefined) {
           out.push(String(obj.text));
         } else if (obj.result !== undefined) {
-          out.push(typeof obj.result === 'number' ? numericCellText(obj.result) : String(obj.result));
+          out.push(typeof obj.result === 'number' ? numberText(obj.result) : String(obj.result));
         } else {
           out.push('');
         }
       } else if (typeof v === 'number') {
-        out.push(numericCellText(v));
+        out.push(numberText(v));
       } else {
         out.push(String(v));
       }

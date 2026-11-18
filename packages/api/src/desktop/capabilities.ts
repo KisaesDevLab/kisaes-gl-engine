@@ -1608,5 +1608,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * check-register validation leave both out.
    */
   'payroll-import-review-v1',
+  /**
+   * U-260 (ClientLedger P31 E0; no migration). Exact import amounts: every Bulk Import adapter (generic, quickbooks_online,
+   * quickbooks_desktop, accounting_power) reads money cells with one parser (services/imports/import-amount.ts) into an
+   * exact decimal, never a float and never rounded. Accepted: `$`, `,` thousands groups, `(x)`, a leading or trailing `-`,
+   * `$-5` / `-$5`, U+2212 as minus, spaces and NBSP removed; in a signed column (generic transaction Amount, Accounting
+   * Power trial balance) a trailing CR (negative) or DR (positive); blank (or a bare `-`) is 0 in trial balance, chart
+   * of accounts and journal files. Refused as row error {rowNumber, field, code IMPORT_AMOUNT_INVALID}: exponents, more
+   * than 4 decimal places (trailing zeros dropped first), `-(5)` / `(-5)`, two signs, `1.234,56` and misplaced commas,
+   * more than 15 integer digits; a journal entry with such a line is left out (the error blocks the commit). Accounting
+   * Power trial balance: a bad balance was IMPORT_BAD_AMOUNT and is now IMPORT_AMOUNT_INVALID; a blank balance (was an
+   * error) is 0. xlsx number cells are read as their raw value, as the shortest round-trip string in plain notation
+   * (never the formatted text); binary noise such as 0.30000000000000004 is refused, not rounded. Preview amounts are
+   * canonical text with at least 2 places ("5000.00", "-0.1235"). The trial balance check is exact (it tolerated 0.01)
+   * and so is the journal entry check (it tolerated 0.0001, which the ledger then refused); IMPORT_JE_UNBALANCED shows
+   * every place the totals carry.
+   */
+  'imports-amounts-v1',
 ];
 

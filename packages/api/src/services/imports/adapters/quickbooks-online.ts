@@ -22,6 +22,7 @@ import {
   type ImportValidationError,
 } from '@kis-books/shared';
 import { parseCsvText } from '../../payroll-parse.service.js';
+import { Decimal, importAmountError, importAmountText, isImportAmount, parseImportAmount } from '../import-amount.js';
 
 // ── Shared helpers ────────────────────────────────────────────────
 
@@ -103,15 +104,20 @@ function cellToString(c: unknown): string {
   return String(c);
 }
 
-function cellToDecimal(c: unknown): string | undefined {
-  if (c == null || c === '') return undefined;
-  if (typeof c === 'number') return String(c);
-  const s = String(c).replace(/,/g, '').trim();
-  if (!s) return undefined;
-  const n = parseFloat(s);
-  if (Number.isNaN(n)) return undefined;
-  return s;
+/**
+ * A money cell, exactly (U-260): undefined when blank, null when it is not
+ * an amount (the caller reports IMPORT_AMOUNT_INVALID), else canonical
+ * decimal text. A number cell is its raw value as the shortest round-trip
+ * string, never the formatted display text.
+ */
+function cellToDecimal(c: unknown): string | null | undefined {
+  if (c == null) return undefined;
+  if (typeof c === 'string' && c.replace(/[\s   ]/g, '') === '') return undefined;
+  const d = parseImportAmount(c);
+  return isImportAmount(d) ? importAmountText(d) : null;
 }
+
+const isZeroAmount = (s: string | null | undefined) => typeof s === 'string' && new Decimal(s).isZero();
 
 function cellToIsoDate(c: unknown): string | null {
   if (c == null || c === '') return null;
@@ -430,6 +436,11 @@ export async function parseTrialBalance(
     if (/^total/i.test(accountName)) continue;
     const debit = cellToDecimal(r[iDeb]);
     const credit = cellToDecimal(r[iCred]);
+    if (debit === null || credit === null) {
+      if (debit === null) errors.push(importAmountError(rowNumber, 'Debit', r[iDeb]));
+      if (credit === null) errors.push(importAmountError(rowNumber, 'Credit', r[iCred]));
+      continue;
+    }
     if (!debit && !credit) continue;
     rows.push({
       rowNumber,
@@ -541,6 +552,16 @@ export async function parseGl(
     }
     const sourceCode =
       QBO_TXN_TYPE_LABELS[first.txnType.toLowerCase()] ?? `QBO:${first.txnType}`;
+    // U-260: a line whose amount is not an amount leaves the whole entry out.
+    let invalid = false;
+    for (const l of current) {
+      if (cellToDecimal(l.debit) === null) { errors.push(importAmountError(l.rowNumber, 'Debit', l.debit)); invalid = true; }
+      if (cellToDecimal(l.credit) === null) { errors.push(importAmountError(l.rowNumber, 'Credit', l.credit)); invalid = true; }
+    }
+    if (invalid) {
+      current = null;
+      return;
+    }
     const lines: CanonicalGlLine[] = current.map((l) => {
       const acct = splitQboAccount(l.account || '');
       return {
@@ -559,7 +580,7 @@ export async function parseGl(
     // entire commit partway through. Dropping it at parse time keeps the
     // entry indices of the surviving entries stable relative to the
     // non-void entries, preserving fileHash:index dedup on re-upload.
-    if (!lines.some((l) => Number(l.debit) !== 0 || Number(l.credit) !== 0)) {
+    if (lines.every((l) => isZeroAmount(l.debit) && isZeroAmount(l.credit))) {
       current = null;
       return;
     }
@@ -621,19 +642,20 @@ export async function parseGl(
     }
 
     // Fully blank row → close the current group.
-    if (!account && !debit && !credit && !date && !txnType) {
+    if (!account && debit === undefined && credit === undefined && !date && !txnType) {
       closeCurrent();
       continue;
     }
 
     // QBO filler line: no account and no non-zero amount — a voided
     // check's zero line ("VOID: VOID"), a reversing-JE leg, or an empty
-    // split. cellToDecimal('0') returns '0' (truthy), so the fully-blank
+    // split. cellToDecimal('0') returns '0.00' (truthy), so the fully-blank
     // guard above misses these; treated as a posting they'd fail account
     // resolution with a "?" account. They carry no accounting value (and
     // don't affect the JE balance), so drop them — but never drop a JE
     // header (has date + type) or a line with a real amount.
-    if (!account && !(date && txnType) && Number(debit ?? 0) === 0 && Number(credit ?? 0) === 0) {
+    // (A cell that is not an amount is not zero: the line is kept and reported.)
+    if (!account && !(date && txnType) && (debit === undefined || isZeroAmount(debit)) && (credit === undefined || isZeroAmount(credit))) {
       continue;
     }
 

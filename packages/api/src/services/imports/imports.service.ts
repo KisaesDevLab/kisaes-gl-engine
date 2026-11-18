@@ -633,11 +633,14 @@ async function validateTrialBalance(
       });
     }
   }
-  if (totalDebit.minus(totalCredit).abs().greaterThan('0.01')) {
+  // U-260: exactly in balance (it tolerated 0.01 before). The totals show
+  // every place they carry, so a sub-cent difference is visible.
+  if (!totalDebit.equals(totalCredit)) {
+    const places = Math.max(2, totalDebit.decimalPlaces(), totalCredit.decimalPlaces());
     errors.push({
       rowNumber: 0,
       code: 'IMPORT_JE_UNBALANCED',
-      message: `Trial balance is not in balance: total debits ${totalDebit.toFixed(2)}, total credits ${totalCredit.toFixed(2)}.`,
+      message: `Trial balance is not in balance: total debits ${totalDebit.toFixed(places)}, total credits ${totalCredit.toFixed(places)}.`,
     });
   }
   return errors;
@@ -717,11 +720,14 @@ async function validateGl(
       totalDebit = totalDebit.plus(line.debit || '0');
       totalCredit = totalCredit.plus(line.credit || '0');
     }
-    if (totalDebit.minus(totalCredit).abs().greaterThan('0.0001')) {
+    // U-260: exactly, as the ledger posts it (assertBalanced); a 0.0001
+    // difference passed here before and then failed mid-commit.
+    if (!totalDebit.equals(totalCredit)) {
+      const places = Math.max(2, totalDebit.decimalPlaces(), totalCredit.decimalPlaces());
       errors.push({
         rowNumber: e.rowNumber,
         code: 'IMPORT_JE_UNBALANCED',
-        message: `Journal entry on ${e.date} ${e.reference ?? ''} has unbalanced debits ${totalDebit.toFixed(2)} vs credits ${totalCredit.toFixed(2)}.`,
+        message: `Journal entry on ${e.date} ${e.reference ?? ''} has unbalanced debits ${totalDebit.toFixed(places)} vs credits ${totalCredit.toFixed(places)}.`,
       });
     }
   }

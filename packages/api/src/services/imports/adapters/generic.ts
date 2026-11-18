@@ -27,12 +27,13 @@ import {
 } from '@kis-books/shared';
 import { parseCsvText, parseXlsxBuffer } from '../../payroll-parse.service.js';
 import { ACCOUNT_TYPE_VALUES } from './generic-columns.js';
+import { importAmountError, importAmountText, isImportAmount, parseImportAmount, xlsxNumberText } from '../import-amount.js';
 
 // ── Shared helpers ────────────────────────────────────────────────
 
-/** Read the upload as a string grid — .xlsx by magic bytes, else CSV (UTF-8). */
+/** Read the upload as a string grid — .xlsx by magic bytes, else CSV (UTF-8). Number cells are their exact values (U-260). */
 async function readGrid(buf: Buffer): Promise<string[][]> {
-  if (buf[0] === 0x50 && buf[1] === 0x4b) return parseXlsxBuffer(buf);
+  if (buf[0] === 0x50 && buf[1] === 0x4b) return parseXlsxBuffer(buf, { numberText: xlsxNumberText });
   return parseCsvText(buf.toString('utf8').replace(/^﻿/, ''));
 }
 
@@ -72,17 +73,6 @@ function toIsoDate(raw: string): string | null {
     return `${y}-${mm!.padStart(2, '0')}-${dd!.padStart(2, '0')}`;
   }
   return null;
-}
-
-/** Parse a signed amount ("1,051.07", "-250.00", "(250.00)", "") → number. */
-function parseAmount(raw: string | undefined): number | null {
-  if (raw == null) return null;
-  let s = String(raw).replace(/[$,\s]/g, '').trim();
-  if (s === '' || s === '-') return null;
-  // Accounting-style parentheses = negative.
-  if (/^\(.*\)$/.test(s)) s = `-${s.slice(1, -1)}`;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -244,15 +234,21 @@ export async function parseTrialBalance(buf: Buffer): Promise<{
     const accountName = iName !== -1 ? (r[iName] ?? '').trim() : '';
     if (!accountNumber && !accountName) continue;
     if (/^total\b/i.test(accountName) || /^total\b/i.test(accountNumber)) continue;
-    const debit = parseAmount(r[iDeb]) ?? 0;
-    const credit = parseAmount(r[iCred]) ?? 0;
-    if (debit === 0 && credit === 0) continue;
+    // U-260: exact amounts; blank is 0.
+    const debit = parseImportAmount(r[iDeb]);
+    const credit = parseImportAmount(r[iCred]);
+    if (!isImportAmount(debit) || !isImportAmount(credit)) {
+      if (!isImportAmount(debit)) errors.push(importAmountError(rowNumber, 'Debit', r[iDeb]));
+      if (!isImportAmount(credit)) errors.push(importAmountError(rowNumber, 'Credit', r[iCred]));
+      continue;
+    }
+    if (debit.isZero() && credit.isZero()) continue;
     rows.push({
       rowNumber,
       ...(accountNumber ? { accountNumber } : {}),
       ...(accountName ? { accountName } : {}),
-      ...(debit !== 0 ? { debit: String(debit) } : {}),
-      ...(credit !== 0 ? { credit: String(credit) } : {}),
+      ...(!debit.isZero() ? { debit: importAmountText(debit) } : {}),
+      ...(!credit.isZero() ? { credit: importAmountText(credit) } : {}),
     });
   }
   return { rows, errors };
@@ -293,8 +289,13 @@ export async function parseGl(buf: Buffer): Promise<{ entries: CanonicalGlEntry[
       errors.push({ rowNumber, field: 'Date', code: 'IMPORT_BAD_DATE', message: `Row ${rowNumber}: could not parse Date "${dateCell}".` });
       continue;
     }
-    const amount = parseAmount(amountRaw);
-    if (amount == null || amount === 0) {
+    // U-260: an exact signed amount (a trailing CR is negative, DR positive).
+    const amount = parseImportAmount(amountRaw, { signed: true });
+    if (!isImportAmount(amount)) {
+      errors.push(importAmountError(rowNumber, 'Amount', amountRaw));
+      continue;
+    }
+    if (amount.isZero()) {
       errors.push({ rowNumber, field: 'Amount', code: 'IMPORT_BAD_AMOUNT', message: `Row ${rowNumber}: Amount must be a non-zero number.` });
       continue;
     }
@@ -307,18 +308,19 @@ export async function parseGl(buf: Buffer): Promise<{ entries: CanonicalGlEntry[
       continue;
     }
 
-    const abs = Math.abs(amount).toFixed(2);
+    const abs = importAmountText(amount.abs());
+    const positive = !amount.isNegative();
     const account = accountRef(accountCell);
     const offset = accountRef(offsetCell);
     const tagName = iTag !== -1 ? (r[iTag] ?? '').trim() || undefined : undefined;
 
     // Positive → debit Account / credit Offset. Negative → credit Account / debit Offset.
     const accountLine: CanonicalGlLine =
-      amount >= 0
+      positive
         ? { ...account, debit: abs, credit: '0', ...(tagName ? { tagName } : {}) }
         : { ...account, debit: '0', credit: abs, ...(tagName ? { tagName } : {}) };
     const offsetLine: CanonicalGlLine =
-      amount >= 0
+      positive
         ? { ...offset, debit: '0', credit: abs, ...(tagName ? { tagName } : {}) }
         : { ...offset, debit: abs, credit: '0', ...(tagName ? { tagName } : {}) };
 
