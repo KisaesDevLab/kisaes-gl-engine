@@ -82,7 +82,16 @@ const ITEMS = `,Item,Description,Type,Cost,Price,Sales Tax Code,Account,COGS Acc
 ,Widget,Blue widget,Inventory Part,4.25,9.99,Tax,84000 · Sales,85000 · Cost of Goods Sold,81300 · Inventory Asset,,Active
 `;
 
-type Kind = 'coa' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'items';
+type Kind = 'coa' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills' | 'items' | 'inventory_valuation';
+
+function valuation(date: string): string {
+  return `"Inventory Valuation Summary"
+${asOf(date)}
+,,On Hand,Avg Cost,Asset Value
+,"Widget",2,4.25,8.50
+TOTAL,,2,,8.50
+`;
+}
 
 async function upload(name: string, text: string, kind: Kind, role: 'post' | 'reference' = 'post', options: Record<string, unknown> = {}) {
   const out = await importsService.createSession({
@@ -135,7 +144,8 @@ describe('U-266 conversion date', () => {
       await upload('opening-tb.csv', tb('2024-12-31'), 'trial_balance'),
       await upload('tb-ref.csv', tb('2025-11-30'), 'trial_balance', 'reference'),
       await upload('open-invoices.csv', openInvoices('2025-12-30'), 'open_invoices'),
-      await upload('unpaid-bills.csv', openInvoices(null).replace('Open Invoices', 'Unpaid Bills Detail'), 'open_invoices'),
+      await upload('unpaid-bills.csv', '"Unpaid Bills Detail"\n,,Type,Date,Num,Due Date,Open Balance\nTOTAL,,,,,,0.00\n', 'unpaid_bills'),
+      await upload('valuation.csv', valuation('2025-12-01'), 'inventory_valuation'),
     ];
     const r = await createBatch(ids);
     expect(r.status, JSON.stringify(r.json)).toBe(422);
@@ -145,6 +155,7 @@ describe('U-266 conversion date', () => {
       ['open-invoices.csv', '2025-12-30', 'not_conversion_date'],
       ['tb-ref.csv', '2025-11-30', 'not_conversion_date'],
       ['unpaid-bills.csv', null, 'no_date'],
+      ['valuation.csv', '2025-12-01', 'not_conversion_date'],
     ]);
     expect(r.json['error'].details.conversionDate).toBe(CONV);
 
@@ -307,6 +318,16 @@ describe('U-266 inventory valuation required', () => {
     const { batch, error } = await commit(ids);
     expect(batch.status).toBe('failed');
     expect(error, JSON.stringify(error)).toMatchObject({ code: 'IMPORT_VALUATION_REQUIRED', status: 422, details: { accounts: [{ sourceKey: '81300', balance: '63.50' }] } });
+    expect(await companySnapshot(c)).toEqual(before);
+
+    // The same with a reference trial balance at the conversion date (the opening balances carry none).
+    const ref = await commit([
+      await upload('coa-r.csv', COA.replace('Checking', 'Main checking'), 'coa'),
+      await upload('items-r.csv', ITEMS.replace('Blue widget', 'Blue widget (r)'), 'items'),
+      await upload('tb-ref.csv', `"Shoal Creek (synthetic)"\n${tb(CONV, '63.50')}`, 'trial_balance', 'reference'),
+    ]);
+    expect(ref.batch.status).toBe('failed');
+    expect(ref.error).toMatchObject({ code: 'IMPORT_VALUATION_REQUIRED', details: { accounts: [{ sourceKey: '81300', balance: '63.50' }] } });
     expect(await companySnapshot(c)).toEqual(before);
 
     // No inventory on the trial balance: nothing to value, the conversion commits.
