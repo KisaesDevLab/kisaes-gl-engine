@@ -186,6 +186,8 @@ export interface DeadLinks {
   vendorCreditApplications: string[];
   depositLines: string[];
   taxLines: string[];
+  /** journal_lines of void or deleted transactions whose source_transaction_id names a batch document: set NULL. */
+  settlementLines: string[];
 }
 
 /**
@@ -195,7 +197,7 @@ export interface DeadLinks {
  * deleted with the batch, and the voided payment itself stays (net zero).
  */
 async function linkRows(ex: DbOrTx, tenantId: string, T: string[], blockers: UndoBlocker[]): Promise<DeadLinks> {
-  const dead: DeadLinks = { paymentApplications: [], billPaymentApplications: [], vendorCreditApplications: [], depositLines: [], taxLines: [] };
+  const dead: DeadLinks = { paymentApplications: [], billPaymentApplications: [], vendorCreditApplications: [], depositLines: [], taxLines: [], settlementLines: [] };
   if (T.length === 0) return dead;
   const inT = new Set(T);
 
@@ -253,8 +255,13 @@ async function linkRows(ex: DbOrTx, tenantId: string, T: string[], blockers: Und
   return dead;
 }
 
-/** Tables whose links linkRows() classifies; the sweep leaves them out. */
-const LINK_TABLES = new Set(['payment_applications', 'bill_payment_applications', 'vendor_credit_applications', 'deposit_lines', 'transaction_tax_lines']);
+/** Columns whose links linkRows() classifies; the sweep leaves them out (other columns of those tables are swept). */
+const LINK_COLUMNS = new Set([
+  'payment_applications.payment_id', 'payment_applications.invoice_id', 'payment_applications.applied_in_txn_id',
+  'payment_applications.reversed_by_txn_id', 'bill_payment_applications.payment_id', 'bill_payment_applications.bill_id',
+  'vendor_credit_applications.payment_id', 'vendor_credit_applications.credit_id', 'vendor_credit_applications.bill_id',
+  'deposit_lines.deposit_id', 'deposit_lines.source_transaction_id', 'transaction_tax_lines.invoice_id',
+]);
 
 /**
  * Every blocker of undoing the batch. `dead` returns the rows deleted with
@@ -283,42 +290,49 @@ export async function findUndoBlockers(
       await ex.execute(sql.raw(`INSERT INTO pg_temp.undo_ids (id) VALUES ${chunk.map((x) => `('${x}')`).join(',')} ON CONFLICT DO NOTHING`));
     }
     for (const col of await sweepColumns(ex)) {
-      if (LINK_TABLES.has(col.table)) continue;
+      // Link columns linkRows() classified; the other columns of those tables are swept as any.
+      if (LINK_COLUMNS.has(`${col.table}.${col.column}`)) continue;
       const pick = [
         `${col.column}::text AS ref`,
         col.hasId ? 'id::text AS rid' : 'NULL::text AS rid',
-        col.hasBatch ? 'import_batch_id::text AS batch' : 'NULL::text AS batch',
         col.hasTxn ? 'transaction_id::text AS txn' : 'NULL::text AS txn',
       ].join(', ');
-      const where = `${col.column} IN (SELECT id FROM pg_temp.undo_ids)${col.hasTenant ? ` AND tenant_id = '${tenantId}'` : ''}`;
-      const rows = (await ex.execute(sql.raw(`SELECT ${pick} FROM ${col.table} WHERE ${where} LIMIT 200`))).rows as Array<{
-        ref: string; rid: string | null; batch: string | null; txn: string | null }>;
-      if (rows.length === 0) continue;
       // Rows a table owns by transaction (artifacts, lines) belong to the batch when that transaction does.
       const ownerCol = OWNED_ARTIFACTS[col.table];
-      const ownerTxn = (r: { rid: string | null; txn: string | null }) =>
-        col.table === 'transactions' ? r.rid : (ownerCol === 'transaction_id' || col.table === 'journal_lines' ? r.txn : null);
-      const otherTxns = rows.map(ownerTxn).filter((x): x is string => !!x && !inT.has(x));
-      const status = await statusesOf(ex, tenantId, otherTxns);
+      const byTxn = col.table === 'journal_lines' || !!ownerCol;
+      // Ownership is filtered in SQL BEFORE the limit: a batch that brought in the chart of accounts has
+      // thousands of its own lines on those accounts, which must not hide one posting from outside.
+      const where = [
+        `${col.column} IN (SELECT id FROM pg_temp.undo_ids)`,
+        col.hasTenant ? `tenant_id = '${tenantId}'` : null,
+        col.hasBatch ? `import_batch_id IS DISTINCT FROM '${batchId}'` : null,
+        col.table === 'transactions' ? 'id NOT IN (SELECT id FROM pg_temp.undo_ids)' : null,
+        byTxn && col.hasTxn ? '(transaction_id IS NULL OR transaction_id NOT IN (SELECT id FROM pg_temp.undo_ids))' : null,
+      ].filter(Boolean).join(' AND ');
+      const rows = (await ex.execute(sql.raw(`SELECT ${pick} FROM ${col.table} WHERE ${where} LIMIT 200`))).rows as Array<{
+        ref: string; rid: string | null; txn: string | null }>;
+      if (rows.length === 0) continue;
+      const ownerTxn = (r: { rid: string | null; txn: string | null }) => (col.table === 'transactions' ? r.rid : byTxn ? r.txn : null);
+      const status = await statusesOf(ex, tenantId, rows.map(ownerTxn).filter((x): x is string => !!x));
       for (const r of rows) {
-        if (r.batch === batchId) continue; // a row the batch created
         const owner = ownerTxn(r);
-        if (owner && inT.has(owner)) continue; // the batch's own lines and artifacts
-        if (col.table === 'journal_lines' || col.table === 'transactions' || ownerCol) {
-          const dead = owner ? DEAD.has(status.get(owner) ?? '') : false;
-          if (dead && !masters.has(r.ref)) continue; // a dead transaction's link to a batch document: kept, net zero
-          blockers.push({
-            kind: `${col.table}.${col.column}`, id: r.rid ?? r.ref,
-            reason: dead ? 'used_by_void_transaction' : (REASONS[col.table] ?? 'linked'), target: r.ref,
-          });
-          if (dead && !deadTransactionsBlock()) blockers.pop();
-          continue;
+        const deadOwner = owner ? DEAD.has(status.get(owner) ?? '') : false;
+        if (deadOwner && !masters.has(r.ref)) {
+          // A void or deleted transaction's settlement stamp naming a batch document: cleared with the
+          // batch (audited) so nothing points at a deleted id. Any other pointer of it blocks.
+          if (col.table === 'journal_lines' && col.column === 'source_transaction_id' && r.rid) {
+            dead.settlementLines.push(r.rid);
+            continue;
+          }
         }
-        blockers.push({ kind: `${col.table}.${col.column}`, id: r.rid ?? r.ref, reason: REASONS[col.table] ?? 'linked', target: r.ref });
+        blockers.push({
+          kind: `${col.table}.${col.column}`, id: r.rid ?? r.ref,
+          reason: deadOwner ? 'used_by_void_transaction' : (REASONS[col.table] ?? 'linked'), target: r.ref,
+        });
+        if (deadOwner && masters.has(r.ref) && !deadTransactionsBlock()) blockers.pop();
       }
     }
   }
-
   // Ids kept inside jsonb (findDeleteBlockingLinks reads the same).
   if (T.length > 0) {
     const pr = (await ex.execute(sql`
@@ -378,6 +392,28 @@ export async function findUndoBlockers(
   const seen = new Set<string>();
   const unique = blockers.filter((b) => { const k = `${b.kind}|${b.id}`; if (seen.has(k)) return false; seen.add(k); return true; });
   return { blockers: unique, dead };
+}
+
+/**
+ * Every row (outside the audit and import tables) that points at one of
+ * ids, by the same column sweep undo uses. After an undo this must find
+ * nothing for the ids it deleted (tests).
+ */
+export async function findPointers(ex: Tx, tenantId: string, ids: string[]): Promise<Array<{ kind: string; rid: string | null; ref: string }>> {
+  if (ids.length === 0) return [];
+  await ex.execute(sql.raw('CREATE TEMP TABLE IF NOT EXISTS undo_ids (id uuid PRIMARY KEY) ON COMMIT DROP'));
+  await ex.execute(sql.raw('TRUNCATE pg_temp.undo_ids'));
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    await ex.execute(sql.raw(`INSERT INTO pg_temp.undo_ids (id) VALUES ${chunk.map((x) => `('${x}')`).join(',')} ON CONFLICT DO NOTHING`));
+  }
+  const out: Array<{ kind: string; rid: string | null; ref: string }> = [];
+  for (const col of await sweepColumns(ex)) {
+    const where = `"${col.column}" IN (SELECT id FROM pg_temp.undo_ids)${col.hasTenant ? ` AND tenant_id = '${tenantId}'` : ''}`;
+    const rows = (await ex.execute(sql.raw(`SELECT "${col.column}"::text AS ref, ${col.hasId ? 'id::text' : 'NULL::text'} AS rid FROM ${col.table} WHERE ${where} LIMIT 20`))).rows as Array<{ ref: string; rid: string | null }>;
+    for (const r of rows) out.push({ kind: `${col.table}.${col.column}`, rid: r.rid, ref: r.ref });
+  }
+  return out;
 }
 
 /** Stamps taken at the end of a commit, in the commit transaction (database clock). */
@@ -451,6 +487,10 @@ export async function deleteBatchRows(tx: Tx, tenantId: string, created: Created
   await deleteIds(tx, 'vendor_credit_applications', 'id', dead.vendorCreditApplications, tenantId);
   await deleteIds(tx, 'deposit_lines', 'id', dead.depositLines);
   await deleteIds(tx, 'transaction_tax_lines', 'id', dead.taxLines, tenantId);
+  for (let i = 0; i < dead.settlementLines.length; i += CHUNK) {
+    const chunk = dead.settlementLines.slice(i, i + CHUNK);
+    await tx.execute(sql.raw(`UPDATE journal_lines SET source_transaction_id = NULL WHERE tenant_id = '${tenantId}' AND id = ANY(ARRAY[${chunk.map((x) => `'${x}'`).join(',')}]::uuid[])`));
+  }
   if (T.length > 0) {
     // Links inside the batch.
     await deleteIds(tx, 'payment_applications', 'payment_id', T, tenantId);

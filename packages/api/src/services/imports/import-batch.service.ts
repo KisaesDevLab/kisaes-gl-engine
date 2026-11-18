@@ -265,7 +265,8 @@ export async function getBatch(tenantId: string, companyId: string, id: string):
   const progress = running
     ? (progressByBatch.get(id) ?? { step: 'waiting', done: 0, total: 0 })
     : null;
-  return { batch, progress, ...(batch.error && b.status === 'failed' ? { error: batch.error } : {}) };
+  // error: a failed commit (status failed), or a failed undo (back at committed with the error).
+  return { batch, progress, ...(batch.error && (b.status === 'failed' || b.status === 'committed') ? { error: batch.error } : {}) };
 }
 
 function encodeCursor(b: { createdAt: Date; id: string }): string {
@@ -731,6 +732,7 @@ export async function runUndoJob(req: CommitRequest): Promise<void> {
       removedLinks: {
         paymentApplications: dead.paymentApplications.length, billPaymentApplications: dead.billPaymentApplications.length,
         vendorCreditApplications: dead.vendorCreditApplications.length, depositLines: dead.depositLines.length, taxLines: dead.taxLines.length,
+        settlementStampsCleared: dead.settlementLines,
       },
       backupRef: req.backupRef ?? null,
     }, userId, tx);

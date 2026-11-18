@@ -18,6 +18,7 @@ import {
 import { importsRouter } from './imports.routes.js';
 import { paymentsRouter } from './payments.routes.js';
 import * as batchService from '../services/imports/import-batch.service.js';
+import { loadCreatedSets, findPointers } from '../services/imports/import-undo.service.js';
 import * as ledger from '../services/ledger.service.js';
 import { hashClosingPassword } from '../services/closing-password.service.js';
 import { Harness, type Co, key } from './receivables.test-support.js';
@@ -280,5 +281,71 @@ describe('recovery of an interrupted undo', () => {
     await batchService.recoverInterruptedBatches();
     expect((await batchRow(id)).status).toBe('committed');
     expect(await stamped(c, id)).toEqual({ accounts: 5, contacts: 2, transactions: 7, tags: 0 });
+  });
+});
+
+describe('undo sweep at size and leftovers (U-261)', () => {
+  it('a batch with hundreds of its own lines on its accounts still sees one posting from outside', async () => {
+    const coa = await upload(c, 'coa.csv', COA_CSV, 'coa');
+    const head = 'Journal, Date, Reference, Description, Account, Account Name, Debit Amount, Credit Amount, Memo, Department, Updated by\n';
+    let body = '';
+    for (const y of [2015, 2016, 2017, 2018, 2019]) body += glCsv(y, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]).split('\n').slice(1).join('\n');
+    const gl = await upload(c, 'gl-big.csv', head + body, 'gl_transactions');
+    const id = await createBatch([coa, gl]);
+    expect((await run(`/batches/${id}/commit`, {})).status).toBe(202);
+    expect((await batchRow(id)).status).toBe('committed');
+    const lines = await db.execute(sql`SELECT count(*)::int AS n FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id WHERE t.import_batch_id = ${id}`);
+    expect((lines.rows[0] as { n: number }).n).toBeGreaterThan(200);
+    const [cash] = await db.select().from(accounts).where(and(eq(accounts.tenantId, c.tenantId), eq(accounts.accountNumber, '9101')));
+    await ledger.postTransaction(c.tenantId, {
+      txnType: 'journal_entry', txnDate: '2020-06-01', memo: 'later',
+      lines: [{ accountId: cash!.id, debit: '10', credit: '0' }, { accountId: c.roles['expense']!, debit: '0', credit: '10' }],
+    }, c.userId, c.companyId);
+    const r = await post(`/batches/${id}/undo`, {});
+    expect(r.status).toBe(409);
+    expect(r.json['error'].details.blockers).toContainEqual(expect.objectContaining({ kind: 'journal_lines.account_id', target: cash!.id }));
+  });
+
+  it('after an undo with a voided payment, no column anywhere points at a deleted id', async () => {
+    const { id } = await committedSet();
+    const inv = await h.invoice(c, { date: '2025-03-20', total: '250.00' });
+    await adopt(id, inv);
+    const pay = await receive(inv, '100.00');
+    await voidPayment(pay);
+    const created = await db.transaction((tx) => loadCreatedSets(tx, c.tenantId, id));
+    const deleted = [...created.txns, ...created.lines, ...created.accounts, ...created.contacts, ...created.items, ...created.tags, ...created.tagGroups];
+    expect((await run(`/batches/${id}/undo`, {})).status).toBe(202);
+    expect((await batchRow(id)).status).toBe('undone');
+    const left = await db.transaction((tx) => findPointers(tx, c.tenantId, deleted));
+    expect(left).toEqual([]);
+  });
+
+  it('accounts the import changed and the suspense account it made are restored exactly; a later rename blocks', async () => {
+    const [seeded] = await db.select().from(accounts).where(and(
+      eq(accounts.tenantId, c.tenantId), eq(accounts.accountType, 'expense'), sql`${accounts.accountNumber} IS NOT NULL`, sql`${accounts.systemTag} IS NULL`)).limit(1);
+    const coaCsv = COA_CSV + `"${seeded!.accountNumber}","Renamed by import","E","Expenses","",""\n`;
+    const before = await companySnapshot(c);
+    const coa = await upload(c, 'coa.csv', coaCsv, 'coa', { updateExistingCoa: true });
+    const gl = await upload(c, 'gl.csv', glCsv(2025, [1, 2], '9999'), 'gl_transactions');
+    const id = await createBatch([coa, gl]);
+    expect((await run(`/batches/${id}/commit`, {})).status).toBe(202);
+    const committed = await batchRow(id);
+    expect(committed.status, JSON.stringify(committed.error)).toBe('committed');
+    const [renamed] = await db.select().from(accounts).where(eq(accounts.id, seeded!.id));
+    expect(renamed!.name).toBe('Renamed by import');
+    expect((committed.result as any).sessions[gl].unmappedToSuspense).toBe(1);
+
+    expect((await run(`/batches/${id}/undo`, {})).status).toBe(202);
+    expect((await batchRow(id)).status).toBe('undone');
+    expect(await companySnapshot(c)).toEqual(before);
+
+    // Again, then someone renames the account the import changed: undo is blocked.
+    const coa2 = await upload(c, 'coa2.csv', coaCsv, 'coa', { updateExistingCoa: true });
+    const id2 = await createBatch([coa2]);
+    expect((await run(`/batches/${id2}/commit`, {})).status).toBe(202);
+    await db.update(accounts).set({ name: 'Renamed by hand' }).where(eq(accounts.id, seeded!.id));
+    const r = await post(`/batches/${id2}/undo`, {});
+    expect(r.status).toBe(409);
+    expect(r.json['error'].details.blockers).toContainEqual(expect.objectContaining({ kind: 'accounts', id: seeded!.id, reason: 'changed_since' }));
   });
 });
