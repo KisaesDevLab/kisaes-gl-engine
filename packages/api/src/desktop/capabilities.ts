@@ -1675,5 +1675,43 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * the document counters. Without open-item files nothing changes. POST /imports/:id/commit (not dryRun) now needs the
    * owner role or super admin (403 IMPORT_ADMIN_REQUIRED).
    */
-  'qbd-open-items-v1',];
+  'qbd-open-items-v1',
+  /**
+   * U-265 (ClientLedger P31 E2b; no migration). Names, account and class mapping, items, inventory valuation.
+   * Preview: accountMatches [{sourceKey (the number, else the name: the accountMap key), number?, name?, match
+   * existing|create|unmatched, accountId?, matchedBy? number|name, rows, systemRole?}] over EVERY row of a chart, trial
+   * balance, journal or item file (not the 5,000-row sample), sorted by sourceKey; a chart row is existing when its
+   * number is in the chart, else create. Batch options: accountMap {sourceKey: accountId | "create"} (400
+   * IMPORT_ACCOUNT_MAP_INVALID {keys} for an id outside the company); a chart row mapped to an id is not created and its
+   * lines post there; classMap {className: {group?, tag}}: journal lines of that class get the tag (found by name, else
+   * created in the group, found by name or created; both undone with the batch); GL result classesMapped. A batch from
+   * POST /imports/batches never posts to suspense: any unresolved account fails it, all listed (422
+   * IMPORT_UNMAPPED_ACCOUNT {rowNumber, details {unmappedAccountKeys (<= 500), unmappedCount}}); the old POST
+   * /imports/:id/commit keeps unmappedAccountsToSuspense and its contact behaviour. Names in a batch: a name on the
+   * customer and the vendor list (or an open item's name found as the other kind) is one contact of kind both (Q-77;
+   * result mergedToBoth; undo restores the kind of a contact the batch did not create); contacts upload contactKind
+   * "other" (QuickBooks Desktop Other Names; 400 IMPORT_CONTACT_KIND_UNSUPPORTED elsewhere) imports vendors (Q-78);
+   * inactive names come in inactive (result inactive); a customer list's "Customer:Job" row is folded into its customer
+   * (result jobsFolded; no projects list yet, U-35) and an open item named "Customer:Job" goes to the customer with
+   * "; job <Job>" in its memo; QBD Open Invoices "<Customer> - Other" headings are the customer. QuickBooks Desktop
+   * Journal Paycheck rows keep no Name or Memo (Q-P31m). Kind items (Item, Type required; Description, Purchase
+   * Description, Price (a discount takes 10%), Cost, Account, Expense Account, COGS Account, Asset Account, Preferred
+   * Vendor, Sales Tax Code, Active Status, Reorder Pt; QBD, QBO and Generic, CSV or xlsx): through the item service in
+   * the batch transaction; Types per ITEM_TYPE_MAP (Inventory Assembly as inventory_part), sales tax items, groups and
+   * payment items listed but not imported, unknown Type IMPORT_UNKNOWN_TYPE, IMPORT_ITEM_NO_ACCOUNT,
+   * IMPORT_DUPLICATE_ITEM; an existing name is left as it is; result itemsSkipped {sales_tax, group, payment, exists,
+   * no_account}, inactive. Kind inventory_valuation (QBD Inventory Valuation Summary: item from the Item column or the
+   * headings, "Parent:Sub", "<Parent> - Other" = the parent; On Hand, Asset Value exactly, never quantity x average
+   * cost; report date from "As of" else options.reportDate, else IMPORT_BAD_DATE; row errors IMPORT_VALUATION_NEGATIVE,
+   * IMPORT_VALUATION_NO_QUANTITY, IMPORT_VALUATION_CENTS, IMPORT_DUPLICATE_ITEM; preview valuationTotal): opening stock
+   * per item at the report date for the exact quantity and value, offset to "Inventory before conversion" (plain other
+   * current asset, found by name or created); in such a batch trial balance and journal lines on inventory asset accounts
+   * post there (redirectedAccountKeys), so it ends 0.00 and Inventory Asset equals the valuation; batch
+   * result.historyAccounts.inventory. Commit refusals: 422 IMPORT_UNKNOWN_ITEM / IMPORT_ITEM_NOT_INVENTORY {items
+   * [{rowNumber, item, reason unknown|ambiguous|other_company|not_inventory}]}, IMPORT_VALUATION_MISMATCH; before the
+   * 202, 409 IMPORT_INVENTORY_OFF (inventory items or a valuation with inventory off) and 409 INVENTORY_PERIOD_CLOSED
+   * (valuation dated on or before the closing date). Batch order: chart, contacts, items, trial balance, journal, open
+   * invoices, unpaid bills, inventory valuation. Generic templates for items and inventory_valuation.
+   */
+  'qbd-mapping-v1',];
 
