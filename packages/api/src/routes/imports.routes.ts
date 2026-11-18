@@ -226,7 +226,11 @@ importsRouter.post('/batches', validate(importBatchCreateSchema), describe({
     + 'before options.historyFrom are not posted. batch.dateCheck {conversionDate, historyFrom, historySkipped, '
     + 'openingBalanceDate, firstJournalDate, warnings [{code IMPORT_HISTORY_GAP|IMPORT_JOURNAL_BEFORE_OPENING, message, '
     + 'openingBalanceDate, firstJournalDate, days?}]} (warnings never block). Several journal files per batch (one per '
-    + 'year); their dates may not overlap each other or a committed journal file (409 IMPORT_PERIOD_OVERLAP).',
+    + 'year); their dates may not overlap each other or a committed journal file (409 IMPORT_PERIOD_OVERLAP). U-268 '
+    + '(imports-transactions-v1): a "transactions" file (kind transactions, Generic) posts its invoices, bills and journal '
+    + 'entries through their services in the batch transaction (no sales tax); a reference the company lacks fails the '
+    + 'commit with 422 IMPORT_UNKNOWN_REF {rowNumber, field, refs [{rowNumber, field, reason}], refCount}; such files are '
+    + 'never overlap-checked.',
   tags: ['Imports'],
   body: importBatchCreateSchema,
   response: z.object({ batch: batchSchema }),
