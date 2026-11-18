@@ -42,6 +42,8 @@ export const items = pgTable('items', {
   unitSetId: uuid('unit_set_id'),
   defaultPurchaseUnitId: uuid('default_purchase_unit_id'),
   defaultSaleUnitId: uuid('default_sale_unit_id'),
+  // U-261 (migration 0282): the Bulk Import batch that created this item.
+  importBatchId: uuid('import_batch_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

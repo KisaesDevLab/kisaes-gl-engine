@@ -336,6 +336,9 @@ export interface LockDateContext {
   // cleared with the password). A batch posting many rows into a closed
   // period compares the password once per hash instead of once per row.
   verifiedClosingPasswordHashes?: Set<string>;
+  // A Bulk Import batch job (U-262) writes ONE closing_date_override audit row
+  // for the whole batch; the postings inside it write none of their own.
+  batchOverrideAudit?: boolean;
 }
 
 /** A permitted closed-period posting, for the closing_date_override audit row. */
@@ -347,6 +350,8 @@ export interface LockOverride {
   lockDateSetAt: unknown;
   txnDate: string;
   userId?: string;
+  /** Audited once by the batch that posted it (U-262); auditLockOverride writes nothing. */
+  batched?: boolean;
 }
 
 /** What the override touched: the transaction and its old/new date. */
@@ -367,6 +372,7 @@ export async function auditLockOverride(
   override: LockOverride,
   facts: LockOverrideFacts = {},
 ) {
+  if (override.batched) return;
   await auditLog(tenantId, 'override', 'closing_date_override', facts.txnId ?? override.companyId ?? tenantId,
     { lockDate: override.lockDate, lockDateSetBy: override.lockDateSetBy, lockDateSetAt: override.lockDateSetAt },
     {
@@ -428,6 +434,7 @@ export async function checkLockDate(
       lockDateSetAt: row?.lock_date_set_at ?? null,
       txnDate,
       userId: ctx?.userId,
+      ...(ctx?.batchOverrideAudit ? { batched: true } : {}),
     };
     if (!opts.deferAudit) await auditLockOverride(executor, tenantId, override, opts);
     return override;

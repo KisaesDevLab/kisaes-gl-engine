@@ -120,8 +120,8 @@ describe('Imports Service', () => {
       expect(result1.result.created).toBe(5);
       expect(result1.result.skipped).toBe(0);
 
-      // Run again — every row should now be skipped.
-      const out2 = await importsService.createSession({
+      // Again (U-263): the same data is refused at upload, naming the import.
+      await expect(importsService.createSession({
         tenantId,
         companyId,
         userId,
@@ -129,10 +129,7 @@ describe('Imports Service', () => {
         kind: 'coa',
         sourceSystem: 'accounting_power',
         options: {},
-      });
-      const result2 = await importsService.commitSession(tenantId, companyId, userId, out2.session.id);
-      expect(result2.result.created).toBe(0);
-      expect(result2.result.skipped).toBe(5);
+      })).rejects.toMatchObject({ code: 'IMPORT_ALREADY_COMMITTED', details: { sessionId: out1.session.id } });
 
       const allAccts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
       expect(allAccts.length).toBe(5);
@@ -263,11 +260,22 @@ TOTAL,,,
       });
       await importsService.commitSession(tenantId, companyId, userId, first.session.id);
 
-      const second = await importsService.createSession({
+      // The same data (U-263): refused at upload.
+      await expect(importsService.createSession({
         tenantId,
         companyId,
         userId,
         file: fileFromText('tb-again.csv', csv),
+        kind: 'trial_balance',
+        sourceSystem: 'accounting_power',
+        options: { tbColumn: 'beginning', tbReportDate: '2025-01-01' },
+      })).rejects.toMatchObject({ code: 'IMPORT_ALREADY_COMMITTED' });
+      // Other data for the same (date, column): the opening entry is still refused at commit.
+      const second = await importsService.createSession({
+        tenantId,
+        companyId,
+        userId,
+        file: fileFromText('tb-other.csv', csv.replace(/"1,000\.00"/g, '"2,000.00"').replace(/"-1,000\.00"/g, '"-2,000.00"')),
         kind: 'trial_balance',
         sourceSystem: 'accounting_power',
         options: { tbColumn: 'beginning', tbReportDate: '2025-01-01' },
@@ -413,8 +421,8 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       expect(txns.length).toBe(2);
       expect(txns.find((t) => /VOID/.test(t.memo ?? ''))).toBeDefined();
 
-      // Re-commit (after a dup-upload): everything should be skipped.
-      const again = await importsService.createSession({
+      // Again (U-263): the same data is refused at upload, naming the import.
+      await expect(importsService.createSession({
         tenantId,
         companyId,
         userId,
@@ -422,19 +430,7 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
         kind: 'gl_transactions',
         sourceSystem: 'accounting_power',
         options: {},
-      });
-      const againCommit = await importsService.commitSession(
-        tenantId,
-        companyId,
-        userId,
-        again.session.id,
-      );
-      // sourceId is keyed on the file hash (not sessionId), so a
-      // second upload of the same bytes generates the same sourceIds.
-      // Every entry should be deduped against the rows posted by the
-      // first commit, leaving zero new transactions.
-      expect(againCommit.result.created).toBe(0);
-      expect(againCommit.result.skipped).toBe(2);
+      })).rejects.toMatchObject({ code: 'IMPORT_ALREADY_COMMITTED', details: { sessionId: out.session.id } });
       const txnCount = await db.select().from(transactions).where(eq(transactions.tenantId, tenantId));
       expect(txnCount.length).toBe(2); // unchanged from the first commit
     });
@@ -578,7 +574,7 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
       const commit = await importsService.commitSession(tenantId, companyId, userId, out.session.id);
       expect(commit.result.created).toBe(2);
 
-      const re = await importsService.createSession({
+      await expect(importsService.createSession({
         tenantId,
         companyId,
         userId,
@@ -586,10 +582,7 @@ Cythia Martin","","Monett","MO","65708",,,"",False,False,True,Net 15,5920,""
         kind: 'contacts',
         sourceSystem: 'quickbooks_online',
         options: { contactKind: 'customer' },
-      });
-      const commit2 = await importsService.commitSession(tenantId, companyId, userId, re.session.id);
-      expect(commit2.result.created).toBe(0);
-      expect(commit2.result.skipped).toBe(2);
+      })).rejects.toMatchObject({ code: 'IMPORT_ALREADY_COMMITTED' });
     });
   });
 

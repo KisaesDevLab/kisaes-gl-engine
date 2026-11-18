@@ -64,6 +64,16 @@ export function runWithoutOverride<T>(fn: () => Promise<T>): Promise<T> {
   return storage.run({ userType: 'client', overrideConfirmed: false }, fn);
 }
 
+/**
+ * Runs `fn` with an explicit closed-period context, for background work a
+ * request started (a Bulk Import batch job, U-262). The request's own store
+ * is wiped when its response finishes, so the job gets its own copy, made
+ * before the answer, and clears it when done (clearLockContextSecrets).
+ */
+export function runWithLockContext<T>(ctx: LockDateContext, fn: () => Promise<T>): Promise<T> {
+  return storage.run(ctx, fn);
+}
+
 export function lockContextMiddleware(req: Request, res: Response, next: NextFunction) {
   const closingPassword = takeClosingPassword(req);
   const ctx: LockDateContext = {

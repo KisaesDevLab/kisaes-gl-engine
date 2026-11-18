@@ -1625,5 +1625,34 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * every place the totals carry.
    */
   'imports-amounts-v1',
-];
+  /**
+   * U-261, U-262, U-263 (ClientLedger P31 E1; migration 0282). Bulk Import batches: POST /imports/batches
+   * {sourceSystem, kind conversion|single|transactions, sessionIds[], options {fiscalYearStartMonth?, historyFrom?,
+   * conversionDate?, requireEmptyCompany?, accountMap?, classMap?}} 201 {batch} (draft); POST /imports/batches/:id/commit
+   * and /undo (Idempotency-Key; body {backupRef?, closingPassword?, confirmClosedPeriod?}) check synchronously, claim the
+   * batch in its own transaction and answer 202 {batchId}; the work runs in ONE database transaction under a per-company
+   * advisory lock (409 IMPORT_BUSY while another import or undo runs). GET /imports/batches/:id {batch, progress
+   * {step,done,total} | null, error?}; GET /imports/batches?limit&cursor {batches, nextCursor}. States draft -> committing
+   * -> committed | failed (error {code, message, status?, rowNumber?, sessionId?}, nothing posted; retry with a new key);
+   * committed -> undoing -> undone | committed (error). Engine start: committing -> failed IMPORT_INTERRUPTED, undoing ->
+   * committed. Undo is a hard delete of every row the batch created (import_batch_id on transactions, accounts,
+   * contacts, items, tags, tag_groups), stored balances moved back exactly, prior values restored; 409
+   * IMPORT_UNDO_BLOCKED {blockers [{kind, id, reason, target?}], blockerCount} when anything outside the batch points at
+   * what it created (reasons reconciled, deposited, payment_applied, bill_paid, credit_applied, bank_match, tax_filed,
+   * billed, used_by_other_transaction, used_by_void_transaction, edited, changed_since, inventory_used, payroll, attached,
+   * linked). Voided payment applications are deleted with the batch and the voided payment stays; a void transaction
+   * that points at a batch-created account, contact, item or tag blocks (used_by_void_transaction). One delete audit row
+   * per removed record (before-image) plus one for the batch. Closed periods: the earliest date is checked before the
+   * 202 (423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429; staff confirm with confirmClosedPeriod when no
+   * password is set); one closing_date_override audit row per batch. Re-import (by parsed-row SHA-256): 409
+   * IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} at upload and commit; 409 IMPORT_PERIOD_OVERLAP {batchId|null,
+   * from, to} for journal dates overlapping a committed journal of the same source or another journal of the batch; an
+   * undone batch frees both. Upload takes role post|reference (reference files are never posted). Other refusals: 409
+   * IMPORT_SESSION_IN_BATCH, IMPORT_TERMINAL, IMPORT_HAS_ERRORS, IMPORT_COMPANY_NOT_EMPTY, IMPORT_FISCAL_YEAR_LOCKED,
+   * IMPORT_BATCH_UNDONE, IMPORT_BATCH_NOT_COMMITTED; 400 IMPORT_SOURCE_MISMATCH, IMPORT_BATCH_EMPTY. Rights: commit and
+   * undo need the owner role or super admin (403 IMPORT_ADMIN_REQUIRED); /api/v1/imports is in REFUSE_PREFIXES (403
+   * SENSITIVE_HIDDEN for a viewer with any hidden account). The old POST /imports/:id/commit runs as a one-session batch
+   * (kind single), synchronously; a failure posts nothing.
+   */
+  'imports-batch-v1',];
 

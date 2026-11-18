@@ -9,10 +9,12 @@
 // debits-equal-credits / scope checks / lock-date enforcement.
 
 import * as crypto from 'crypto';
-import { and, eq, desc, isNull, or, like } from 'drizzle-orm';
-import { db } from '../../db/index.js';
+import { and, eq, desc, isNull, or, like, inArray, ne, sql, asc } from 'drizzle-orm';
+import { db, type DbOrTx, type Tx } from '../../db/index.js';
 import {
   importSessions,
+  importRows,
+  importBatches,
   accounts,
   contacts,
   transactions,
@@ -39,7 +41,7 @@ import {
 } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
 // Unmapped TB/GL accounts land here instead of failing the import.
-import { getSuspenseAccountId } from '../system-accounts.service.js';
+import { findSystemAccountId, getOrCreateSystemAccount, SUSPENSE_TAG } from '../system-accounts.service.js';
 import * as ap from './adapters/accounting-power.js';
 import * as qbo from './adapters/quickbooks-online.js';
 import * as qbd from './adapters/quickbooks-desktop.js';
@@ -53,23 +55,173 @@ function sha256(buf: Buffer): string {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+/** JSON with object keys sorted at every depth, so equal content gives equal text. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalJson(v)).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/** Drops `rowNumber` at every depth: a re-export with another header or preamble shifts row numbers only. */
+function withoutRowNumbers(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((v) => withoutRowNumbers(v));
+  if (value === null || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k !== 'rowNumber') out[k] = withoutRowNumbers(v);
+  }
+  return out;
+}
+
+/**
+ * U-263 (review S10): the session's content hash, SHA-256 over kind, source,
+ * report date and the normalized parsed rows (row numbers dropped, keys
+ * sorted). The same data exported twice (other bytes, other preamble) gives
+ * the same hash, so a re-import is refused even when the file differs.
+ */
+export function computeRowHash(
+  kind: string,
+  sourceSystem: string,
+  reportDate: string | null,
+  parsed: unknown,
+): string {
+  const text = canonicalJson({ kind, sourceSystem, reportDate, rows: withoutRowNumbers(jsonSafe(parsed)) });
+  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+/** First and last entry date of a journal file (null for other kinds or an empty file). */
+function glDateRange(kind: ImportKind, parsed: unknown): { from: string | null; to: string | null } {
+  if (kind !== 'gl_transactions') return { from: null, to: null };
+  let from: string | null = null;
+  let to: string | null = null;
+  for (const e of (parsed as CanonicalGlEntry[]) ?? []) {
+    if (!e.date) continue;
+    if (from === null || e.date < from) from = e.date;
+    if (to === null || e.date > to) to = e.date;
+  }
+  return { from, to };
+}
+
+/** Session roles (U-261): 'post' sessions are posted; 'reference' sessions are only compared against. */
+export type ImportSessionRole = 'post' | 'reference';
+
+/**
+ * U-263: 409 IMPORT_ALREADY_COMMITTED when a committed batch holds a session
+ * with the same content hash in this company (an undone batch frees it).
+ */
+export async function assertNotAlreadyCommitted(
+  ex: DbOrTx,
+  tenantId: string,
+  companyId: string,
+  rowHash: string,
+  exceptSessionId?: string,
+): Promise<void> {
+  const [prev] = await ex
+    .select({ id: importSessions.id, batchId: importSessions.batchId, committedAt: importSessions.committedAt })
+    .from(importSessions)
+    .where(and(
+      eq(importSessions.tenantId, tenantId),
+      eq(importSessions.companyId, companyId),
+      eq(importSessions.rowHash, rowHash),
+      eq(importSessions.activeCommit, true),
+      exceptSessionId ? ne(importSessions.id, exceptSessionId) : undefined,
+    ))
+    .limit(1);
+  if (prev) {
+    throw AppError.conflict(
+      'This file was already imported into this company. Undo that import first to bring it in again.',
+      'IMPORT_ALREADY_COMMITTED',
+      { batchId: prev.batchId, sessionId: prev.id, committedAt: prev.committedAt ? prev.committedAt.toISOString() : null },
+    );
+  }
+}
+
+/**
+ * U-263: 409 IMPORT_PERIOD_OVERLAP when a journal file's dates overlap a
+ * journal file of the same source that a committed batch holds in this
+ * company (an undone batch frees it).
+ */
+export async function assertNoCommittedOverlap(
+  ex: DbOrTx,
+  tenantId: string,
+  companyId: string,
+  sourceSystem: string,
+  from: string | null,
+  to: string | null,
+  exceptSessionIds: string[] = [],
+): Promise<void> {
+  if (!from || !to) return;
+  const [prev] = await ex
+    .select({ id: importSessions.id, batchId: importSessions.batchId, dateFrom: importSessions.dateFrom, dateTo: importSessions.dateTo })
+    .from(importSessions)
+    .where(and(
+      eq(importSessions.tenantId, tenantId),
+      eq(importSessions.companyId, companyId),
+      eq(importSessions.sourceSystem, sourceSystem),
+      eq(importSessions.kind, 'gl_transactions'),
+      eq(importSessions.activeCommit, true),
+      sql`${importSessions.dateFrom} <= ${to} AND ${importSessions.dateTo} >= ${from}`,
+      exceptSessionIds.length > 0 ? sql`${importSessions.id} NOT IN (${sql.join(exceptSessionIds.map((i) => sql`${i}`), sql`, `)})` : undefined,
+    ))
+    .limit(1);
+  if (prev) {
+    throw AppError.conflict(
+      'These journal dates overlap a journal file already imported into this company.',
+      'IMPORT_PERIOD_OVERLAP',
+      {
+        batchId: prev.batchId, sessionId: prev.id,
+        from: prev.dateFrom! > from ? prev.dateFrom : from,
+        to: prev.dateTo! < to ? prev.dateTo : to,
+      },
+    );
+  }
+}
+
+/** The parsed canonical rows of a session: import_rows (U-261), or the legacy jsonb column. */
+export async function loadParsedRows(
+  ex: DbOrTx,
+  row: { id: string; parsedRows: unknown },
+): Promise<unknown[]> {
+  if (Array.isArray(row.parsedRows)) return row.parsedRows as unknown[];
+  const rows = await ex
+    .select({ data: importRows.data })
+    .from(importRows)
+    .where(eq(importRows.sessionId, row.id))
+    .orderBy(asc(importRows.rowNo));
+  return rows.map((r) => r.data);
+}
+
+const IMPORT_ROWS_CHUNK = 1000;
+
+async function insertImportRows(tx: Tx, sessionId: string, parsed: unknown[]): Promise<void> {
+  for (let i = 0; i < parsed.length; i += IMPORT_ROWS_CHUNK) {
+    const chunk = parsed.slice(i, i + IMPORT_ROWS_CHUNK);
+    await tx.insert(importRows).values(chunk.map((data, j) => ({ sessionId, rowNo: i + j, data: data as never })));
+  }
+}
+
 /**
  * Resolve a set of tag names to ids, creating any that don't exist yet.
  * Matching is case-insensitive on the existing tenant tags (tag names are
  * unique per tenant by convention). Returns a lowercased-name → id map plus
  * the count of tags newly created, so the import can report it. Created tags
- * are scoped to the import's company.
+ * are scoped to the import's company and stamped with the batch (U-261).
  */
 async function ensureTags(
+  ex: DbOrTx,
   tenantId: string,
   companyId: string,
   names: string[],
+  batchId: string | null,
 ): Promise<{ map: Map<string, string>; created: number }> {
   const wanted = Array.from(new Set(names.map((n) => n.trim()).filter(Boolean)));
   const map = new Map<string, string>();
   if (wanted.length === 0) return { map, created: 0 };
 
-  const existing = await db
+  const existing = await ex
     .select({ id: tags.id, name: tags.name })
     .from(tags)
     .where(eq(tags.tenantId, tenantId));
@@ -77,16 +229,16 @@ async function ensureTags(
 
   const toCreate = wanted.filter((n) => !map.has(n.toLowerCase()));
   if (toCreate.length > 0) {
-    const inserted = await db
+    const inserted = await ex
       .insert(tags)
-      .values(toCreate.map((name) => ({ tenantId, companyId, name })))
+      .values(toCreate.map((name) => ({ tenantId, companyId, name, importBatchId: batchId })))
       .returning({ id: tags.id, name: tags.name });
     for (const t of inserted) map.set(t.name.toLowerCase(), t.id);
   }
   return { map, created: toCreate.length };
 }
 
-const TERMINAL_STATUSES: readonly ImportStatus[] = ['committed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES: readonly ImportStatus[] = ['committed', 'failed', 'cancelled', 'undone'];
 
 function isTerminal(s: string): boolean {
   return TERMINAL_STATUSES.includes(s as ImportStatus);
@@ -165,9 +317,13 @@ interface SessionRowDb {
   createdAt: Date;
   updatedAt: Date;
   committedAt: Date | null;
+  batchId?: string | null;
+  role?: string;
+  dateFrom?: string | null;
+  dateTo?: string | null;
 }
 
-function toSessionDto(row: SessionRowDb): ImportSession {
+export function toSessionDto(row: SessionRowDb): ImportSession {
   return {
     id: row.id,
     tenantId: row.tenantId,
@@ -186,6 +342,10 @@ function toSessionDto(row: SessionRowDb): ImportSession {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     committedAt: row.committedAt ? row.committedAt.toISOString() : null,
+    batchId: row.batchId ?? null,
+    role: (row.role ?? 'post') as ImportSessionRole,
+    dateFrom: row.dateFrom ?? null,
+    dateTo: row.dateTo ?? null,
   };
 }
 
@@ -399,6 +559,8 @@ export interface CreateSessionInput {
   kind: ImportKind;
   sourceSystem: SourceSystem;
   options: ImportUploadOptions;
+  /** U-261: 'post' (default) or 'reference' (a file only compared against, never posted). */
+  role?: ImportSessionRole;
 }
 
 export async function createSession(input: CreateSessionInput): Promise<{
@@ -460,29 +622,50 @@ export async function createSession(input: CreateSessionInput): Promise<{
   );
   const allErrors = [...parsed.errors, ...dbErrors];
 
-  const [inserted] = await db
-    .insert(importSessions)
-    .values({
-      tenantId: input.tenantId,
-      companyId: input.companyId,
-      kind: input.kind,
-      sourceSystem: input.sourceSystem,
-      status: 'uploaded',
-      originalFilename: input.file.originalname,
-      fileHash,
-      rowCount: parsed.rowCount,
-      errorCount: allErrors.length,
-      // jsonSafe scrubs any stray Decimal/Date instances so the JSONB
-      // round-trip is byte-for-byte equivalent and res.json() never
-      // throws on `[object Object]` tokens.
-      parsedRows: jsonSafe(parsed.parsed) as never,
-      validationErrors: jsonSafe(allErrors) as never,
-      options: input.options as never,
-      reportDate,
-      createdBy: input.userId,
-    })
-    .returning();
-  if (!inserted) throw AppError.internal('Failed to insert import session.');
+  // U-263: the same data already imported (by content, not bytes), or a
+  // journal file whose dates overlap one already imported, is refused here
+  // (and again at commit). Reference files are never posted, so never refused.
+  const role: ImportSessionRole = input.role ?? 'post';
+  const rowHash = computeRowHash(input.kind, input.sourceSystem, reportDate, parsed.parsed);
+  const range = glDateRange(input.kind, parsed.parsed);
+  if (role === 'post') {
+    await assertNotAlreadyCommitted(db, input.tenantId, input.companyId, rowHash);
+    await assertNoCommittedOverlap(db, input.tenantId, input.companyId, input.sourceSystem, range.from, range.to);
+  }
+
+  // jsonSafe scrubs any stray Decimal/Date instances so the JSONB
+  // round-trip is byte-for-byte equivalent and res.json() never
+  // throws on `[object Object]` tokens. The rows go to import_rows, one per
+  // row (U-261, review S8), in the transaction that inserts the session.
+  const safeRows = (jsonSafe(parsed.parsed) as unknown[] | null) ?? [];
+  const inserted = await db.transaction(async (tx) => {
+    const [s] = await tx
+      .insert(importSessions)
+      .values({
+        tenantId: input.tenantId,
+        companyId: input.companyId,
+        kind: input.kind,
+        sourceSystem: input.sourceSystem,
+        status: 'uploaded',
+        originalFilename: input.file.originalname,
+        fileHash,
+        rowCount: parsed.rowCount,
+        errorCount: allErrors.length,
+        parsedRows: null,
+        validationErrors: jsonSafe(allErrors) as never,
+        options: input.options as never,
+        reportDate,
+        createdBy: input.userId,
+        role,
+        rowHash,
+        dateFrom: range.from,
+        dateTo: range.to,
+      })
+      .returning();
+    if (!s) throw AppError.internal('Failed to insert import session.');
+    await insertImportRows(tx, s.id, safeRows);
+    return s;
+  });
   const session = toSessionDto(inserted as unknown as SessionRowDb);
   const preview = buildPreview(input.kind, parsed.parsed, allErrors, reportDate, input.options);
   return { session, preview, validationErrors: allErrors };
@@ -760,7 +943,7 @@ export async function getSession(
   const validationErrors = (row.validationErrors as ImportValidationError[] | null) ?? [];
   const preview = buildPreview(
     session.kind,
-    row.parsedRows,
+    await loadParsedRows(db, row),
     validationErrors,
     session.reportDate,
     session.options,
@@ -796,17 +979,31 @@ export async function deleteSession(
   companyId: string,
   id: string,
 ): Promise<boolean> {
-  const result = await db
-    .delete(importSessions)
-    .where(
-      and(
+  return await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ id: importSessions.id, batchId: importSessions.batchId })
+      .from(importSessions)
+      .where(and(
         eq(importSessions.id, id),
         eq(importSessions.tenantId, tenantId),
         eq(importSessions.companyId, companyId),
-      ),
-    )
-    .returning();
-  return result.length > 0;
+      ))
+      .for('update');
+    if (!row) return false;
+    // U-261: a session a batch holds goes with the batch; only a draft or
+    // failed batch lets one go (it then leaves the batch).
+    if (row.batchId) {
+      const [b] = await tx.select({ status: importBatches.status }).from(importBatches)
+        .where(eq(importBatches.id, row.batchId)).for('update');
+      if (b && !['draft', 'failed'].includes(b.status)) {
+        throw AppError.conflict('This file belongs to an import that was committed or is running.', 'IMPORT_SESSION_IN_BATCH',
+          { batchId: row.batchId, status: b.status });
+      }
+    }
+    await tx.delete(importRows).where(eq(importRows.sessionId, id));
+    await tx.delete(importSessions).where(eq(importSessions.id, id));
+    return true;
+  });
 }
 
 // ── Commit ────────────────────────────────────────────────────────
@@ -838,11 +1035,12 @@ export async function commitSession(
 
   // Re-validate against current DB state — accounts may have been
   // added since upload, or a competing TB import may have completed.
+  const parsedRows = await loadParsedRows(db, row);
   const dbErrors = await validateAgainstDb(
     tenantId,
     companyId,
     row.kind as ImportKind,
-    row.parsedRows,
+    parsedRows,
     row.reportDate,
     row.options as ImportUploadOptions | null,
   );
@@ -866,121 +1064,149 @@ export async function commitSession(
     };
   }
 
-  // Atomic status transition: only the request that flips
-  // 'uploaded' → 'committing' is allowed to run the commit body. A
-  // second concurrent /commit call sees status != 'uploaded' and
-  // bails. Without this guard two parallel commits could both pass
-  // the in-memory isTerminal check above and double-post every JE.
-  const claim = await db
-    .update(importSessions)
-    .set({ status: 'committing', updatedAt: new Date() })
-    .where(and(eq(importSessions.id, id), eq(importSessions.status, 'uploaded')))
-    .returning({ id: importSessions.id });
-  if (claim.length === 0) {
-    throw AppError.conflict(
-      'Another commit for this session is already in progress.',
-      'IMPORT_COMMIT_IN_PROGRESS',
-    );
-  }
-
-  let result: ImportCommitResult;
-  try {
-    if (row.kind === 'coa') {
-      result = await commitCoa(
-        tenantId,
-        companyId,
-        row.parsedRows as CanonicalCoaRow[],
-        (row.options as ImportUploadOptions | null) ?? {},
-      );
-    } else if (row.kind === 'contacts') {
-      result = await commitContacts(
-        tenantId,
-        companyId,
-        row.parsedRows as CanonicalContactRow[],
-      );
-    } else if (row.kind === 'trial_balance') {
-      result = await commitTrialBalance(
-        tenantId,
-        companyId,
-        userId,
-        row.id,
-        row.reportDate,
-        (row.options as ImportUploadOptions | null) ?? {},
-        row.parsedRows as CanonicalTrialBalanceRow[],
-        row.originalFilename,
-      );
-    } else if (row.kind === 'gl_transactions') {
-      result = await commitGl(
-        tenantId,
-        companyId,
-        userId,
-        row.fileHash,
-        row.sourceSystem as SourceSystem,
-        row.parsedRows as CanonicalGlEntry[],
-        row.options as ImportUploadOptions | null,
-      );
-    } else {
-      throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
-    }
-  } catch (e) {
-    const errMessage = e instanceof Error ? e.message : String(e);
-    // commitGl mid-loop failures throw AppError with details
-    // {createdSoFar, failedAtIndex} so the partial progress can be
-    // surfaced. For other failures (e.g. parser-level, DB connection)
-    // we just record the message; created stays 0.
-    const details = (e instanceof AppError ? e.details : undefined) as
-      | { createdSoFar?: number; failedAtIndex?: number }
-      | undefined;
-    await db
-      .update(importSessions)
-      .set({
-        status: 'failed',
-        commitResult: {
-          error: errMessage,
-          created: details?.createdSoFar ?? 0,
-          failedAtIndex: details?.failedAtIndex,
-        } as never,
-        updatedAt: new Date(),
-      })
-      .where(eq(importSessions.id, id));
-    throw e;
-  }
-
-  const [updated] = await db
-    .update(importSessions)
-    .set({
-      status: 'committed',
-      commitResult: result as never,
-      committedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .where(eq(importSessions.id, id))
-    .returning();
+  // U-261: the session commits as a one-session batch, in one database
+  // transaction: on failure nothing is posted (the old path kept what it had
+  // posted before the failing row). Answers as before, synchronously.
+  const { commitSingleSession } = await import('./import-batch.service.js');
+  const { result } = await commitSingleSession(tenantId, companyId, userId, id);
+  const [updated] = await db.select().from(importSessions).where(eq(importSessions.id, id));
   return {
     session: toSessionDto((updated ?? row) as unknown as SessionRowDb),
     result,
   };
 }
 
+// ── Batch commit core (U-261) ─────────────────────────────────────
+
+/** Posting order inside a batch: what later sessions resolve against comes first. */
+const KIND_ORDER: Record<string, number> = { coa: 0, contacts: 1, trial_balance: 2, gl_transactions: 3 };
+
+export function sortSessionsForCommit<T extends { kind: string; createdAt: Date }>(sessions: T[]): T[] {
+  return [...sessions].sort((a, b) =>
+    (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || a.createdAt.getTime() - b.createdAt.getTime());
+}
+
+/** Progress of a running batch: called after each step (rows done of total). */
+export type ProgressFn = (step: string, done: number, total: number) => void;
+
+/** What a batch changed on rows it did not create, restored by undo (U-261). */
+export interface BatchPriorValues {
+  accounts?: Record<string, {
+    name: string; accountType: string; detailType: string | null; description: string | null;
+    parentId: string | null; updatedAtAfter?: string | null;
+  }>;
+  fiscalYearStartMonth?: number | null;
+  /** Taken at the end of the commit, for undo's changed-since checks (U-261). */
+  stamps?: import('./import-undo.service.js').CommitStamps;
+  /** An existing untagged account the commit adopted as the suspense account. */
+  adoptedSystemAccounts?: Record<string, { systemTag: string | null; isSystem: boolean | null }>;
+}
+
+export interface CommitSessionContext {
+  tx: Tx;
+  tenantId: string;
+  companyId: string;
+  userId: string;
+  batchId: string;
+  priorValues: BatchPriorValues;
+  progress: ProgressFn;
+}
+
+/**
+ * Posts one session inside the batch transaction (U-261). Every read and
+ * write uses `ctx.tx`, so a later session sees what an earlier one created
+ * and a failure anywhere rolls back all of it. Rows created are stamped with
+ * the batch id. Throws an AppError whose details carry rowNumber when a row
+ * is to blame.
+ */
+export async function commitSessionInBatch(
+  ctx: CommitSessionContext,
+  row: typeof importSessions.$inferSelect,
+): Promise<ImportCommitResult> {
+  const parsed = await loadParsedRows(ctx.tx, row);
+  const options = (row.options as ImportUploadOptions | null) ?? {};
+  if (row.kind === 'coa') {
+    return await commitCoa(ctx, parsed as CanonicalCoaRow[], options);
+  }
+  if (row.kind === 'contacts') {
+    return await commitContacts(ctx, parsed as CanonicalContactRow[]);
+  }
+  if (row.kind === 'trial_balance') {
+    return await commitTrialBalance(ctx, row.reportDate, options, parsed as CanonicalTrialBalanceRow[], row.originalFilename);
+  }
+  if (row.kind === 'gl_transactions') {
+    return await commitGl(ctx, row.fileHash, row.sourceSystem as SourceSystem, parsed as CanonicalGlEntry[], options);
+  }
+  throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
+}
+
+/**
+ * The suspense account for unmapped lines, found or made in the batch
+ * transaction (a rollback leaves none behind). One the batch creates is
+ * stamped with it (undo removes it); an untagged account it adopts keeps its
+ * prior tag in prior_values.
+ */
+async function batchSuspenseAccount(ctx: CommitSessionContext): Promise<string> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
+  const existing = await findSystemAccountId(tenantId, SUSPENSE_TAG, tx);
+  if (existing) return existing;
+  const before = new Map((await tx.select({ id: accounts.id, systemTag: accounts.systemTag, isSystem: accounts.isSystem })
+    .from(accounts).where(eq(accounts.tenantId, tenantId))).map((a) => [a.id, a]));
+  const id = await getOrCreateSystemAccount(tenantId, SUSPENSE_TAG, companyId, userId, tx);
+  const prior = before.get(id);
+  if (!prior) {
+    await tx.update(accounts).set({ importBatchId: batchId }).where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)));
+  } else {
+    (ctx.priorValues.adoptedSystemAccounts ??= {})[id] = { systemTag: prior.systemTag ?? null, isSystem: prior.isSystem ?? null };
+  }
+  return id;
+}
+
+/** Stamps transactions a session posted with the batch id, in chunks (one UPDATE per chunk, not per row). */
+async function stampTransactions(tx: Tx, tenantId: string, batchId: string, ids: string[]): Promise<void> {
+  for (let i = 0; i < ids.length; i += IMPORT_ROWS_CHUNK) {
+    const chunk = ids.slice(i, i + IMPORT_ROWS_CHUNK);
+    await tx.update(transactions).set({ importBatchId: batchId })
+      .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, chunk)));
+  }
+}
+
 // ── Commit kinds ──────────────────────────────────────────────────
+// Each runs inside the batch transaction (ctx.tx) and stamps what it creates
+// with ctx.batchId (U-261).
 
 async function commitCoa(
-  tenantId: string,
-  companyId: string,
+  ctx: CommitSessionContext,
   rows: CanonicalCoaRow[],
   options: ImportUploadOptions,
 ): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, batchId } = ctx;
   let created = 0;
   let skipped = 0;
   let updated = 0;
+
+  // The prior state of an existing account this file changes (name, type,
+  // parent), once, before the first change: undo restores it (U-261).
+  const priorAccounts = (ctx.priorValues.accounts ??= {});
+  const remember = async (where: ReturnType<typeof and>) => {
+    const existing = await tx.select().from(accounts).where(where);
+    for (const a of existing) {
+      if (a.importBatchId === batchId || priorAccounts[a.id]) continue;
+      priorAccounts[a.id] = {
+        name: a.name, accountType: a.accountType, detailType: a.detailType ?? null,
+        description: a.description ?? null, parentId: a.parentId ?? null,
+      };
+    }
+  };
 
   // Pass 1 — insert with parentId=null. The unique index
   // idx_accounts_tenant_number causes onConflictDoNothing to skip
   // existing accountNumbers cleanly. Accounts without a number (QBO
   // imports) get a fresh row each time — within-tenant uniqueness
   // for those is the operator's responsibility.
-  for (const r of rows) {
-    const insertResult = await db
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
+    const insertResult = await tx
       .insert(accounts)
       .values({
         tenantId,
@@ -990,6 +1216,7 @@ async function commitCoa(
         accountType: r.accountType,
         detailType: r.detailType ?? null,
         description: r.description ?? null,
+        importBatchId: batchId,
       })
       .onConflictDoNothing()
       .returning({ id: accounts.id });
@@ -997,7 +1224,9 @@ async function commitCoa(
       created++;
     } else if (options.updateExistingCoa && r.accountNumber) {
       // Existing account, operator opted into overwrite — count as updated.
-      await db
+      const where = and(eq(accounts.tenantId, tenantId), eq(accounts.accountNumber, r.accountNumber));
+      await remember(where);
+      await tx
         .update(accounts)
         .set({
           name: r.name,
@@ -1006,25 +1235,26 @@ async function commitCoa(
           description: r.description ?? null,
           updatedAt: new Date(),
         })
-        .where(
-          and(eq(accounts.tenantId, tenantId), eq(accounts.accountNumber, r.accountNumber)),
-        );
+        .where(where);
       updated++;
     } else {
       // Existing account, operator did not opt in — leave alone.
       skipped++;
     }
+    if ((i + 1) % 200 === 0) ctx.progress('coa', i + 1, rows.length);
   }
 
   // Pass 2 — link parents. Build a number→id and name→id map of every
   // account in this tenant (including ones that pre-existed the file)
   // and resolve parentNumber / parentName for each row.
-  const allAccts = await db.select().from(accounts).where(eq(accounts.tenantId, tenantId));
+  const allAccts = await tx.select().from(accounts).where(eq(accounts.tenantId, tenantId));
   const byNum = new Map<string, string>();
   const byName = new Map<string, string>();
+  const parentOf = new Map<string, string | null>();
   for (const a of allAccts) {
     if (a.accountNumber) byNum.set(a.accountNumber, a.id);
     byName.set(a.name.toLowerCase(), a.id);
+    parentOf.set(a.id, a.parentId ?? null);
   }
   for (const r of rows) {
     let parentId: string | null = null;
@@ -1032,21 +1262,24 @@ async function commitCoa(
     if (!parentId && r.parentName) parentId = byName.get(r.parentName.toLowerCase()) ?? null;
     if (!parentId) continue;
     const childId = (r.accountNumber && byNum.get(r.accountNumber)) || byName.get(r.name.toLowerCase());
-    if (!childId || childId === parentId) continue;
-    await db
+    if (!childId || childId === parentId || parentOf.get(childId) === parentId) continue;
+    const where = and(eq(accounts.id, childId), eq(accounts.tenantId, tenantId));
+    await remember(where);
+    await tx
       .update(accounts)
       .set({ parentId, updatedAt: new Date() })
-      .where(and(eq(accounts.id, childId), eq(accounts.tenantId, tenantId)));
+      .where(where);
+    parentOf.set(childId, parentId);
   }
 
   return { created, skipped, updated };
 }
 
 async function commitContacts(
-  tenantId: string,
-  companyId: string,
+  ctx: CommitSessionContext,
   rows: CanonicalContactRow[],
 ): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, batchId } = ctx;
   let created = 0;
   let skipped = 0;
   let accountsLinked = 0;
@@ -1062,7 +1295,7 @@ async function commitContacts(
   const byNumber = new Map<string, string>();
   const byName = new Map<string, { id: string; isExpense: boolean }>();
   if (needsAccounts) {
-    const coa = await db
+    const coa = await tx
       .select({ id: accounts.id, accountNumber: accounts.accountNumber, name: accounts.name, accountType: accounts.accountType })
       .from(accounts)
       .where(eq(accounts.tenantId, tenantId));
@@ -1089,7 +1322,7 @@ async function commitContacts(
   // "ACME CORP" (or with stray surrounding whitespace) collapses to a
   // single insert instead of one-skipped-one-inserted.
   const normalize = (s: string) => s.trim().toLowerCase();
-  const existing = await db
+  const existing = await tx
     .select({
       contactType: contacts.contactType,
       displayName: contacts.displayName,
@@ -1101,7 +1334,8 @@ async function commitContacts(
     seen.add(`${e.contactType}:${normalize(e.displayName)}`);
   }
 
-  for (const r of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!;
     const key = `${r.contactType}:${normalize(r.displayName)}`;
     if (seen.has(key)) {
       skipped++;
@@ -1111,7 +1345,7 @@ async function commitContacts(
     const defaultExpenseAccountId =
       r.contactType === 'vendor' ? resolveAccount(r.defaultExpenseAccountRaw) : null;
     if (defaultExpenseAccountId) accountsLinked++;
-    await db.insert(contacts).values({
+    await tx.insert(contacts).values({
       tenantId,
       companyId,
       contactType: r.contactType,
@@ -1120,29 +1354,29 @@ async function commitContacts(
       phone: r.phone ?? null,
       billingLine1: r.billingAddress ? r.billingAddress.split('\n')[0] : null,
       shippingLine1: r.shippingAddress ? r.shippingAddress.split('\n')[0] : null,
-          // Accounting Power vendor exports carry a 1099 flag — preserve it
+      // Accounting Power vendor exports carry a 1099 flag — preserve it
       // so eligibility doesn't have to be re-marked by hand post-import.
       is1099Eligible: (r as { is1099Eligible?: boolean }).is1099Eligible ?? false,
       // Source vendor's default expense category, resolved against the
       // COA — keeps expense-form prefill / batch entry / bill OCR warm
       // from day one instead of starting cold.
       defaultExpenseAccountId,
+      importBatchId: batchId,
     });
     created++;
+    if ((i + 1) % 200 === 0) ctx.progress('contacts', i + 1, rows.length);
   }
   return { created, skipped, accountsLinked };
 }
 
 async function commitTrialBalance(
-  tenantId: string,
-  companyId: string,
-  userId: string,
-  sessionId: string,
+  ctx: CommitSessionContext,
   reportDate: string | null,
   options: ImportUploadOptions,
   rows: CanonicalTrialBalanceRow[],
   filename: string,
 ): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
   if (!reportDate) {
     throw AppError.badRequest('Trial balance has no report date.', 'IMPORT_BAD_DATE');
   }
@@ -1150,7 +1384,7 @@ async function commitTrialBalance(
   const sourceId = `${reportDate}:${tbColumn ?? 'qbo'}`;
 
   // Refuse if a TB JE for the same (date, column) already exists.
-  const existingTb = await db
+  const existingTb = await tx
     .select({ id: transactions.id })
     .from(transactions)
     .where(
@@ -1171,7 +1405,7 @@ async function commitTrialBalance(
   // Resolve account names/numbers to ids — scoped to this company's
   // CoA plus tenant-wide template accounts. Same scope rule as
   // validateTrialBalance.
-  const acctRows = await db
+  const acctRows = await tx
     .select()
     .from(accounts)
     .where(
@@ -1205,9 +1439,10 @@ async function commitTrialBalance(
         throw AppError.unprocessableEntity(
           `Account "${key}" not found.`,
           'IMPORT_UNKNOWN_ACCOUNT',
+          { rowNumber: r.rowNumber },
         );
       }
-      suspenseAccountId ??= await getSuspenseAccountId(tenantId, companyId, userId);
+      suspenseAccountId ??= await batchSuspenseAccount(ctx);
       unmappedKeys.add(key);
       id = suspenseAccountId;
     }
@@ -1218,7 +1453,7 @@ async function commitTrialBalance(
     });
   }
 
-  await postTransaction(
+  const txn = await postTransaction(
     tenantId,
     {
       txnType: 'journal_entry',
@@ -1230,9 +1465,11 @@ async function commitTrialBalance(
     },
     userId,
     companyId,
+    tx,
   );
+  await stampTransactions(tx, tenantId, batchId, [txn.id]);
+  ctx.progress('trial_balance', 1, 1);
 
-  void sessionId; // sessionId reserved for future per-session traceability fields
   return {
     created: 1,
     skipped: 0,
@@ -1243,14 +1480,13 @@ async function commitTrialBalance(
 }
 
 async function commitGl(
-  tenantId: string,
-  companyId: string,
-  userId: string,
+  ctx: CommitSessionContext,
   fileHash: string,
   sourceSystem: SourceSystem,
   entries: CanonicalGlEntry[],
   options: ImportUploadOptions | null,
 ): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
   let created = 0;
   let skipped = 0;
   let voidsReversed = 0;
@@ -1275,14 +1511,15 @@ async function commitGl(
   // the existing dedup catches every entry. Earlier code keyed on
   // sessionId, which broke idempotency on re-upload because each upload
   // created a fresh session id. Switching to fileHash keeps re-upload
-  // safe without giving up the upload-time same-bytes guard.
+  // safe without giving up the upload-time same-bytes guard. An undone
+  // batch deleted its entries (U-261), so a re-commit after undo finds none.
   //
   // Prefix-scope the dedup query to this file's sourceId space (the
   // fileHash prefix). Without this, a tenant with a long import history
   // would pull every previously-imported sourceId on every commit — for
   // a tenant that's done dozens of imports across years that's a slow
   // O(N) scan over the full transactions table for no benefit.
-  const existing = await db
+  const existing = await tx
     .select({ sourceId: transactions.sourceId })
     .from(transactions)
     .where(
@@ -1296,7 +1533,7 @@ async function commitGl(
 
   // Build accountId lookup once — scoped to this company's CoA plus
   // tenant-wide template accounts (companyId IS NULL).
-  const acctRows = await db
+  const acctRows = await tx
     .select()
     .from(accounts)
     .where(
@@ -1318,9 +1555,11 @@ async function commitGl(
   // it from the Class column (class tracking); for other sources this is a
   // no-op.
   const { map: tagMap, created: tagsCreated } = await ensureTags(
+    tx,
     tenantId,
     companyId,
     entries.flatMap((e) => e.lines.map((l) => l.tagName).filter((n): n is string => !!n)),
+    batchId,
   );
 
   // Match each entry's imported "Description" (e.name) to an existing vendor
@@ -1330,7 +1569,7 @@ async function commitGl(
   // never a substring, since a wrong payee is worse than a blank one. Scoped
   // to vendor/both contacts; a name shared by two active vendors is marked
   // ambiguous (null) and skipped. Never creates a contact.
-  const vendorRows = await db
+  const vendorRows = await tx
     .select({ id: contacts.id, displayName: contacts.displayName })
     .from(contacts)
     .where(
@@ -1347,6 +1586,7 @@ async function commitGl(
     vendorByName.set(key, vendorByName.has(key) ? null : v.id);
   }
   let vendorsMatched = 0;
+  const postedIds: string[] = [];
 
   for (let idx = 0; idx < entries.length; idx++) {
     const e = entries[idx]!;
@@ -1365,16 +1605,14 @@ async function commitGl(
       if (!id) {
         const key = line.accountNumber ?? line.accountName ?? '?';
         if (!fallbackOn) {
-          // Mid-loop failure. Throw an AppError carrying `created` so far
-          // so commitSession's catch block can persist partial progress
-          // into commit_result and the operator UI can surface it.
+          // The batch transaction rolls back: nothing of the batch is posted.
           throw AppError.unprocessableEntity(
             `JE on ${e.date} references unknown account "${key}"`,
             'IMPORT_UNKNOWN_ACCOUNT',
-            { createdSoFar: created, failedAtIndex: idx, accountKey: line.accountNumber ?? line.accountName },
+            { rowNumber: e.rowNumber, failedAtIndex: idx, accountKey: line.accountNumber ?? line.accountName },
           );
         }
-        suspenseAccountId ??= await getSuspenseAccountId(tenantId, companyId, userId);
+        suspenseAccountId ??= await batchSuspenseAccount(ctx);
         unmappedKeys.add(key);
         id = suspenseAccountId;
       }
@@ -1395,7 +1633,7 @@ async function commitGl(
     if (matchedContactId) vendorsMatched++;
 
     try {
-      await postTransaction(
+      const txn = await postTransaction(
         tenantId,
         {
           txnType: 'journal_entry',
@@ -1409,19 +1647,26 @@ async function commitGl(
         },
         userId,
         companyId,
+        tx,
       );
+      postedIds.push(txn.id);
     } catch (err) {
-      // Re-throw with progress context so commitSession persists what landed.
+      // The batch transaction rolls back; the error names the row.
       const msg = err instanceof Error ? err.message : String(err);
-      throw AppError.unprocessableEntity(
+      const status = err instanceof AppError ? err.statusCode : 422;
+      throw new AppError(
+        status === 423 || status === 403 ? status : 422,
         `Failed posting JE at row ${e.rowNumber} (${e.date} ${e.reference ?? ''}): ${msg}`,
         err instanceof AppError ? (err.code ?? 'IMPORT_POST_FAILED') : 'IMPORT_POST_FAILED',
-        { createdSoFar: created, failedAtIndex: idx, originalError: msg },
+        { ...(err instanceof AppError ? (err.details ?? {}) : {}), rowNumber: e.rowNumber, failedAtIndex: idx, originalError: msg },
       );
     }
     created++;
     if (e.isVoidReversal) voidsReversed++;
+    if ((idx + 1) % 100 === 0) ctx.progress('gl_transactions', idx + 1, entries.length);
   }
+  await stampTransactions(tx, tenantId, batchId, postedIds);
+  ctx.progress('gl_transactions', entries.length, entries.length);
   return {
     created, skipped, voidsReversed, vendorsMatched,
     ...(tagsCreated ? { tagsCreated } : {}),

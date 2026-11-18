@@ -66,6 +66,8 @@ export const contacts = pgTable('contacts', {
   // Shared
   notes: text('notes'),
   isActive: boolean('is_active').default(true),
+  // U-261 (migration 0282): the Bulk Import batch that created this contact.
+  importBatchId: uuid('import_batch_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({

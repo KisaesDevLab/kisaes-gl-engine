@@ -20,7 +20,8 @@ export type ImportStatus =
   | 'committed'     // commit succeeded; commitResult populated
   | 'failed'        // commit threw; partial state possible (caller should
                     //   inspect commitResult.error and consider rollback)
-  | 'cancelled';    // operator deleted before commit
+  | 'cancelled'     // operator deleted before commit
+  | 'undone';       // U-261: the batch holding the session was undone
 
 export type ContactKind = 'customer' | 'vendor';
 
@@ -140,6 +141,13 @@ export interface ImportSession {
   createdAt: string;
   updatedAt: string;
   committedAt: string | null;
+  /** U-261: the batch the session belongs to (null until it joins one). */
+  batchId?: string | null;
+  /** U-261: 'post' (posted on commit) or 'reference' (only compared against). */
+  role?: 'post' | 'reference';
+  /** U-263: a journal file's first and last entry date (null for other kinds). */
+  dateFrom?: string | null;
+  dateTo?: string | null;
 }
 
 export interface ImportUploadOptions {

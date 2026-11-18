@@ -25,6 +25,8 @@ export const accounts = pgTable('accounts', {
   // from anyone without the `sensitive_accounts` right. Set only through
   // PUT /accounts/:id/sensitive (Admin); create/update/bulk ignore it.
   isSensitive: boolean('is_sensitive').notNull().default(false),
+  // U-261 (migration 0282): the Bulk Import batch that created this row (undo finds it by this).
+  importBatchId: uuid('import_batch_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
