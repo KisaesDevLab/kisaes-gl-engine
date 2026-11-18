@@ -1654,5 +1654,26 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * SENSITIVE_HIDDEN for a viewer with any hidden account). The old POST /imports/:id/commit runs as a one-session batch
    * (kind single), synchronously; a failure posts nothing.
    */
-  'imports-batch-v1',];
+  'imports-batch-v1',
+  /**
+   * U-264 (ClientLedger P31 E2a, design (a) of the P31 spike; no migration). Upload kinds open_invoices and unpaid_bills
+   * (QuickBooks Desktop Open Invoices / Unpaid Bills Detail, QuickBooks Online and Generic equivalents; columns Type,
+   * Date, Num, Open Balance, optional Name, Due Date, Amount; without Name the group heading is the name; Latin-1 for
+   * QBD). The report's "As of" date is the session reportDate (else options.reportDate); dateFrom/dateTo are the item
+   * dates (the closed-period check before the 202 covers them). Row errors: IMPORT_UNKNOWN_TYPE, IMPORT_OPEN_ITEM_SIGN,
+   * IMPORT_OPEN_ITEM_CENTS (more than 2 places), IMPORT_OPEN_ITEM_NO_NAME, IMPORT_BAD_DATE, IMPORT_AMOUNT_INVALID; zero
+   * rows are left out; an empty report is valid. preview.openTotal. In a batch holding such a file, chart rows of type
+   * A/R (A/P) merge into the company's system account (CoA result mergedIntoSystemAccounts; with none tagged, the first
+   * becomes it) and trial balance and journal lines on A/R (A/P) post to "Receivables before conversion" ("Payables
+   * before conversion"), plain other-current accounts found by name or created with the batch (result redirectedLines).
+   * Each open item becomes a one-line invoice or credit memo (negative; QBD Payment rows too) or bill or vendor credit
+   * on that account, for the open balance exactly (IMPORT_OPEN_ITEM_AMOUNT otherwise), no sales tax, keeping the number
+   * (invoice/credit memo txnNumber, bill/vendor credit vendorInvoiceNumber), date and due date; the memo names the source
+   * Type and number and, when partly paid, the original amount. Names match customers (vendors) or both-kind contacts
+   * by display name; a missing one is created (contactsCreated). Session result documents {invoice, credit_memo, bill,
+   * vendor_credit}; batch result historyAccounts {ar, ap} and redirectedAccountKeys. Undo removes all of it and restores
+   * the document counters. Without open-item files nothing changes. POST /imports/:id/commit (not dryRun) now needs the
+   * owner role or super admin (403 IMPORT_ADMIN_REQUIRED).
+   */
+  'qbd-open-items-v1',];
 
