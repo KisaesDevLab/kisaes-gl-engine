@@ -1751,5 +1751,24 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * summary. GET .../transactions?limit&cursor&txnType {transactions [{id, txnType, txnDate, txnNumber,
    * vendorInvoiceNumber, status, contactId, contactName, total}], nextCursor, total}.
    */
-  'imports-tieout-v1',];
+  'imports-tieout-v1',
+  /**
+   * U-268 (ClientLedger P31 E4): spreadsheet documents. Upload kind "transactions" (sourceSystem generic, CSV or xlsx),
+   * columns group_id, type (invoice | bill | journal_entry), date, number, name, due_date, memo, line_account, line_item,
+   * line_description, line_amount, line_debit, line_credit, line_tag; rows sharing a group_id are one document. Exact
+   * amounts (imports-amounts-v1; invoices at most 2 places, IMPORT_AMOUNT_CENTS); invoice and bill lines use
+   * line_amount, journal entry lines line_debit / line_credit or a signed line_amount (zero lines dropped). Upload row
+   * errors (field = the column name): IMPORT_UNBALANCED, IMPORT_MIXED_GROUP (a header cell differing inside a group),
+   * IMPORT_MISSING_FIELD, IMPORT_UNKNOWN_TYPE, IMPORT_BAD_DATE, IMPORT_AMOUNT_INVALID, IMPORT_AMOUNT_CENTS,
+   * IMPORT_DOCUMENT_TOTAL (invoice or bill total not above 0), IMPORT_FIELD_NOT_ALLOWED (an item on a journal line),
+   * IMPORT_UNKNOWN_REF (name, line_account, line_item or line_tag not in the company; re-checked at commit).
+   * preview.totalRows = lines, documentCount, documents {invoice, bill, journal_entry}, sampleRows = documents. In a batch
+   * (kind transactions) the commit posts each document through the invoice (no sales tax), bill and journal entry
+   * services in the batch transaction; any refusal posts nothing. Batch errors carry rowNumber and field (top level):
+   * 422 IMPORT_UNKNOWN_REF {refs [{rowNumber, field, reason unknown|ambiguous|no_account}], refCount},
+   * IMPORT_DOCUMENT_TOTAL, or the service's code. Documents carry source import_transactions, source_id
+   * "<sessionId>:<first row>"; session result {created, skipped, documents}. Closing date, undo and re-import as
+   * imports-batch-v1; never overlap-checked.
+   */
+  'imports-transactions-v1',];
 

@@ -17,7 +17,9 @@ import type { AccountType } from './accounts.js';
  */
 export type ImportKind = 'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills'
   // U-265 (qbd-mapping-v1): the item list, and inventory on hand and value as of a date.
-  | 'items' | 'inventory_valuation';
+  | 'items' | 'inventory_valuation'
+  // U-268 (imports-transactions-v1): multi-line invoices, bills and journal entries from a spreadsheet.
+  | 'transactions';
 
 /** The engine item kinds an imported item becomes (U-265). */
 export type ImportItemType = 'service' | 'non_inventory' | 'other_charge' | 'discount' | 'subtotal' | 'inventory_part';
@@ -114,6 +116,44 @@ export interface CanonicalOpenItemRow {
   openBalance: string;
   /** Exact decimal text, when the report has an Amount column. */
   originalAmount?: string;
+}
+
+/** A document of a `transactions` file (U-268). */
+export type TxnDocType = 'invoice' | 'bill' | 'journal_entry';
+
+/** One line (one row) of a `transactions` document. */
+export interface CanonicalTxnLine {
+  /** The file's row (the header is row 1). */
+  rowNumber: number;
+  /** Account number or name, as the file has it. */
+  account?: string;
+  /** Item name. */
+  item?: string;
+  description?: string;
+  /**
+   * Exact decimal text, signed: an invoice or bill line's amount; a journal
+   * entry line's debit minus credit (positive = debit).
+   */
+  amount: string;
+  /** Tag name. */
+  tag?: string;
+}
+
+/** One document of a `transactions` file: the rows sharing a group_id (U-268). */
+export interface CanonicalTxnDocument {
+  /** Its first row. */
+  rowNumber: number;
+  /** The file's group_id (null: a row with none is a document of its own). */
+  groupId: string | null;
+  docType: TxnDocType;
+  /** ISO YYYY-MM-DD. */
+  date: string;
+  number?: string;
+  /** Customer (invoice), vendor (bill) or a journal entry's name. */
+  name?: string;
+  dueDate?: string;
+  memo?: string;
+  lines: CanonicalTxnLine[];
 }
 
 export type SourceSystem = 'accounting_power' | 'quickbooks_online' | 'quickbooks_desktop' | 'generic';
@@ -258,6 +298,9 @@ export interface ImportPreview {
   accountMatches?: ImportAccountMatch[];
   /** inventory_valuation (U-265): the exact sum of the asset values. */
   valuationTotal?: string;
+  /** transactions (U-268): documents in the file, and by type (totalRows counts its lines). */
+  documentCount?: number;
+  documents?: Partial<Record<TxnDocType, number>>;
 }
 
 export interface ImportSession {
@@ -345,7 +388,7 @@ export interface ImportCommitResult {
   /** Per-row errors blocking commit (for /commit dry-run). */
   blockingErrors?: ImportValidationError[];
   /** Open items (U-264): documents created by type. */
-  documents?: Partial<Record<OpenItemDocType, number>>;
+  documents?: Partial<Record<OpenItemDocType | TxnDocType, number>>;
   /** Open items (U-264): names not found, created as customers or vendors. */
   contactsCreated?: number;
   /** CoA (U-264): A/R or A/P accounts merged into the company's system account. */

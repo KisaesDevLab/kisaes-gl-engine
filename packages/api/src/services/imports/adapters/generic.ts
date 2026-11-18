@@ -32,7 +32,7 @@ import { importAmountError, importAmountText, isImportAmount, parseImportAmount,
 // ── Shared helpers ────────────────────────────────────────────────
 
 /** Read the upload as a string grid — .xlsx by magic bytes, else CSV (UTF-8). Number cells are their exact values (U-260). */
-async function readGrid(buf: Buffer): Promise<string[][]> {
+export async function readGrid(buf: Buffer): Promise<string[][]> {
   if (buf[0] === 0x50 && buf[1] === 0x4b) return parseXlsxBuffer(buf, { numberText: xlsxNumberText });
   return parseCsvText(buf.toString('utf8').replace(/^﻿/, ''));
 }
@@ -62,7 +62,7 @@ function headerNotFound(cols: string): ImportValidationError {
 }
 
 /** MM/DD/YYYY, M/D/YY, or already-ISO → YYYY-MM-DD. Null on failure. */
-function toIsoDate(raw: string): string | null {
+export function toIsoDate(raw: string): string | null {
   const t = (raw ?? '').trim();
   if (!t) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;

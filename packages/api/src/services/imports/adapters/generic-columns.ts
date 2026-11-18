@@ -134,7 +134,31 @@ export const GENERIC_VALUATION_TEMPLATE: GenericTemplate = {
   ],
 };
 
-export const GENERIC_TEMPLATES: Record<'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills' | 'items' | 'inventory_valuation', GenericTemplate> = {
+/** U-268: multi-line invoices, bills and journal entries (read by adapters/transactions.ts). */
+export const GENERIC_DOCUMENTS_TEMPLATE: GenericTemplate = {
+  sheetName: 'Transactions',
+  description: 'One line per row; rows with the same group_id are one invoice, bill or journal entry. '
+    + 'Names, accounts, items and tags must already be in the company. No sales tax is added.',
+  columns: [
+    { header: 'group_id', required: true, example: 'INV-1', note: 'The same value on every row of one document.' },
+    { header: 'type', required: true, example: 'invoice', note: 'invoice, bill or journal_entry.' },
+    { header: 'date', required: true, example: '2026-09-15', note: 'YYYY-MM-DD or MM/DD/YYYY.' },
+    { header: 'number', required: false, example: '1001', note: 'Invoice or journal entry number; a bill\'s vendor invoice number.' },
+    { header: 'name', required: false, example: 'Joplin Regional Stockyards', note: 'Customer (invoice) or vendor (bill), required for them; optional on a journal entry.' },
+    { header: 'due_date', required: false, example: '2026-10-15', note: 'Invoices and bills.' },
+    { header: 'memo', required: false, example: '' },
+    { header: 'line_account', required: false, example: '4000', note: 'Account number or name. Invoice and bill lines take an account or an item.' },
+    { header: 'line_item', required: false, example: '', note: 'Item name (invoices and bills).' },
+    { header: 'line_description', required: false, example: 'Consulting, September' },
+    { header: 'line_amount', required: false, example: '1200.00', note: 'Invoice and bill lines (exact; invoices at most 2 decimal places). A journal entry line may use a signed amount (positive = debit).' },
+    { header: 'line_debit', required: false, example: '', note: 'Journal entry lines.' },
+    { header: 'line_credit', required: false, example: '', note: 'Journal entry lines. Each entry must balance exactly.' },
+    { header: 'line_tag', required: false, example: '', note: 'Tag name.' },
+  ],
+};
+
+export const GENERIC_TEMPLATES: Record<'coa' | 'contacts' | 'trial_balance' | 'gl_transactions' | 'open_invoices' | 'unpaid_bills' | 'items' | 'inventory_valuation' | 'transactions', GenericTemplate> = {
+  transactions: GENERIC_DOCUMENTS_TEMPLATE,
   items: GENERIC_ITEMS_TEMPLATE,
   inventory_valuation: GENERIC_VALUATION_TEMPLATE,
   coa: GENERIC_COA_TEMPLATE,

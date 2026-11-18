@@ -19,6 +19,8 @@ export const importKindSchema = z.enum([
   // U-265 (qbd-mapping-v1): the item list; inventory on hand and value as of a date.
   'items',
   'inventory_valuation',
+  // U-268 (imports-transactions-v1): multi-line invoices, bills and journal entries (Generic).
+  'transactions',
 ]);
 
 export const sourceSystemSchema = z.enum([

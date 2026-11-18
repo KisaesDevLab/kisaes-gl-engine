@@ -32,6 +32,7 @@ import {
   type CanonicalGlEntry,
   type CanonicalItemRow,
   type CanonicalOpenItemRow,
+  type CanonicalTxnDocument,
   type CanonicalTrialBalanceRow,
   type CanonicalValuationRow,
   type ContactKind,
@@ -47,6 +48,7 @@ import {
   type ImportValidationError,
   type SourceSystem,
   type TbColumnChoice,
+  type TxnDocType,
 } from '@kis-books/shared';
 import { AppError } from '../../utils/errors.js';
 // Unmapped TB/GL accounts land here instead of failing the import.
@@ -57,6 +59,7 @@ import * as qbd from './adapters/quickbooks-desktop.js';
 import * as generic from './adapters/generic.js';
 import { parseOpenItems, openItemsTotal } from './adapters/open-items.js';
 import { parseItems, parseInventoryValuation, valuationTotal } from './adapters/items.js';
+import { parseTransactionsFile } from './adapters/transactions.js';
 import { INVENTORY_ASSET_TAG } from '../inventory.service.js';
 import { postTransaction } from '../ledger.service.js';
 import { Decimal } from 'decimal.js';
@@ -115,7 +118,7 @@ export function isOpenItemKind(kind: string): kind is 'open_invoices' | 'unpaid_
  * file. Overlap checks read journal files only.
  */
 function glDateRange(kind: ImportKind, parsed: unknown): { from: string | null; to: string | null } {
-  if (kind !== 'gl_transactions' && !isOpenItemKind(kind)) return { from: null, to: null };
+  if (kind !== 'gl_transactions' && !isOpenItemKind(kind) && kind !== 'transactions') return { from: null, to: null };
   let from: string | null = null;
   let to: string | null = null;
   for (const e of (parsed as Array<{ date?: string }>) ?? []) {
@@ -339,6 +342,8 @@ const MAX_ROWS_PER_KIND: Record<ImportKind, number> = {
   unpaid_bills: 20_000,
   items: 10_000,
   inventory_valuation: 10_000,
+  // U-268: lines (rows), like a journal file's entries.
+  transactions: 50_000,
 };
 
 function enforceRowCap(kind: ImportKind, count: number): void {
@@ -438,6 +443,8 @@ function buildPreview(
   validationErrors: ImportValidationError[],
   reportDate: string | null,
   options: ImportUploadOptions | null,
+  /** The session's row count (transactions: the file's data rows). */
+  rowCount?: number,
 ): ImportPreview {
   const errorCount = validationErrors.length;
   if (kind === 'gl_transactions') {
@@ -476,6 +483,19 @@ function buildPreview(
       sampleRows: rows.slice(0, MAX_PREVIEW_ROWS),
       ...(reportDate ? { reportDate } : {}),
       openTotal: openItemsTotal(rows),
+    };
+  }
+  if (kind === 'transactions') {
+    // U-268: totalRows counts the lines (the file's data rows); the sample is documents.
+    const docs = (parsed as CanonicalTxnDocument[]) ?? [];
+    const documents: Partial<Record<TxnDocType, number>> = {};
+    for (const d of docs) documents[d.docType] = (documents[d.docType] ?? 0) + 1;
+    return {
+      totalRows: rowCount ?? docs.reduce((n, d) => n + d.lines.length, 0),
+      errorCount,
+      sampleRows: docs.slice(0, MAX_PREVIEW_ROWS),
+      documentCount: docs.length,
+      documents,
     };
   }
   if (kind === 'inventory_valuation') {
@@ -627,6 +647,14 @@ async function dispatchParse(
     }
     const { rows, errors, reportDate } = await parseInventoryValuation(buf, sourceSystem);
     return { parsed: rows, errors, reportDate: reportDate ?? options.reportDate ?? null, rowCount: rows.length };
+  }
+  // U-268: multi-line documents, our own Generic layout (CSV or xlsx).
+  if (kind === 'transactions') {
+    if (sourceSystem !== 'generic') {
+      throw AppError.badRequest('A transactions file is a Generic import (sourceSystem "generic").', 'IMPORT_WRONG_KIND');
+    }
+    const { documents, errors, lineCount } = await parseTransactionsFile(buf);
+    return { parsed: documents, errors, reportDate: null, rowCount: lineCount };
   }
   // U-265: an Other Names list is a QuickBooks Desktop list.
   if (kind === 'contacts' && options.contactKind === 'other' && sourceSystem !== 'quickbooks_desktop') {
@@ -889,7 +917,7 @@ export async function createSession(input: CreateSessionInput): Promise<{
     return s;
   });
   const session = toSessionDto(inserted as unknown as SessionRowDb);
-  const preview = buildPreview(input.kind, parsed.parsed, allErrors, reportDate, input.options);
+  const preview = buildPreview(input.kind, parsed.parsed, allErrors, reportDate, input.options, parsed.rowCount);
   const accountMatches = await computeAccountMatches(db, input.tenantId, input.companyId, input.kind, parsed.parsed);
   if (accountMatches) preview.accountMatches = accountMatches;
   return { session, preview, validationErrors: allErrors };
@@ -939,6 +967,14 @@ async function validateAgainstDb(
     // Names are matched at commit (the contacts may come in the same batch).
     const dates = Array.from(new Set(((parsedAny as CanonicalOpenItemRow[]) ?? []).map((r) => r.date)));
     return await checkLockDate(tenantId, companyId, dates);
+  }
+  if (kind === 'transactions') {
+    // U-268: names, accounts, items and tags the company doesn't have (re-checked at commit,
+    // where a chart or name file of the same batch counts), and the closing date.
+    const docs = (parsedAny as CanonicalTxnDocument[]) ?? [];
+    const errs = await validateTransactionRefs(tenantId, companyId, docs);
+    errs.push(...(await checkLockDate(tenantId, companyId, Array.from(new Set(docs.map((d) => d.date))))));
+    return errs;
   }
   if (kind === 'inventory_valuation') {
     // U-265: opening stock is dated the report date; without one it can't post.
@@ -1178,7 +1214,7 @@ export async function getSession(
   const session = toSessionDto(row as unknown as SessionRowDb);
   const validationErrors = (row.validationErrors as ImportValidationError[] | null) ?? [];
   const parsedRows = await loadParsedRows(db, row);
-  const preview = buildPreview(session.kind, parsedRows, validationErrors, session.reportDate, session.options);
+  const preview = buildPreview(session.kind, parsedRows, validationErrors, session.reportDate, session.options, row.rowCount);
   const accountMatches = await computeAccountMatches(db, tenantId, companyId, session.kind, parsedRows);
   if (accountMatches) preview.accountMatches = accountMatches;
   return { session, validationErrors, preview };
@@ -1316,6 +1352,8 @@ export async function commitSession(
 // account are history, redirected), the inventory valuation last (it clears that history).
 const KIND_ORDER: Record<string, number> = {
   coa: 0, contacts: 1, items: 2, trial_balance: 3, gl_transactions: 4, open_invoices: 5, unpaid_bills: 6, inventory_valuation: 7,
+  // U-268: documents last; their names, accounts, items and tags may come in the same batch.
+  transactions: 8,
 };
 
 export function sortSessionsForCommit<T extends { kind: string; createdAt: Date }>(sessions: T[]): T[] {
@@ -1473,6 +1511,9 @@ export async function commitSessionInBatch(
   }
   if (isOpenItemKind(row.kind)) {
     return await commitOpenItems(ctx, row.kind, row.sourceSystem as SourceSystem, parsed as CanonicalOpenItemRow[], row.id);
+  }
+  if (row.kind === 'transactions') {
+    return await commitTransactions(ctx, parsed as CanonicalTxnDocument[], row.id);
   }
   throw AppError.badRequest(`Unknown import kind "${row.kind}".`, 'IMPORT_WRONG_KIND');
 }
@@ -2797,4 +2838,235 @@ async function commitValuation(
   }
   await stampTransactions(tx, tenantId, batchId, posted);
   return { created: posted.length, skipped: 0, itemsValued: lines.length, valuationTotal: total.toFixed(2) };
+}
+
+// ── Spreadsheet documents (U-268, imports-transactions-v1) ────────
+
+/** transactions.source of a document a `transactions` file posted; source_id is `<sessionId>:<first row>`. */
+export const TXN_IMPORT_SOURCE = 'import_transactions';
+
+/** One reference a `transactions` file names that the company doesn't have. */
+interface TxnRefProblem { rowNumber: number; field: 'name' | 'line_account' | 'line_item' | 'line_tag'; reason: 'unknown' | 'ambiguous' | 'no_account' }
+
+/**
+ * The company's names, accounts, items and tags as a `transactions` file names
+ * them (case-insensitive; an account by number, then name, through the batch's
+ * accountMap and merged chart rows when `resolveAccount` comes from the batch).
+ */
+async function txnLookups(
+  ex: DbOrTx,
+  tenantId: string,
+  companyId: string,
+  resolveAccount: (num?: string | null, name?: string | null) => string | null,
+) {
+  const contactRows = await ex.select({ id: contacts.id, displayName: contacts.displayName, contactType: contacts.contactType })
+    .from(contacts).where(and(eq(contacts.tenantId, tenantId), or(eq(contacts.companyId, companyId), isNull(contacts.companyId))))
+    .orderBy(asc(contacts.createdAt), asc(contacts.id));
+  const itemRows = await ex.select({
+    id: items.id, name: items.name, itemType: items.itemType, expenseAccountId: items.expenseAccountId, assetAccountId: items.assetAccountId,
+  }).from(items).where(and(eq(items.tenantId, tenantId), or(eq(items.companyId, companyId), isNull(items.companyId))))
+    .orderBy(asc(items.createdAt), asc(items.id));
+  const tagRows = await ex.select({ id: tags.id, name: tags.name }).from(tags).where(eq(tags.tenantId, tenantId))
+    .orderBy(asc(tags.createdAt), asc(tags.id));
+  const k = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+  const group = <T extends { id: string }>(rows: T[], key: (r: T) => string) => {
+    const m = new Map<string, T[]>();
+    for (const r of rows) { const g = m.get(key(r)) ?? []; g.push(r); m.set(key(r), g); }
+    return m;
+  };
+  const byName = group(contactRows, (c) => k(c.displayName));
+  const itemsByName = group(itemRows, (i) => k(i.name));
+  const tagsByName = new Map<string, string>();
+  for (const t of tagRows) if (!tagsByName.has(k(t.name))) tagsByName.set(k(t.name), t.id);
+
+  /** A customer (invoice), vendor (bill) or any contact (journal entry); 'both' counts for either. */
+  const contact = (name: string, docType: TxnDocType): { id: string } | { reason: 'unknown' | 'ambiguous' } => {
+    const all = byName.get(k(name)) ?? [];
+    const want = docType === 'invoice' ? 'customer' : docType === 'bill' ? 'vendor' : null;
+    const fits = want ? all.filter((c) => c.contactType === want || c.contactType === 'both') : all;
+    if (fits.length === 0) return { reason: 'unknown' };
+    // The exact kind first (a customer over a 'both' of the same name), then the oldest.
+    const exact = want ? fits.filter((c) => c.contactType === want) : fits;
+    const pick = exact.length > 0 ? exact : fits;
+    if (!want && pick.length > 1) return { reason: 'ambiguous' };
+    return { id: pick[0]!.id };
+  };
+  const item = (name: string): { item: (typeof itemRows)[number] | null; reason?: 'unknown' | 'ambiguous' } => {
+    const list = itemsByName.get(k(name)) ?? [];
+    if (list.length === 0) return { item: null, reason: 'unknown' };
+    if (list.length > 1) return { item: null, reason: 'ambiguous' };
+    return { item: list[0]! };
+  };
+  const account = (cell: string) => resolveAccount(/^\d/.test(cell.trim()) ? cell.trim() : null, cell.trim());
+  const tag = (name: string) => tagsByName.get(k(name)) ?? null;
+  return { contact, item, account, tag };
+}
+
+type TxnLookups = Awaited<ReturnType<typeof txnLookups>>;
+
+/** Every reference of the file the company doesn't have (row order). */
+function txnRefProblems(docs: CanonicalTxnDocument[], look: TxnLookups): TxnRefProblem[] {
+  const out: TxnRefProblem[] = [];
+  for (const d of docs) {
+    if (d.name) {
+      const c = look.contact(d.name, d.docType);
+      if ('reason' in c) out.push({ rowNumber: d.rowNumber, field: 'name', reason: c.reason });
+    }
+    for (const l of d.lines) {
+      if (l.account) {
+        if (!look.account(l.account)) out.push({ rowNumber: l.rowNumber, field: 'line_account', reason: 'unknown' });
+      }
+      if (l.item) {
+        const it = look.item(l.item);
+        if (!it.item) out.push({ rowNumber: l.rowNumber, field: 'line_item', reason: it.reason ?? 'unknown' });
+        else if (!l.account && d.docType === 'bill') {
+          // A bill line posts to the item's purchase account (inventory: its asset account).
+          const acct = it.item.itemType === 'inventory_part' ? it.item.assetAccountId : it.item.expenseAccountId;
+          if (!acct) out.push({ rowNumber: l.rowNumber, field: 'line_account', reason: 'no_account' });
+        }
+      }
+      if (l.tag && !look.tag(l.tag)) out.push({ rowNumber: l.rowNumber, field: 'line_tag', reason: 'unknown' });
+    }
+  }
+  return out;
+}
+
+const MAX_LISTED_REFS = 500;
+
+/** 422 IMPORT_UNKNOWN_REF {rowNumber, field (the first), refs [{rowNumber, field, reason}] (<= 500), refCount}; never a name. */
+function unknownRefError(problems: TxnRefProblem[]): AppError {
+  const first = problems[0]!;
+  return AppError.unprocessableEntity(
+    `${problems.length} name(s), account(s), item(s) or tag(s) in this file are not in the company. Add them, or fix the file, and import again.`,
+    'IMPORT_UNKNOWN_REF',
+    { rowNumber: first.rowNumber, field: first.field, refs: problems.slice(0, MAX_LISTED_REFS), refCount: problems.length },
+  );
+}
+
+/** Upload-time row errors for unknown references (re-checked at commit, so a chart or name file in the same batch counts). */
+export async function validateTransactionRefs(tenantId: string, companyId: string, docs: CanonicalTxnDocument[]): Promise<ImportValidationError[]> {
+  const ctxLike = { tx: db as unknown as Tx, tenantId, companyId } as CommitSessionContext;
+  const { resolve } = await accountResolver(ctxLike);
+  const look = await txnLookups(db, tenantId, companyId, resolve);
+  return txnRefProblems(docs, look).map((p) => ({
+    rowNumber: p.rowNumber, field: p.field, code: 'IMPORT_UNKNOWN_REF',
+    message: `Row ${p.rowNumber}: the ${p.field.replace('line_', '')} ${p.reason === 'ambiguous' ? 'matches more than one record' : p.reason === 'no_account' ? 'has no purchase account; give line_account' : 'is not in this company'}.`,
+  }));
+}
+
+/**
+ * Posts each document of a `transactions` file through the invoice, bill and
+ * journal entry services in the batch transaction (review S3): invoices with
+ * no sales tax (Q-P31i), bills, journal entries with their lines' name. Every
+ * reference must resolve first, all of them listed (422 IMPORT_UNKNOWN_REF);
+ * a refusal of any document rolls back the batch. A document's posted total
+ * must be its lines' exact sum (422 IMPORT_DOCUMENT_TOTAL). Documents carry
+ * source 'import_transactions' and source_id '<sessionId>:<first row>'. An
+ * invoice with no number claims the next one; undo gives the counter back.
+ */
+async function commitTransactions(
+  ctx: CommitSessionContext,
+  docs: CanonicalTxnDocument[],
+  sessionId: string,
+): Promise<ImportCommitResult> {
+  const { tx, tenantId, companyId, userId, batchId } = ctx;
+  if (docs.length === 0) return { created: 0, skipped: 0, documents: {} };
+  const { resolve } = await accountResolver(ctx);
+  const look = await txnLookups(tx, tenantId, companyId, resolve);
+  const problems = txnRefProblems(docs, look);
+  if (problems.length > 0) throw unknownRefError(problems);
+
+  const claims = docs.some((d) => d.docType === 'invoice' && !d.number);
+  const countersBefore = claims ? await readCounters(ctx) : null;
+  const { createInvoiceWithWarnings } = await import('../invoice.service.js');
+  const { createBill } = await import('../bill.service.js');
+  const { createJournalEntry } = await import('../journal-entry.service.js');
+
+  const documents: Record<string, number> = {};
+  const posted: string[] = [];
+  const links: Array<{ id: string; sourceId: string }> = [];
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i]!;
+    const contactId = d.name ? (look.contact(d.name, d.docType) as { id: string }).id : undefined;
+    const want = d.lines.reduce((s, l) => s.plus(l.amount), new Decimal(0));
+    let id: string;
+    let total: string;
+    try {
+      if (d.docType === 'invoice') {
+        const input = {
+          contactId: contactId!, txnDate: d.date, ...(d.dueDate ? { dueDate: d.dueDate } : {}), ...(d.memo ? { memo: d.memo } : {}),
+          warnOnly: true, salesTaxId: null, ...(d.number ? { txnNumber: d.number } : {}),
+          lines: d.lines.map((l) => ({
+            ...(l.account ? { accountId: look.account(l.account)! } : {}),
+            ...(l.item ? { itemId: look.item(l.item).item!.id } : {}),
+            ...(l.description ? { description: l.description } : {}),
+            quantity: '1', unitPrice: new Decimal(l.amount).toFixed(2), isTaxable: false,
+            ...(l.tag ? { tagId: look.tag(l.tag) } : {}),
+          })),
+        } as CreateInvoiceInput;
+        const { invoice } = await createInvoiceWithWarnings(tenantId, input, userId, companyId, tx);
+        id = invoice.id;
+        total = String(invoice.total);
+      } else if (d.docType === 'bill') {
+        const bill = await createBill(tenantId, {
+          contactId: contactId!, txnDate: d.date, ...(d.dueDate ? { dueDate: d.dueDate } : {}), ...(d.memo ? { memo: d.memo } : {}),
+          ...(d.number ? { vendorInvoiceNumber: d.number } : {}),
+          lines: d.lines.map((l) => {
+            const it = l.item ? look.item(l.item).item : null;
+            const accountId = l.account ? look.account(l.account)!
+              : (it!.itemType === 'inventory_part' ? it!.assetAccountId : it!.expenseAccountId)!;
+            return {
+              accountId, amount: l.amount, ...(it ? { itemId: it.id } : {}),
+              ...(l.description ? { description: l.description } : {}), ...(l.tag ? { tagId: look.tag(l.tag) } : {}),
+            };
+          }),
+        } as never, userId, companyId, tx);
+        id = bill.id;
+        total = String(bill.total);
+      } else {
+        const entry = await createJournalEntry(tenantId, {
+          txnDate: d.date, ...(d.number ? { txnNumber: d.number } : {}), ...(d.memo ? { memo: d.memo } : {}),
+          lines: d.lines.map((l) => {
+            const a = new Decimal(l.amount);
+            return {
+              accountId: look.account(l.account!)!,
+              debit: a.isNegative() ? '0' : a.toFixed(), credit: a.isNegative() ? a.negated().toFixed() : '0',
+              ...(l.description ? { description: l.description } : {}), ...(l.tag ? { tagId: look.tag(l.tag) } : {}),
+              ...(contactId ? { contactId } : {}),
+            };
+          }),
+        }, userId, companyId, {}, tx);
+        id = entry.id;
+        total = d.lines.filter((l) => !new Decimal(l.amount).isNegative()).reduce((s, l) => s.plus(l.amount), new Decimal(0)).toFixed();
+      }
+    } catch (err) {
+      throw rowError(err, d.rowNumber, d.docType.replace('_', ' '));
+    }
+    // Exactly the lines' sum, or nothing posts (a rounding or a price would change it).
+    if (d.docType !== 'journal_entry' && !new Decimal(total).equals(want)) {
+      throw AppError.unprocessableEntity(`The ${d.docType} at row ${d.rowNumber} posted ${total}, not ${want.toFixed()}.`,
+        'IMPORT_DOCUMENT_TOTAL', { rowNumber: d.rowNumber });
+    }
+    posted.push(id);
+    links.push({ id, sourceId: `${sessionId}:${d.rowNumber}` });
+    documents[d.docType] = (documents[d.docType] ?? 0) + 1;
+    if ((i + 1) % 100 === 0) ctx.progress('transactions', i + 1, docs.length);
+  }
+  await stampTransactions(tx, tenantId, batchId, posted);
+  for (let i = 0; i < links.length; i += IMPORT_ROWS_CHUNK) {
+    const chunk = links.slice(i, i + IMPORT_ROWS_CHUNK);
+    await tx.execute(sql`
+      UPDATE transactions t SET source = ${TXN_IMPORT_SOURCE}, source_id = v.sid
+      FROM (VALUES ${sql.join(chunk.map((l) => sql`(${l.id}::uuid, ${l.sourceId}::varchar)`), sql`, `)}) AS v(id, sid)
+      WHERE t.tenant_id = ${tenantId} AND t.id = v.id`);
+  }
+  if (countersBefore) {
+    const after = await readCounters(ctx);
+    const k = (ctx.priorValues.counters ??= {});
+    if (after.invoice !== countersBefore.invoice) {
+      k.invoice = { before: k.invoice?.before ?? countersBefore.invoice, after: after.invoice };
+    }
+  }
+  ctx.progress('transactions', docs.length, docs.length);
+  return { created: posted.length, skipped: 0, documents };
 }
