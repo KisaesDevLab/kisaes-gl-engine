@@ -113,6 +113,8 @@ export const transactions = pgTable('transactions', {
   // U-153 (migration 0256): a customer payment's SSUTA switch when first posted (NULL = before 0256: off).
   salesTaxSsuta: boolean('sales_tax_ssuta'),
   fromDepositId: uuid('from_deposit_id'),
+  // U-261 (migration 0282): the Bulk Import batch that created this row (undo finds it by this).
+  importBatchId: uuid('import_batch_id'),
   // Public invoice link + Stripe payment
   publicToken: varchar('public_token', { length: 64 }).unique(),
   stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 255 }),
@@ -243,6 +245,8 @@ export const tagGroups = pgTable('tag_groups', {
   description: text('description'),
   isSingleSelect: boolean('is_single_select').default(false),
   sortOrder: integer('sort_order').default(0),
+  // U-261 (migration 0282): the Bulk Import batch that created this group.
+  importBatchId: uuid('import_batch_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
@@ -260,6 +264,8 @@ export const tags = pgTable('tags', {
   isActive: boolean('is_active').default(true),
   usageCount: integer('usage_count').default(0),
   sortOrder: integer('sort_order').default(0),
+  // U-261 (migration 0282): the Bulk Import batch that created this tag.
+  importBatchId: uuid('import_batch_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
