@@ -333,6 +333,8 @@ export interface ImportCommitResult {
   accountsLinked?: number;
   /** GL only — tags auto-created by name during a Generic transaction import. */
   tagsCreated?: number;
+  /** GL in a batch with historyFrom (U-266) — entries dated before it, not posted. */
+  skippedBeforeHistory?: number;
   /** Set when commit threw partway. The UI surfaces this verbatim;
    *  combined with `created` it tells the operator how much landed before
    *  the failure so they can decide whether to roll back manually or

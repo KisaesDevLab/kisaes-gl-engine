@@ -846,7 +846,10 @@ export async function createSession(input: CreateSessionInput): Promise<{
   const range = glDateRange(input.kind, parsed.parsed);
   if (role === 'post') {
     await assertNotAlreadyCommitted(db, input.tenantId, input.companyId, rowHash);
-    await assertNoCommittedOverlap(db, input.tenantId, input.companyId, input.sourceSystem, range.from, range.to);
+    // U-266: journal files only; an open-item file's document dates are not a journal period.
+    if (input.kind === 'gl_transactions') {
+      await assertNoCommittedOverlap(db, input.tenantId, input.companyId, input.sourceSystem, range.from, range.to);
+    }
   }
 
   // jsonSafe scrubs any stray Decimal/Date instances so the JSONB
@@ -1376,13 +1379,19 @@ export interface BatchShared {
   accountMap: Record<string, string>;
   /** U-265: the batch's classMap (lowercased class name -> {group?, tag}). */
   classMap: Map<string, { group?: string; tag: string }>;
+  /** U-266: the batch's historyFrom: journal entries dated before it are not posted (counted). */
+  historyFrom?: string;
 }
 
 export function newBatchShared(
   kinds: string[],
-  opts: { strict?: boolean; accountMap?: Record<string, string>; classMap?: Record<string, { group?: string; tag: string }> } = {},
+  opts: {
+    strict?: boolean; accountMap?: Record<string, string>; classMap?: Record<string, { group?: string; tag: string }>;
+    historyFrom?: string;
+  } = {},
 ): BatchShared {
   return {
+    ...(opts.historyFrom ? { historyFrom: opts.historyFrom } : {}),
     openItems: { ar: kinds.includes('open_invoices'), ap: kinds.includes('unpaid_bills') },
     inventory: kinds.includes('inventory_valuation'),
     aliases: new Map(),
@@ -2196,10 +2205,15 @@ async function commitGl(
   const { acctRows, resolve } = await accountResolver(ctx);
   const redirect = await historyRedirect(ctx, acctRows);
   const fallbackOn = !ctx.shared?.strict && suspenseFallbackOn(options);
+  // U-266: entries before the batch's historyFrom are skipped in place (never filtered out of the
+  // array: an entry's sourceId is its index in the file), counted, and need no account or class.
+  const historyFrom = ctx.shared?.historyFrom;
+  const posts = (e: CanonicalGlEntry) => !historyFrom || e.date >= historyFrom;
   if (ctx.shared?.strict) {
     const missing = new Set<string>();
     let first = 0;
     for (const e of entries) {
+      if (!posts(e)) continue;
       for (const line of e.lines) {
         if (resolve(line.accountNumber, line.accountName)) continue;
         missing.add(line.accountNumber ?? line.accountName ?? '?');
@@ -2214,7 +2228,7 @@ async function commitGl(
   // populates line.tagName from its Tag column; the QBO/QBD adapters populate
   // it from the Class column (class tracking); for other sources this is a
   // no-op. U-265: the batch's classMap turns a class into a tag in a group.
-  const classNames = entries.flatMap((e) => e.lines.map((l) => l.tagName).filter((n): n is string => !!n));
+  const classNames = entries.filter(posts).flatMap((e) => e.lines.map((l) => l.tagName).filter((n): n is string => !!n));
   const { map: tagMap, created: tagsCreated, mapped: classesMapped } = ctx.shared && ctx.shared.classMap.size > 0
     ? await ensureMappedTags(ctx, classNames)
     : { ...(await ensureTags(tx, tenantId, companyId, classNames, batchId)), mapped: 0 };
@@ -2243,10 +2257,15 @@ async function commitGl(
     vendorByName.set(key, vendorByName.has(key) ? null : v.id);
   }
   let vendorsMatched = 0;
+  let skippedBeforeHistory = 0;
   const postedIds: string[] = [];
 
   for (let idx = 0; idx < entries.length; idx++) {
     const e = entries[idx]!;
+    if (!posts(e)) {
+      skippedBeforeHistory++;
+      continue;
+    }
     const variant = e.isVoidReversal ? 'V' : 'O';
     const sourceId = `${fileHash}:${idx}:${variant}`;
     if (seenSourceIds.has(sourceId)) {
@@ -2327,11 +2346,47 @@ async function commitGl(
     created, skipped, voidsReversed, vendorsMatched,
     ...(tagsCreated ? { tagsCreated } : {}),
     ...(classesMapped ? { classesMapped } : {}),
+    ...(historyFrom ? { skippedBeforeHistory } : {}),
     ...(redirect && redirect.count() > 0 ? { redirectedLines: redirect.count() } : {}),
     ...(unmappedKeys.size > 0
       ? { unmappedToSuspense: unmappedKeys.size, unmappedAccountKeys: [...unmappedKeys].sort() }
       : {}),
   };
+}
+
+/**
+ * U-266: a conversion whose conversion-date trial balance shows a nonzero
+ * balance on an inventory asset account (tagged inventory_asset, or the asset
+ * account of an inventory part, the batch's own items included) needs the
+ * inventory valuation file: 422 IMPORT_VALUATION_REQUIRED {sessionId,
+ * accounts [{sourceKey, balance}]}. An account only QuickBooks knows as
+ * inventory (no part names it, no tag) can't be told apart and isn't refused.
+ */
+export async function assertValuationNotNeeded(
+  ctx: CommitSessionContext,
+  sessions: Array<typeof importSessions.$inferSelect>,
+): Promise<void> {
+  const inventoryIds = new Set(await inventoryAssetAccountIds(ctx.tx, ctx.tenantId));
+  if (inventoryIds.size === 0) return;
+  const { resolve } = await accountResolver(ctx);
+  for (const s of sessions) {
+    const rows = (await loadParsedRows(ctx.tx, s)) as CanonicalTrialBalanceRow[];
+    const byKey = new Map<string, Decimal>();
+    for (const r of rows) {
+      const id = resolve(r.accountNumber, r.accountName);
+      if (!id || !inventoryIds.has(id)) continue;
+      const key = sourceAccountKey(r.accountNumber, r.accountName) ?? '?';
+      byKey.set(key, (byKey.get(key) ?? new Decimal(0)).plus(r.debit ?? '0').minus(r.credit ?? '0'));
+    }
+    const nonzero = [...byKey].filter(([, v]) => !v.isZero()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    if (nonzero.length > 0) {
+      throw AppError.unprocessableEntity(
+        'The trial balance shows an inventory balance. Add the Inventory Valuation Summary as of the conversion date.',
+        'IMPORT_VALUATION_REQUIRED',
+        { sessionId: s.id, accounts: nonzero.map(([sourceKey, v]) => ({ sourceKey, balance: v.toFixed(Math.max(2, v.decimalPlaces())) })) },
+      );
+    }
+  }
 }
 
 // ── Open items (U-264, qbd-open-items-v1) ─────────────────────────
