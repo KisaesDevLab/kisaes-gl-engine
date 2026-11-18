@@ -1646,7 +1646,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * 202 (423 TB_PERIOD_LOCKED, 403 CLOSING_PASSWORD_INVALID, 429; staff confirm with confirmClosedPeriod when no
    * password is set); one closing_date_override audit row per batch. Re-import (by parsed-row SHA-256): 409
    * IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} at upload and commit; 409 IMPORT_PERIOD_OVERLAP {batchId|null,
-   * from, to} for journal dates overlapping a committed journal of the same source or another journal of the batch; an
+   * from, to} for journal dates overlapping a committed journal (any source, P31 review M5) or another journal of the batch; an
    * undone batch frees both. Upload takes role post|reference (reference files are never posted). Other refusals: 409
    * IMPORT_SESSION_IN_BATCH, IMPORT_TERMINAL, IMPORT_HAS_ERRORS, IMPORT_COMPANY_NOT_EMPTY, IMPORT_FISCAL_YEAR_LOCKED,
    * IMPORT_BATCH_UNDONE, IMPORT_BATCH_NOT_COMMITTED; 400 IMPORT_SOURCE_MISMATCH, IMPORT_BATCH_EMPTY. Rights: commit and
@@ -1728,7 +1728,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * IMPORT_HISTORY_GAP (days > 0 between them) | IMPORT_JOURNAL_BEFORE_OPENING, message, openingBalanceDate,
    * firstJournalDate, days?}]} on create and GET (live while draft or failed; kept in result.dateCheck once committed);
    * warnings never block. Several journal files per batch, each within the per-file caps; overlapping journal files
-   * in one batch or with a committed journal file of the same source are refused (409 IMPORT_PERIOD_OVERLAP), also
+   * in one batch or with a committed journal file of any source are refused (409 IMPORT_PERIOD_OVERLAP), also
    * re-checked inside the commit job under the company lock; open-item files are never overlap-checked. A conversion
    * batch (not Accounting Power) with no inventory valuation whose conversion-date trial balance (reference, or posted
    * on the conversion date) shows a nonzero balance on an inventory asset account (tagged, or an inventory part's)

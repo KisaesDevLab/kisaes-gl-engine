@@ -244,6 +244,14 @@ export const ITEM_TYPE_MAP: Record<string, 'service' | 'non_inventory' | 'other_
  */
 export const QBD_PAYCHECK_TYPES: ReadonlySet<string> = new Set(['paycheck', 'payroll check', 'payroll adjustment']);
 
+/**
+ * QuickBooks Online Journal "Transaction Type" values whose Name and
+ * Memo/Description carry an employee's name (Q-P31m, extended by the P31
+ * review M7): dropped at parse time like QBD_PAYCHECK_TYPES. Generic journal
+ * files have no type column, so nothing marks a paycheck there.
+ */
+export const QBO_PAYCHECK_TYPES: ReadonlySet<string> = new Set(['paycheck', 'payroll check', 'payroll adjustment']);
+
 /** transactions.source values written by this importer. */
 export const IMPORT_SOURCE_TAGS = {
   AP_GL: 'accounting_power_import',
