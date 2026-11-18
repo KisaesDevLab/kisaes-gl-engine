@@ -39046,7 +39046,8 @@
                                     "open_invoices",
                                     "unpaid_bills",
                                     "items",
-                                    "inventory_valuation"
+                                    "inventory_valuation",
+                                    "transactions"
                                   ],
                                   "type": "string"
                                 },
@@ -39238,7 +39239,7 @@
         ]
       },
       "post": {
-        "description": "Groups uploaded sessions (same sourceSystem, status uploaded) into one batch, the unit of commit, undo and record. 201 {batch} with status draft. 409 IMPORT_SESSION_IN_BATCH {sessionId, batchId} when a session already belongs to a batch; 409 IMPORT_TERMINAL when a session is no longer uploaded; 400 IMPORT_SOURCE_MISMATCH; 409 IMPORT_PERIOD_OVERLAP {batchId|null, from, to} when two journal files of the batch, or one and a journal file a committed batch holds, cover the same dates; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} when a committed batch holds the same data (by parsed-row hash); 409 IMPORT_FISCAL_YEAR_LOCKED when options.fiscalYearStartMonth is set and the company has transactions. U-265 (qbd-mapping-v1): options.accountMap {sourceKey (the source account number, else its name; preview.accountMatches[].sourceKey): account id | \"create\"} (400 IMPORT_ACCOUNT_MAP_INVALID {keys} for an id outside the company); options.classMap {className: {group?, tag}}. A batch never posts to suspense: its commit fails with 422 IMPORT_UNMAPPED_ACCOUNT {unmappedAccountKeys, unmappedCount} for any account it can not resolve. Options can not change after create: to retry with a map, DELETE the failed batch's sessions, upload the files again and create a new batch. U-266 (qbd-dates-v1): with options.conversionDate, 422 IMPORT_DATE_MISMATCH {conversionDate, files [{sessionId, kind, role, originalFilename, reportDate, reason not_conversion_date|no_date|after_conversion}]} when a reference trial balance, an open-item report or the inventory valuation is not dated the conversion date (or a posted trial balance is after it); 422 IMPORT_JOURNAL_AFTER_CONVERSION {conversionDate, rowCount, rows [{sessionId, rowNumber, date, code, message}] (up to 500)} for journal rows after it; 400 IMPORT_BAD_DATE when historyFrom is after conversionDate. Journal rows before options.historyFrom are not posted. batch.dateCheck {conversionDate, historyFrom, historySkipped, openingBalanceDate, firstJournalDate, warnings [{code IMPORT_HISTORY_GAP|IMPORT_JOURNAL_BEFORE_OPENING, message, openingBalanceDate, firstJournalDate, days?}]} (warnings never block). Several journal files per batch (one per year); their dates may not overlap each other or a committed journal file (409 IMPORT_PERIOD_OVERLAP).",
+        "description": "Groups uploaded sessions (same sourceSystem, status uploaded) into one batch, the unit of commit, undo and record. 201 {batch} with status draft. 409 IMPORT_SESSION_IN_BATCH {sessionId, batchId} when a session already belongs to a batch; 409 IMPORT_TERMINAL when a session is no longer uploaded; 400 IMPORT_SOURCE_MISMATCH; 409 IMPORT_PERIOD_OVERLAP {batchId|null, from, to} when two journal files of the batch, or one and a journal file a committed batch holds, cover the same dates; 409 IMPORT_ALREADY_COMMITTED {batchId, sessionId, committedAt} when a committed batch holds the same data (by parsed-row hash); 409 IMPORT_FISCAL_YEAR_LOCKED when options.fiscalYearStartMonth is set and the company has transactions. U-265 (qbd-mapping-v1): options.accountMap {sourceKey (the source account number, else its name; preview.accountMatches[].sourceKey): account id | \"create\"} (400 IMPORT_ACCOUNT_MAP_INVALID {keys} for an id outside the company); options.classMap {className: {group?, tag}}. A batch never posts to suspense: its commit fails with 422 IMPORT_UNMAPPED_ACCOUNT {unmappedAccountKeys, unmappedCount} for any account it can not resolve. Options can not change after create: to retry with a map, DELETE the failed batch's sessions, upload the files again and create a new batch. U-266 (qbd-dates-v1): with options.conversionDate, 422 IMPORT_DATE_MISMATCH {conversionDate, files [{sessionId, kind, role, originalFilename, reportDate, reason not_conversion_date|no_date|after_conversion}]} when a reference trial balance, an open-item report or the inventory valuation is not dated the conversion date (or a posted trial balance is after it); 422 IMPORT_JOURNAL_AFTER_CONVERSION {conversionDate, rowCount, rows [{sessionId, rowNumber, date, code, message}] (up to 500)} for journal rows after it; 400 IMPORT_BAD_DATE when historyFrom is after conversionDate. Journal rows before options.historyFrom are not posted. batch.dateCheck {conversionDate, historyFrom, historySkipped, openingBalanceDate, firstJournalDate, warnings [{code IMPORT_HISTORY_GAP|IMPORT_JOURNAL_BEFORE_OPENING, message, openingBalanceDate, firstJournalDate, days?}]} (warnings never block). Several journal files per batch (one per year); their dates may not overlap each other or a committed journal file (409 IMPORT_PERIOD_OVERLAP). U-268 (imports-transactions-v1): a \"transactions\" file (kind transactions, Generic) posts its invoices, bills and journal entries through their services in the batch transaction (no sales tax); a reference the company lacks fails the commit with 422 IMPORT_UNKNOWN_REF {rowNumber, field, refs [{rowNumber, field, reason}], refCount}; such files are never overlap-checked.",
         "operationId": "post_api_v1_imports_batches",
         "requestBody": {
           "content": {
@@ -39674,7 +39675,8 @@
                                   "open_invoices",
                                   "unpaid_bills",
                                   "items",
-                                  "inventory_valuation"
+                                  "inventory_valuation",
+                                  "transactions"
                                 ],
                                 "type": "string"
                               },
@@ -40196,7 +40198,8 @@
                                   "open_invoices",
                                   "unpaid_bills",
                                   "items",
-                                  "inventory_valuation"
+                                  "inventory_valuation",
+                                  "transactions"
                                 ],
                                 "type": "string"
                               },
@@ -41899,7 +41902,8 @@
                                   "open_invoices",
                                   "unpaid_bills",
                                   "items",
-                                  "inventory_valuation"
+                                  "inventory_valuation",
+                                  "transactions"
                                 ],
                                 "type": "string"
                               },

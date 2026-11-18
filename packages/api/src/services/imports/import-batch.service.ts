@@ -77,6 +77,8 @@ export interface BatchError {
   message: string;
   status?: number;
   rowNumber?: number;
+  /** U-268: the column at fault (IMPORT_UNKNOWN_REF), when one cell is to blame. */
+  field?: string;
   sessionId?: string;
   details?: Record<string, unknown>;
 }
@@ -207,7 +209,8 @@ async function assertSessionsImportable(ex: DbOrTx, tenantId: string, companyId:
 }
 
 /** Errors that block a commit: those found at upload, except the ones the commit itself settles. */
-const RECHECKED_AT_COMMIT = new Set(['IMPORT_UNKNOWN_ACCOUNT', 'IMPORT_LOCKED_PERIOD']);
+// U-268: IMPORT_UNKNOWN_REF too (a chart, name or item file of the same batch may bring the reference).
+const RECHECKED_AT_COMMIT = new Set(['IMPORT_UNKNOWN_ACCOUNT', 'IMPORT_LOCKED_PERIOD', 'IMPORT_UNKNOWN_REF']);
 
 function assertNoBlockingErrors(sessions: SessionRow[]): void {
   for (const s of sessions) {
@@ -571,7 +574,8 @@ function earliestPostingDate(sessions: SessionRow[], historyFrom?: string): stri
     // Open items (U-264) post on their document dates: dateFrom is the earliest.
     const d = s.kind === 'trial_balance' ? s.reportDate
       : s.kind === 'gl_transactions' ? glFrom
-        : s.kind === 'open_invoices' || s.kind === 'unpaid_bills' ? s.dateFrom
+        // U-268: spreadsheet documents post on their own dates too.
+        : s.kind === 'open_invoices' || s.kind === 'unpaid_bills' || s.kind === 'transactions' ? s.dateFrom
           // U-265: opening stock is dated the valuation's report date.
           : s.kind === 'inventory_valuation' && s.rowCount > 0 ? s.reportDate : null;
     if (d && (min === null || d < min)) min = d;
@@ -717,12 +721,15 @@ function errorOf(e: unknown, sessionId: string | null): BatchError {
   if (e instanceof AppError) {
     const details = e.details ?? {};
     const rowNumber = typeof details['rowNumber'] === 'number' ? details['rowNumber'] as number : undefined;
+    // U-268: the column at fault, beside rowNumber (it stays in details too).
+    const field = typeof details['field'] === 'string' ? details['field'] as string : undefined;
     const { rowNumber: _r, failedAtIndex: _f, originalError: _o, ...rest } = details as Record<string, unknown>;
     return {
       code: e.code ?? 'IMPORT_POST_FAILED',
       message: e.message,
       status: e.statusCode,
       ...(rowNumber !== undefined ? { rowNumber } : {}),
+      ...(field !== undefined ? { field } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(Object.keys(rest).length > 0 ? { details: rest } : {}),
     };
