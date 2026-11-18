@@ -326,15 +326,23 @@ describe('undo sweep at size and leftovers (U-261)', () => {
     const coaCsv = COA_CSV + `"${seeded!.accountNumber}","Renamed by import","E","Expenses","",""\n`;
     const before = await companySnapshot(c);
     const coa = await upload(c, 'coa.csv', coaCsv, 'coa', { updateExistingCoa: true });
-    const gl = await upload(c, 'gl.csv', glCsv(2025, [1, 2], '9999'), 'gl_transactions');
-    const id = await createBatch([coa, gl]);
+    const id = await createBatch([coa]);
     expect((await run(`/batches/${id}/commit`, {})).status).toBe(202);
     const committed = await batchRow(id);
     expect(committed.status, JSON.stringify(committed.error)).toBe('committed');
     const [renamed] = await db.select().from(accounts).where(eq(accounts.id, seeded!.id));
     expect(renamed!.name).toBe('Renamed by import');
-    expect((committed.result as any).sessions[gl].unmappedToSuspense).toBe(1);
+    const afterCoa = await companySnapshot(c);
+    // U-265: a batch never posts to suspense; the old one-session commit still does, as a batch of its own.
+    const gl = await upload(c, 'gl.csv', glCsv(2025, [1, 2], '9999'), 'gl_transactions');
+    const single = await post(`/${gl}/commit`, {});
+    expect(single.status, JSON.stringify(single.json)).toBe(200);
+    expect(single.json['result'].unmappedToSuspense).toBe(1);
+    const glBatch = String(single.json['session'].batchId);
 
+    expect((await run(`/batches/${glBatch}/undo`, {})).status).toBe(202);
+    expect((await batchRow(glBatch)).status).toBe('undone');
+    expect(await companySnapshot(c)).toEqual(afterCoa);
     expect((await run(`/batches/${id}/undo`, {})).status).toBe(202);
     expect((await batchRow(id)).status).toBe('undone');
     expect(await companySnapshot(c)).toEqual(before);

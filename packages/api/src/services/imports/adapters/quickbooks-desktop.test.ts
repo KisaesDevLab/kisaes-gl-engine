@@ -81,10 +81,11 @@ describe('QuickBooks Desktop adapter', () => {
       `,"Active","Café Beausoleil",0.00,,,"Café Beausoleil"\r\n` +
       `,"Inactive","Old Vendor",0.00,,,"Old Vendor"\r\n`;
 
-    it('reads vendor names, skips inactive, preserves accented latin1 names', () => {
+    it('reads vendor names, marks inactive ones (U-265: they come in inactive), preserves accented latin1 names', () => {
       const { rows, errors } = qbd.parseContacts(buf(csv), 'vendor');
       expect(errors).toEqual([]);
-      expect(rows.map((r) => r.displayName)).toEqual(['Baisch & Skinner', 'Café Beausoleil']);
+      expect(rows.filter((r) => r.isActive !== false).map((r) => r.displayName)).toEqual(['Baisch & Skinner', 'Café Beausoleil']);
+      expect(rows.filter((r) => r.isActive === false)).toHaveLength(1);
       expect(rows[0]).toMatchObject({ contactType: 'vendor', phone: '417-555-1000' });
     });
   });

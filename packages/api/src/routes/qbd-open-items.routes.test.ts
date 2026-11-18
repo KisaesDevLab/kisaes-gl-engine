@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import DecimalLib from 'decimal.js';
 import { db } from '../db/index.js';
 import { accounts, contacts, companies, transactions, billPaymentApplications, vendorCreditApplications } from '../db/schema/index.js';
@@ -256,7 +256,8 @@ async function accountId(where: { systemTag?: string; name?: string }) {
 }
 
 async function contactId(name: string, contactType: string) {
-  const [x] = await db.select().from(contacts).where(and(eq(contacts.tenantId, c.tenantId), eq(contacts.displayName, name), eq(contacts.contactType, contactType)));
+  // U-265 (Q-77): a name on both lists is one contact of kind 'both'.
+  const [x] = await db.select().from(contacts).where(and(eq(contacts.tenantId, c.tenantId), eq(contacts.displayName, name), inArray(contacts.contactType, [contactType, 'both'])));
   return x!.id;
 }
 
@@ -387,7 +388,8 @@ describe.each<Depth>(['journal', 'tb-only'])('QBD conversion with open items, hi
 
     const sessions = batch.sessions as Body[];
     const oi = sessions.find((s) => s.kind === 'open_invoices')!.commitResult;
-    expect(oi).toEqual({ created: 6, skipped: 0, documents: { invoice: 4, credit_memo: 2 }, contactsCreated: 1 });
+    // U-265: the inactive customer comes in (inactive) with the customer list, so the open items create none.
+    expect(oi).toEqual({ created: 6, skipped: 0, documents: { invoice: 4, credit_memo: 2 } });
     expect(sessions.find((s) => s.kind === 'unpaid_bills')!.commitResult)
       .toEqual({ created: 3, skipped: 0, documents: { bill: 2, vendor_credit: 1 } });
     expect(sessions.find((s) => s.kind === 'coa')!.commitResult.mergedIntoSystemAccounts).toBe(3);
@@ -397,8 +399,11 @@ describe.each<Depth>(['journal', 'tb-only'])('QBD conversion with open items, hi
     const dogwood = await contactId('Dogwood Ltd', 'customer');
     const birchV = await contactId('Birch & Co', 'vendor');
     const cedar = await contactId('Cedar Supply', 'vendor');
-    // The inactive customer (left out of the list import) was created by the open items, stamped with the batch.
-    expect((await db.select().from(contacts).where(eq(contacts.id, dogwood)))[0]!.importBatchId).toBe(id);
+    // The inactive customer came in inactive with the list (U-265), stamped with the batch; Birch & Co is one contact, both kinds.
+    const [dog] = await db.select().from(contacts).where(eq(contacts.id, dogwood));
+    expect([dog!.importBatchId, dog!.isActive]).toEqual([id, false]);
+    expect(birchV).toBe(birchC);
+    expect((await db.select().from(contacts).where(eq(contacts.id, birchC)))[0]!.contactType).toBe('both');
 
     const items = await arTies(CONV, '1850.00', [alder, birchC, dogwood]);
     expect(items.map((i) => `${i.txnType}:${m2(i.openExact)}`).sort()).toEqual([
