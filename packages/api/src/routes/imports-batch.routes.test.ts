@@ -134,7 +134,7 @@ describe('batch commit (U-261)', () => {
     // A new key on a committed batch: 409.
     const twice = await post(`/batches/${b['id']}/commit`, {});
     expect(twice.status).toBe(409);
-    expect(twice.json.error.code).toBe('IMPORT_ALREADY_COMMITTED');
+    expect(twice.json['error'].code).toBe('IMPORT_ALREADY_COMMITTED');
   });
 
   it('reference files are kept with the batch but never posted', async () => {
@@ -169,7 +169,7 @@ describe('batch refusals (U-261, U-263)', () => {
     await createBatch([coa]);
     const r = await post('/batches', { sourceSystem: 'accounting_power', kind: 'single', sessionIds: [coa] }, null);
     expect(r.status).toBe(409);
-    expect(r.json.error.code).toBe('IMPORT_SESSION_IN_BATCH');
+    expect(r.json['error'].code).toBe('IMPORT_SESSION_IN_BATCH');
     // The old one-session commit refuses it too.
     await expect(importsService.commitSession(c.tenantId, c.companyId, c.userId, coa))
       .rejects.toMatchObject({ code: 'IMPORT_SESSION_IN_BATCH' });
@@ -182,7 +182,7 @@ describe('batch refusals (U-261, U-263)', () => {
     await upload(c, 'coa.csv', COA_CSV, 'coa');
     const r = await post('/batches', { sourceSystem: 'accounting_power', kind: 'conversion', sessionIds: [a, b] }, null);
     expect(r.status).toBe(409);
-    expect(r.json.error).toMatchObject({ code: 'IMPORT_PERIOD_OVERLAP', details: { from: '2025-03-15', to: '2025-03-15' } });
+    expect(r.json['error']).toMatchObject({ code: 'IMPORT_PERIOD_OVERLAP', details: { from: '2025-03-15', to: '2025-03-15' } });
   });
 
   it('committed data is refused at upload and at commit; overlap with a committed journal too', async () => {
@@ -219,7 +219,7 @@ describe('batch refusals (U-261, U-263)', () => {
     await inside;
     const busy = await post(`/batches/${b2['id']}/commit`, {});
     expect(busy.status).toBe(409);
-    expect(busy.json.error.code).toBe('IMPORT_BUSY');
+    expect(busy.json['error'].code).toBe('IMPORT_BUSY');
     await expect(importsService.commitSession(c.tenantId, c.companyId, c.userId, legacy)).rejects.toMatchObject({ code: 'IMPORT_BUSY' });
     const polled = await get(`/batches/${a['id']}`);
     expect(polled.json['batch'].status).toBe('committing');
@@ -237,7 +237,7 @@ describe('batch refusals (U-261, U-263)', () => {
     await db.update(importBatches).set({ status: 'committing' }).where(eq(importBatches.id, b['id']));
     const stuck = await post(`/batches/${b['id']}/commit`, {});
     expect(stuck.status).toBe(409);
-    expect(stuck.json.error.code).toBe('IMPORT_BUSY');
+    expect(stuck.json['error'].code).toBe('IMPORT_BUSY');
     expect(await batchService.recoverInterruptedBatches()).toBeGreaterThanOrEqual(1);
     const after = await get(`/batches/${b['id']}`);
     expect(after.json['batch'].status).toBe('failed');
@@ -260,11 +260,11 @@ describe('batch refusals (U-261, U-263)', () => {
     const gl = await upload(c, 'gl-2025.csv', glCsv(2025, [1]), 'gl_transactions');
     const r = await post('/batches', { sourceSystem: 'accounting_power', kind: 'conversion', sessionIds: [gl], options: { fiscalYearStartMonth: 7 } }, null);
     expect(r.status).toBe(409);
-    expect(r.json.error.code).toBe('IMPORT_FISCAL_YEAR_LOCKED');
+    expect(r.json['error'].code).toBe('IMPORT_FISCAL_YEAR_LOCKED');
     const b = await createBatch([gl], { requireEmptyCompany: true });
     const nonEmpty = await post(`/batches/${b['id']}/commit`, {});
     expect(nonEmpty.status).toBe(409);
-    expect(nonEmpty.json.error.code).toBe('IMPORT_COMPANY_NOT_EMPTY');
+    expect(nonEmpty.json['error'].code).toBe('IMPORT_COMPANY_NOT_EMPTY');
   });
 
   it('404 for another company\'s batch; 400 for a bad id', async () => {
