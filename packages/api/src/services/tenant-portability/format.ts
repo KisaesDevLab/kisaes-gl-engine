@@ -3,7 +3,14 @@
 // See LICENSE and NOTICE.md for terms.
 
 /**
- * The `mybooks-tenant-archive` container format, formatVersion 1.
+ * The `mybooks-tenant-archive` container format, formatVersion 2.
+ *
+ * Version 2 (U-282) has the container, crypto and parts of version 1; it
+ * adds optional manifest members only (`verificationTotals`,
+ * `options.transfer`, the `transfer_user_names` table part), so a reader
+ * of version 2 reads version 1 unchanged. Writers emit
+ * ARCHIVE_FORMAT_VERSION; readers accept MIN_ARCHIVE_FORMAT_VERSION up to
+ * it. A higher version is 409 ARCHIVE_TOO_NEW (update the application).
  *
  *   envelope.json                        plaintext: format, archiveId, KDF/cipher parameters, keyCheck
  *   manifest.json.enc                    encrypted manifest
@@ -20,7 +27,13 @@
  */
 
 export const ARCHIVE_FORMAT = 'mybooks-tenant-archive';
-export const ARCHIVE_FORMAT_VERSION = 1;
+/** The version this engine writes (U-282). */
+export const ARCHIVE_FORMAT_VERSION = 2;
+/** The oldest version this engine reads. */
+export const MIN_ARCHIVE_FORMAT_VERSION = 1;
+
+/** The message of ARCHIVE_TOO_NEW, for a newer formatVersion or a newer schema. */
+export const ARCHIVE_TOO_NEW_MESSAGE = 'This archive was made by a newer version. Update the application and try again.';
 
 export const ENVELOPE_ENTRY = 'envelope.json';
 export const MANIFEST_ENTRY = 'manifest.json.enc';

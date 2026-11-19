@@ -16,7 +16,7 @@ import { EntryDecryptor, openEnvelopeAsync, validateEnvelope, type ArchiveEnvelo
 import { openArchiveZip, readBounded, type ZipEntry } from './archive-container.js';
 import { ArchiveError } from './errors.js';
 import {
-  ARCHIVE_FORMAT, ARCHIVE_FORMAT_VERSION, ENVELOPE_ENTRY, HOST_MAX_BYTES, IDENTITY_ENTRIES, MANIFEST_ENTRY,
+  ARCHIVE_FORMAT, ENVELOPE_ENTRY, HOST_MAX_BYTES, IDENTITY_ENTRIES, MANIFEST_ENTRY,
   filePartName, parseEntryName, tablePartName, zipEntryName, type ArchiveManifest, type ManifestFile, type ManifestTable,
 } from './format.js';
 
@@ -76,7 +76,8 @@ function validateFile(raw: unknown, i: number): ManifestFile {
 /** Structural validation of a decrypted manifest. Values are checked for shape only. */
 export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): ArchiveManifest {
   if (!isObject(raw)) throw corrupt('manifest is not an object');
-  if (raw['format'] !== ARCHIVE_FORMAT || raw['formatVersion'] !== ARCHIVE_FORMAT_VERSION) throw corrupt('manifest format');
+  // The manifest carries the envelope's version (validated 1..ARCHIVE_FORMAT_VERSION there, U-282).
+  if (raw['format'] !== ARCHIVE_FORMAT || raw['formatVersion'] !== envelope.formatVersion) throw corrupt('manifest format');
   if (raw['archiveId'] !== envelope.archiveId) throw corrupt('manifest archiveId differs from the envelope');
   const schema = raw['schema'];
   if (!isObject(schema) || !Number.isInteger(schema['version'])) throw corrupt('manifest schema');

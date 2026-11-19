@@ -37,7 +37,7 @@ import { ArchiveError } from './errors.js';
 import { resolveForExport } from './files.js';
 import { computeTenantFingerprint, computeTrialBalance, countUnbalancedTransactions, ledgerVersionSum } from './fingerprint.js';
 import {
-  HOST_MAX_BYTES, IDENTITY_ENTRIES, MANIFEST_ENTRY, filePartName, tablePartName,
+  ARCHIVE_FORMAT_VERSION, HOST_MAX_BYTES, IDENTITY_ENTRIES, MANIFEST_ENTRY, filePartName, tablePartName,
   type ArchiveManifest, type ManifestFile, type ManifestTable,
 } from './format.js';
 import { USERS_PROJECTION_SQL } from './identity.js';
@@ -531,7 +531,7 @@ async function exportLocked(
 
       const manifest: ArchiveManifest = {
         format: 'mybooks-tenant-archive',
-        formatVersion: 1,
+        formatVersion: ARCHIVE_FORMAT_VERSION,
         archiveId,
         engine: { version: getCurrentVersion(), commit: process.env['ENGINE_COMMIT'] || null },
         schema: { version: schema.version, tag: schema.tag },
