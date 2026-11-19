@@ -69,6 +69,25 @@ export class IdMap {
     }
   }
 
+  /**
+   * Maps every not yet mapped id of `oldIds` to a fresh uuid so that the new
+   * ids sort as the old ones do (U-283, B2): N random uuids are generated,
+   * sorted, and handed out in old-id order. Positions that break ties by id
+   * (the stock ledger's transaction_id, then id) keep their order through
+   * an import. Ids already mapped (a shared key, a global row) keep theirs.
+   */
+  freshOrdered(oldIds: Iterable<string>): void {
+    const todo = [...new Set([...oldIds].map((o) => o.toLowerCase()))].filter((o) => !this.forward.has(o)).sort();
+    if (todo.length === 0) return;
+    const pool = new Set<string>();
+    while (pool.size < todo.length) {
+      const n = crypto.randomUUID();
+      if (!this.forward.has(n) && !this.reverse.has(n) && !NEVER_REMAPPED_UUIDS.includes(n)) pool.add(n);
+    }
+    const sorted = [...pool].sort();
+    for (let i = 0; i < todo.length; i++) this.set(todo[i]!, sorted[i]!);
+  }
+
   /** Replaces every mapped uuid token in `text` (old -> new). */
   substitute(text: string): string {
     return text.replace(UUID_TOKEN_RE, (m) => this.forward.get(m.toLowerCase()) ?? m);

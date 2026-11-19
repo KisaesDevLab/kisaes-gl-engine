@@ -15,6 +15,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { EntryDecryptor, openEnvelopeAsync, validateEnvelope, type ArchiveEnvelope } from './archive-crypto.js';
 import { openArchiveZip, readBounded, type ZipEntry } from './archive-container.js';
 import { ArchiveError } from './errors.js';
+import { validateManifestTotals } from './verification-totals.js';
 import {
   ARCHIVE_FORMAT, ENVELOPE_ENTRY, HOST_MAX_BYTES, IDENTITY_ENTRIES, MANIFEST_ENTRY,
   filePartName, parseEntryName, tablePartName, zipEntryName, type ArchiveManifest, type ManifestFile, type ManifestTable,
@@ -122,6 +123,8 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   if (!Array.isArray(raw['warnings']) || !(raw['warnings'] as unknown[]).every((w) => typeof w === 'string')) throw corrupt('manifest warnings');
   for (const k of ['excludedTables', 'redactedColumns', 'nulledReferences'] as const) if (!isObject(raw[k])) throw corrupt(`manifest ${k}`);
   for (const k of ['globalRows', 'canonical'] as const) if (raw[k] !== undefined && !isObject(raw[k])) throw corrupt(`manifest ${k}`);
+  // U-283: optional; exact decimal strings and integer counts when present.
+  if (raw['verificationTotals'] !== undefined && !validateManifestTotals(raw['verificationTotals'])) throw corrupt('manifest verificationTotals');
   const declared = tables.reduce((s, t) => s + t.bytes, 0) + files.reduce((s, f) => s + f.bytes, 0);
   if (declared > ARCHIVE_MAX_PLAINTEXT_BYTES) throw new ArchiveError('ARCHIVE_TOO_LARGE', 'The archive declares more data than this engine accepts.');
   return raw as unknown as ArchiveManifest;

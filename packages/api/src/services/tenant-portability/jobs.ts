@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import { AppError } from '../../utils/errors.js';
 import { errorSummaryForLog } from '../../utils/log-safe.js';
+import { runWithoutViewer } from '../visibility.js';
 import { ArchiveError } from './errors.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
@@ -93,7 +94,9 @@ export function startJob<R>(
   const run = async (): Promise<void> => {
     job.status = 'running';
     try {
-      const result = await runner(progress);
+      // A tenant archive hides nothing (U-283): the job never runs as the
+      // requester's viewer, so hidden (sensitive) accounts are always read.
+      const result = await runWithoutViewer(() => runner(progress));
       job.status = 'succeeded';
       job.progress = 100;
       job.step = 'done';

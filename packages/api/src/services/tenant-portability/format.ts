@@ -26,6 +26,8 @@
  * metadata goes in `manifest.host`, never in extra entries.
  */
 
+import type { VerificationTotals } from './verification-totals.js';
+
 export const ARCHIVE_FORMAT = 'mybooks-tenant-archive';
 /** The version this engine writes (U-282). */
 export const ARCHIVE_FORMAT_VERSION = 2;
@@ -174,6 +176,8 @@ export interface ArchiveManifest {
   globalRows?: Record<string, Record<string, Record<string, unknown>>>;
   /** Canonical projection column names per table, as the exporter computed them. */
   canonical?: Record<string, string[]>;
+  /** Readable verification totals of the snapshot (U-283, verification-totals.ts). Absent before formatVersion 2. */
+  verificationTotals?: VerificationTotals;
 }
 
 /** The users projection of the identity section, in order. */

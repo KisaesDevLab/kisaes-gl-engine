@@ -34,7 +34,9 @@ import { AppError } from '../../utils/errors.js';
 import { ArchiveReader } from './archive-reader.js';
 import { withScrubbedPassphrase } from './archive-crypto.js';
 import { sha256File } from './archive-container.js';
-import { checkSchemaCompatibility, SALES_TAX_BACKFILL_SCHEMA_VERSION, SALES_TAX_LIABILITY_SCHEMA_VERSION, type CompatResult } from './compat.js';
+import {
+  checkSchemaCompatibility, INVENTORY_POSITION_SCHEMA_VERSION, SALES_TAX_BACKFILL_SCHEMA_VERSION, SALES_TAX_LIABILITY_SCHEMA_VERSION, type CompatResult,
+} from './compat.js';
 import { ArchiveError } from './errors.js';
 import { resolveForImport } from './files.js';
 import { computeTenantFingerprint } from './fingerprint.js';
@@ -45,6 +47,10 @@ import { NATURAL_KEYS, OMITTABLE_ROW_FILTERS, getPortabilityPlan, scopeSql, type
 import { IdMap, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { applyArchiveSession, withArchiveConnection, xactLockTenantExclusive, type ArchiveClient } from './session.js';
 import { verifyImport, type ReencryptedValue, type VerificationSummary, type WrittenFile } from './verify.js';
+import {
+  changedMoneyFields, computeVerificationTotals, diffTotals, resolveAsOf,
+  type TotalsComparison, type TotalsDifference, type VerificationTotals,
+} from './verification-totals.js';
 
 export interface ImportOptions {
   filePath: string;
@@ -75,6 +81,8 @@ export interface ImportResult {
   archiveId: string;
   sourceTenantId: string;
   verification: VerificationSummary;
+  /** Expected (the archive's) vs actual verification totals (U-283, Q-P32o). */
+  verificationTotals: TotalsComparison;
   /** The archive manifest's opaque `host` object, echoed so the client can restore its own metadata. */
   host: Record<string, unknown>;
   warnings: string[];
@@ -84,7 +92,54 @@ export interface ImportResult {
 export const _importTestHooks: {
   /** Runs inside the transaction after every insert and file, before verification. */
   beforeVerify?: (ctx: { client: ArchiveClient; newTenantId: string; idMap: IdMap }) => Promise<void> | void;
+  /** Reports totals differences without refusing (tests that force a different id order on purpose). */
+  ignoreTotals?: boolean;
 } = {};
+
+/**
+ * Judges the import's totals against the archive's (Q-P32o). Same
+ * definition: every count and money field must be equal; a money field may
+ * differ only when an upgrade backfill of this import changed it (warning
+ * TOTALS_DIFFER:<fields>:<backfills>). Another definition: counts strictly,
+ * money shown side by side (warning TOTALS_DEFINITION_DIFFERS:<definition>).
+ * A re-walk that changed documents is a named difference. Anything else is
+ * 422 ARCHIVE_TOTALS_MISMATCH with {expected, actual, differences}: the
+ * caller rolls the import back.
+ */
+export function judgeTotals(
+  expected: VerificationTotals | null,
+  actual: VerificationTotals,
+  backfills: TotalsComparison['backfills'],
+  rewalkChangedDocuments: number,
+): { comparison: TotalsComparison; warnings: string[] } {
+  const warnings: string[] = [];
+  if (!expected) {
+    return { comparison: { definition: actual.definition, expected: null, actual, matches: null, differences: [], backfills }, warnings };
+  }
+  const { counts, money } = diffTotals(expected, actual);
+  const allowed = new Set(backfills.flatMap((b) => b.fields));
+  const differences: TotalsDifference[] = [...counts, ...money];
+  const unexplained: TotalsDifference[] = [...counts, ...money.filter((d) => !allowed.has(d.field))];
+  if (rewalkChangedDocuments > 0) {
+    const d: TotalsDifference = { companyId: null, field: 'inventoryRewalk.changedDocuments', expected: 0, actual: rewalkChangedDocuments };
+    differences.push(d);
+    unexplained.push(d);
+  }
+  if (unexplained.length > 0 && !_importTestHooks.ignoreTotals) {
+    throw new ArchiveError('ARCHIVE_TOTALS_MISMATCH', 'The restored totals do not match the totals in the archive; nothing was changed.', {
+      expected, actual, differences,
+    });
+  }
+  if (expected.definition !== actual.definition) warnings.push(`TOTALS_DEFINITION_DIFFERS:${expected.definition}`);
+  if (money.length > 0) {
+    const fields = [...new Set(money.map((d) => d.field))].sort().join(',');
+    warnings.push(`TOTALS_DIFFER:${fields}:${backfills.filter((b) => b.fields.length > 0).map((b) => b.name).join(',') || 'none'}`);
+  }
+  return {
+    comparison: { definition: actual.definition, expected, actual, matches: differences.length === 0, differences, backfills },
+    warnings,
+  };
+}
 
 const BATCH_ROWS = 500;
 const BATCH_BYTES = 4 * 1024 * 1024;
@@ -232,7 +287,11 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   for (const mt of tablesInOrder) {
     const t = plan.byName.get(mt.name)!;
     if (mt.pk !== 'uuid' || !t.pkColumn) continue;
-    for await (const line of reader.lines(tablePartName(mt.name))) idMap.fresh(pkOfLine(line, t.pkColumn));
+    // New ids sort as the old ones do (U-283, B2), so the stock ledger's id
+    // tie-breaks keep their order and the re-walk below changes nothing.
+    const ids: string[] = [];
+    for await (const line of reader.lines(tablePartName(mt.name))) ids.push(pkOfLine(line, t.pkColumn));
+    idMap.freshOrdered(ids);
   }
   const accessLinesRaw: string[] = [];
   for await (const line of reader.lines(IDENTITY_ENTRIES.access)) accessLinesRaw.push(line);
@@ -332,6 +391,27 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       });
       warnings.push(...verification.warnings);
 
+      // Verification totals (U-283, B2). Counts now, before any row of the
+      // steps below is written; money after them. Same as-of date and
+      // fiscal year windows as the archive; company ids in the archive's terms.
+      const expectedTotals = manifest.verificationTotals ?? null;
+      const expectedFy = new Map((expectedTotals?.companies ?? []).map((c) => [c.companyId.toLowerCase(), c.fiscalYearStart]));
+      const vtOpts = {
+        asOf: expectedTotals?.asOf ?? resolveAsOf(undefined),
+        scope: (table: string, alias: string) => scopeSql(plan, table, alias),
+        fiscalYearStart: (id: string) => expectedFy.get((idMap.getOld(id) ?? id).toLowerCase()),
+        mapCompanyId: (id: string) => idMap.getOld(id) ?? id,
+      };
+      const counted = await computeVerificationTotals(client, newTenantId, vtOpts);
+      // Upgrade steps that may move money: each one's changed fields are recorded (Q-P32o).
+      const backfills: TotalsComparison['backfills'] = [];
+      let moneyBefore: VerificationTotals = counted;
+      const trackBackfill = async (name: string): Promise<void> => {
+        const next = await computeVerificationTotals(client, newTenantId, vtOpts);
+        backfills.push({ name, fields: changedMoneyFields(moneyBefore, next) });
+        moneyBefore = next;
+      };
+
       // Intake folders reset on request (U-93), after verification (which
       // compares the rows as archived) and before the fingerprint.
       const resetIntakeSettings = options.resetIntakeSettings === true;
@@ -358,6 +438,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
             [newTenantId, co.id],
           );
         }
+        await trackBackfill('sales_tax_backfill');
       }
 
       // An archive made before 0253 (U-152): the Unapplied receipts account and
@@ -368,18 +449,38 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
            SELECT $1, 'create', 'sales_tax_liability_upgrade', $1, sales_tax_liability_upgrade_tenant($1::uuid)`,
           [newTenantId],
         );
+        await trackBackfill('sales_tax_liability_upgrade');
       }
 
       // The stock ledger (U-157, PR-4 RB1): ids are new, so documents that share a date and created_at may
       // now sort the other way; every item of every company is re-walked from its first row (closed periods
       // keep their figures), which also fills the sale position of linked rows and correction_share for an
       // archive made before 0261. After verification (which compares the rows as archived), before the fingerprint.
+      // With order-preserving ids (above) a re-walk of an archive made at or after 0261 changes nothing (B2):
+      // a changed document is a named difference, never a silent pass. Before 0261 it is an upgrade step.
       const stocked = await client.query('SELECT DISTINCT company_id::text AS id FROM inventory_movements WHERE tenant_id = $1 ORDER BY 1', [newTenantId]);
+      let rewalkChanged = 0;
       if (stocked.rows.length > 0) {
         step('inventory', 94);
         const costing = drizzle(client, { schema: dbSchema }) as unknown as Tx;
-        for (const co of stocked.rows as Array<{ id: string }>) await rewalkCompany(costing, newTenantId, co.id, 'tenant_import', options.callerUserId);
+        for (const co of stocked.rows as Array<{ id: string }>) {
+          rewalkChanged += (await rewalkCompany(costing, newTenantId, co.id, 'tenant_import', options.callerUserId)).changedDocuments;
+        }
       }
+      const rewalkIsUpgrade = manifest.schema.version < INVENTORY_POSITION_SCHEMA_VERSION;
+      if (rewalkIsUpgrade && rewalkChanged > 0) await trackBackfill('inventory_rewalk');
+
+      // Money after every step above, under the counts taken before them.
+      step('totals', 95);
+      const finalMoney = await computeVerificationTotals(client, newTenantId, vtOpts);
+      const countsOf = new Map(counted.companies.map((c) => [c.companyId, c.counts]));
+      const actualTotals: VerificationTotals = {
+        ...finalMoney,
+        counts: counted.counts,
+        companies: finalMoney.companies.map((c) => ({ ...c, counts: countsOf.get(c.companyId) ?? c.counts })),
+      };
+      const totals = judgeTotals(expectedTotals, actualTotals, backfills, rewalkIsUpgrade ? 0 : rewalkChanged);
+      warnings.push(...totals.warnings);
 
       // After verification: audit row, fingerprint, provenance.
       step('commit', 95);
@@ -388,7 +489,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
          VALUES ($1, $2, 'create', 'tenant_import', $3, $4::jsonb)`,
         [newTenantId, options.callerUserId, manifest.archiveId, JSON.stringify({
           archiveId: manifest.archiveId, archiveSha256, sourceTenantId: manifest.source.tenantId, sourceName: manifest.source.name, userId: options.callerUserId,
-          resetIntakeSettings, resetDocumentDrafts,
+          resetIntakeSettings, resetDocumentDrafts, totalsMatch: totals.comparison.matches,
         })],
       );
       const fingerprint = await computeTenantFingerprint(client, plan, newTenantId);
@@ -406,6 +507,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         archiveId: manifest.archiveId,
         sourceTenantId: manifest.source.tenantId,
         verification,
+        verificationTotals: totals.comparison,
         host: manifest.host,
         warnings: [...new Set(warnings)].sort(),
       };

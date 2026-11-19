@@ -28,6 +28,9 @@ export const SALES_TAX_BACKFILL_SCHEMA_VERSION = 253;
 /** Schema version after 0253 (U-152): an older archive gets the Unapplied receipts account and the sales_tax permission grants on import. */
 export const SALES_TAX_LIABILITY_SCHEMA_VERSION = 254;
 
+/** Schema version after 0261 (sale positions on stock rows, U-157): an older archive's import re-walk is an upgrade step (U-283). */
+export const INVENTORY_POSITION_SCHEMA_VERSION = 262;
+
 /** Archive tables that no longer exist live: skipped with a warning when the archive predates `droppedIn`. */
 export const DROPPED_TABLES: Record<string, { droppedIn: number }> = {};
 

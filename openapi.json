@@ -96256,6 +96256,11 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "asOf": {
+                    "description": "Date (YYYY-MM-DD) of the verification totals written to the manifest (archive-verification-totals-v1): the owner's local date, at most the server's tomorrow; default the server's today.",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                    "type": "string"
+                  },
                   "host": {
                     "additionalProperties": {},
                     "type": "object"
@@ -96331,6 +96336,281 @@
           }
         ],
         "summary": "Start an archive export of the company (202; poll /api/v1/tenant-archives/jobs/{jobId})",
+        "tags": [
+          "tenant-archives"
+        ]
+      }
+    },
+    "/api/v1/tenants/{id}/verification-totals": {
+      "get": {
+        "operationId": "get_api_v1_tenants_by_id_verification_totals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asOf",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "includeAudit",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "omitDocumentDrafts",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "asOf": {
+                      "type": "string"
+                    },
+                    "basis": {
+                      "const": "accrual",
+                      "type": "string"
+                    },
+                    "companies": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "accountsPayable": {
+                            "pattern": "^-?\\d+\\.\\d{4}$",
+                            "type": "string"
+                          },
+                          "accountsReceivable": {
+                            "pattern": "^-?\\d+\\.\\d{4}$",
+                            "type": "string"
+                          },
+                          "companyId": {
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "counts": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "accounts": {
+                                "type": "integer"
+                              },
+                              "attachmentBytes": {
+                                "type": "integer"
+                              },
+                              "attachments": {
+                                "type": "integer"
+                              },
+                              "auditEntries": {
+                                "type": "integer"
+                              },
+                              "clients": {
+                                "type": "integer"
+                              },
+                              "items": {
+                                "type": "integer"
+                              },
+                              "postedTransactions": {
+                                "type": "integer"
+                              },
+                              "transactions": {
+                                "type": "integer"
+                              },
+                              "vendors": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "accounts",
+                              "clients",
+                              "vendors",
+                              "items",
+                              "transactions",
+                              "postedTransactions",
+                              "attachments",
+                              "attachmentBytes",
+                              "auditEntries"
+                            ],
+                            "type": "object"
+                          },
+                          "fiscalYearStart": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "netIncome": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "amount": {
+                                "pattern": "^-?\\d+\\.\\d{4}$",
+                                "type": "string"
+                              },
+                              "from": {
+                                "type": "string"
+                              },
+                              "to": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "from",
+                              "to",
+                              "amount"
+                            ],
+                            "type": "object"
+                          },
+                          "totalAssets": {
+                            "pattern": "^-?\\d+\\.\\d{4}$",
+                            "type": "string"
+                          },
+                          "totalEquity": {
+                            "pattern": "^-?\\d+\\.\\d{4}$",
+                            "type": "string"
+                          },
+                          "totalLiabilities": {
+                            "pattern": "^-?\\d+\\.\\d{4}$",
+                            "type": "string"
+                          },
+                          "trialBalance": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "credits": {
+                                "pattern": "^-?\\d+\\.\\d{4}$",
+                                "type": "string"
+                              },
+                              "debits": {
+                                "pattern": "^-?\\d+\\.\\d{4}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "debits",
+                              "credits"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "companyId",
+                          "name",
+                          "fiscalYearStart",
+                          "totalAssets",
+                          "totalLiabilities",
+                          "totalEquity",
+                          "netIncome",
+                          "accountsReceivable",
+                          "accountsPayable",
+                          "trialBalance",
+                          "counts"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "counts": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "accounts": {
+                          "type": "integer"
+                        },
+                        "attachmentBytes": {
+                          "type": "integer"
+                        },
+                        "attachments": {
+                          "type": "integer"
+                        },
+                        "auditEntries": {
+                          "type": "integer"
+                        },
+                        "clients": {
+                          "type": "integer"
+                        },
+                        "items": {
+                          "type": "integer"
+                        },
+                        "postedTransactions": {
+                          "type": "integer"
+                        },
+                        "transactions": {
+                          "type": "integer"
+                        },
+                        "vendors": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "accounts",
+                        "clients",
+                        "vendors",
+                        "items",
+                        "transactions",
+                        "postedTransactions",
+                        "attachments",
+                        "attachmentBytes",
+                        "auditEntries"
+                      ],
+                      "type": "object"
+                    },
+                    "definition": {
+                      "const": "vt1",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "definition",
+                    "basis",
+                    "asOf",
+                    "companies",
+                    "counts"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Preview the verification totals an archive export of the company would carry (archive-verification-totals-v1)",
         "tags": [
           "tenant-archives"
         ]

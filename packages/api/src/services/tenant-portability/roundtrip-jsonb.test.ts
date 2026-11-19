@@ -10,7 +10,7 @@
 // archive is imported ten times here and must verify every time. Runs in
 // server mode against the test database.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,7 +20,7 @@ import { db } from '../../db/index.js';
 import { runExport, type ExportResult } from './export.service.js';
 import { _importTestHooks, runImport } from './import.service.js';
 import { buildPortabilityPlan, scopeSql, type PortabilityPlan } from './plan.js';
-import type { IdMap } from './remap.js';
+import { IdMap } from './remap.js';
 
 const PASS = 'jsonb round trip passphrase 2026!';
 const stamp = crypto.randomUUID().slice(0, 8);
@@ -111,7 +111,24 @@ describe('id-keyed jsonb round trip (U-91)', () => {
     let reordered = 0;
     for (let run = 0; run < RUNS; run++) {
       capturedMap = null;
-      const imported = await runImport({ filePath: exported.path!, passphrase: PASS, callerUserId: callerId });
+      // New ids keep the old order (U-283), so every other run reverses the banks' new ids on purpose:
+      // PostgreSQL then stores the counters' keys in another order (the U-91 case).
+      const reverse = run % 2 === 0;
+      const ordered = IdMap.prototype.freshOrdered;
+      const spy = vi.spyOn(IdMap.prototype, 'freshOrdered').mockImplementation(function (this: IdMap, oldIds: Iterable<string>) {
+        const list = [...oldIds];
+        if (reverse && banks.every((b) => list.some((o) => o.toLowerCase() === b.toLowerCase()))) {
+          const fresh = banks.map(() => crypto.randomUUID()).sort().reverse();
+          [...banks].sort().forEach((b, i) => { if (!this.get(b)) this.set(b, fresh[i]!); });
+        }
+        ordered.call(this, list);
+      });
+      let imported: Awaited<ReturnType<typeof runImport>>;
+      try {
+        imported = await runImport({ filePath: exported.path!, passphrase: PASS, callerUserId: callerId });
+      } finally {
+        spy.mockRestore();
+      }
       createdTenants.push(imported.tenantId);
       expect(imported.verification, `run ${run + 1}`).toMatchObject({ contentEqual: true, trialBalanceEqual: true });
       const idMap = capturedMap!;
@@ -125,7 +142,6 @@ describe('id-keyed jsonb round trip (U-91)', () => {
       const newOrder = Object.keys(counters).map((k) => idMap.getOld(k));
       if (JSON.stringify(newOrder) !== JSON.stringify([...banks].sort())) reordered++;
     }
-    // With 4 keys the new ids keep the old order with probability 1/24 per run.
-    expect(reordered).toBeGreaterThan(0);
+    expect(reordered).toBe(RUNS / 2);
   }, 600_000);
 });
