@@ -95293,6 +95293,11 @@
                   },
                   "scratch": {
                     "type": "boolean"
+                  },
+                  "transferOnly": {
+                    "default": false,
+                    "description": "Refuse an archive that is not a transfer file with 422 NOT_A_TRANSFER_FILE before anything is written (tenant-archive-transfer-v1). The MyBooks Online transfer import page always sets it.",
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -96286,6 +96291,11 @@
                     "maxLength": 1024,
                     "minLength": 1,
                     "type": "string"
+                  },
+                  "transfer": {
+                    "default": false,
+                    "description": "Make a transfer file for MyBooks Online (tenant-archive-transfer-v1): no users or access rows (names only), signatures, bank link key, AI chat and MCP logs, mail-server login and check bank numbers left out, user emails in audit images replaced by names; intake folders and unconverted drafts left out; every missing, changed or external file refused in one error. 409 TENANT_BUSY while another archive job runs.",
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -96377,6 +96387,18 @@
           {
             "in": "query",
             "name": "omitDocumentDrafts",
+            "required": false,
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "transfer",
             "required": false,
             "schema": {
               "enum": [

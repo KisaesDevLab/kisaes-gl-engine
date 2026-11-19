@@ -118,7 +118,8 @@ describe('migration 0233 document drafts', () => {
     expect(plan.bucketOf.get('document_drafts')).toBe('tenant');
     expect(plan.bucketOf.get('vendor_layout_templates')).toBe('tenant');
     expect(plan.byName.get('accounts')!.canonical).toContain('card_last4');
-    expect(OMITTABLE_TABLES).toEqual({
+    // The drafts option's tables (transfer files, U-284, add their own under option `transfer`).
+    expect(Object.fromEntries(Object.entries(OMITTABLE_TABLES).filter(([, r]) => r.option === 'omitDocumentDrafts'))).toEqual({
       vendor_layout_templates: { option: 'omitDocumentDrafts' },
     });
     // Converted drafts travel (D4: unconverted drafts are left out), with their audit rows.

@@ -145,7 +145,7 @@ export interface ArchiveManifest {
   createdAt: string;
   source: { tenantId: string; name: string; ledgerVersion: string };
   /** omitIntakeSettings: absent in archives written before U-93; omitDocumentDrafts: before U-92. */
-  options: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings?: boolean; omitDocumentDrafts?: boolean };
+  options: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings?: boolean; omitDocumentDrafts?: boolean; transfer?: boolean };
   /**
    * Left out on request: `table.column` values (U-93; OMITTABLE_COLUMNS: the
    * rows carry the column default), whole `table`s (U-92; OMITTABLE_TABLES:

@@ -2823,7 +2823,9 @@ export async function buildBankReconciliationSummary(
 // statement-date lines, and totals.
 export async function buildReconciliationDetail(tenantId: string, reconciliationId: string, opts: ReconciliationProofOptions = {}) {
   const recRows = await db.execute(sql`
-    SELECT r.*, a.name AS account_name, a.account_number, u.display_name AS completed_by_name, u.email AS completed_by_email
+    SELECT r.*, a.name AS account_name, a.account_number,
+           COALESCE(u.display_name, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = r.tenant_id AND n.user_id = r.completed_by)) AS completed_by_name,
+           u.email AS completed_by_email
     FROM reconciliations r
     JOIN accounts a ON a.id = r.account_id
     LEFT JOIN users u ON u.id = r.completed_by

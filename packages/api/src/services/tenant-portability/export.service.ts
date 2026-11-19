@@ -63,6 +63,14 @@ export interface ExportOptions {
    * drafts (and their files) are left out. For transfer files.
    */
   omitDocumentDrafts?: boolean;
+  /**
+   * A transfer file for the accountant's MyBooks Online (U-284): no users or
+   * access rows (names only, transfer_user_names), the transfer omissions of
+   * plan.ts (OMITTABLE_TABLES / OMITTABLE_COLUMNS option `transfer`), intake
+   * folders and unconverted drafts left out, and every missing, changed or
+   * external file refused in one error.
+   */
+  transfer?: boolean;
   host?: Record<string, unknown>;
   /** Date of the verification totals (U-283): the owner's local date, validated by resolveAsOf; default the server's today. */
   asOf?: string;
@@ -89,6 +97,8 @@ export interface ExportResult {
     unbalancedTransactions: number;
     /** The verification totals written to the manifest (U-283). */
     verificationTotals?: VerificationTotals;
+    /** The manifest options, with transfer always present (U-284, S3). */
+    options: ArchiveManifest['options'] & { transfer: boolean };
   };
   warnings: string[];
 }
@@ -124,6 +134,8 @@ export interface ExportOmissions {
   columns: ReadonlySet<string>;
   tables: ReadonlySet<string>;
   rowFilters: ReadonlySet<string>;
+  /** A transfer file (U-284): transfer_user_names gets a row per referenced user. */
+  transfer?: boolean;
 }
 
 export const NO_OMISSIONS: ExportOmissions = { columns: new Set(), tables: new Set(), rowFilters: new Set() };
@@ -177,8 +189,64 @@ export function exportScopeSql(
   return keep ? `(${scope}) AND ${keep}` : scope;
 }
 
+/** Name of a person who travels as a name only and has no display name. */
+export const TRANSFER_UNNAMED_USER = 'ClientLedger user';
+
+/**
+ * Every user id the exported rows reference (U-284, B1): each `identity`
+ * column (real FKs into users and SOFT_REFS of class identity, arrays
+ * unnested, audit_log.user_id included) of every exported table, in the
+ * export's row scope; columns the export nulls and tables it leaves out
+ * are skipped.
+ */
+export function referencedUserIdsSql(plan: PortabilityPlan, includeAudit: boolean, omit: ExportOmissions): string {
+  const parts: string[] = [];
+  for (const t of plan.tables) {
+    if (t.name === 'transfer_user_names' || omit.tables.has(t.name)) continue;
+    for (const s of t.softRefs) {
+      if (s.cls !== 'identity' || omit.columns.has(`${t.name}.${s.column}`)) continue;
+      const scope = exportScopeSql(plan, t, includeAudit, omit, 'a');
+      parts.push(s.isArray
+        ? `SELECT u.v AS uid FROM "${t.name}" a CROSS JOIN LATERAL unnest(a."${s.column}") u(v) WHERE ${scope} AND u.v IS NOT NULL`
+        : `SELECT a."${s.column}" AS uid FROM "${t.name}" a WHERE ${scope} AND a."${s.column}" IS NOT NULL`);
+    }
+  }
+  return parts.length > 0 ? parts.join('\n UNION ') : 'SELECT NULL::uuid AS uid WHERE false';
+}
+
+/**
+ * The transfer_user_names part of a transfer file: the company's own rows,
+ * plus one row per referenced user id that has none, named after the user
+ * (or TRANSFER_UNNAMED_USER). Same two projections as every table.
+ */
+function transferNamesCursorSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omit: ExportOmissions): string {
+  const scope = exportScopeSql(plan, t, includeAudit, omit);
+  const existing = t.archive.map((c) => c.select).join(', ');
+  const synthetic = t.archive.map((c) => {
+    switch (c.name) {
+      case 'id': return `gen_random_uuid() AS "id"`;
+      case 'tenant_id': return `$1::uuid AS "tenant_id"`;
+      case 'user_id': return `ids.uid AS "user_id"`;
+      case 'display_name': return `left(COALESCE(NULLIF(btrim(u.display_name), ''), '${TRANSFER_UNNAMED_USER}'), 255)::${c.type} AS "display_name"`;
+      case 'created_at': return `now()::${c.type} AS "created_at"`;
+      default: return `NULL::${c.type} AS "${c.name}"`;
+    }
+  }).join(', ');
+  const canonical = t.canonical.map((c) => `a."${c}"`).join(', ');
+  return `SELECT row_to_json(a)::text AS line, row_to_json(c)::text AS canon
+          FROM (SELECT ${existing} FROM "${t.name}" a WHERE ${scope}
+                UNION ALL
+                SELECT ${synthetic}
+                FROM (SELECT DISTINCT r.uid FROM (${referencedUserIdsSql(plan, includeAudit, omit)}) r) ids
+                LEFT JOIN users u ON u.id = ids.uid
+                WHERE NOT EXISTS (SELECT 1 FROM "${t.name}" x WHERE x.tenant_id = $1 AND x.user_id = ids.uid)) a
+          CROSS JOIN LATERAL (SELECT ${canonical}) c
+          ORDER BY a."id"`;
+}
+
 /** The two-projection cursor query for a table. */
 export function tableCursorSql(plan: PortabilityPlan, t: TablePlan, includeAudit: boolean, omissions: ExportOmissions = NO_OMISSIONS): string {
+  if (omissions.transfer && t.name === 'transfer_user_names') return transferNamesCursorSql(plan, t, includeAudit, omissions);
   const scope = exportScopeSql(plan, t, includeAudit, omissions);
   const omit = omissions.columns;
   const archive = t.archive.map((c) => {
@@ -388,21 +456,23 @@ function fsyncFile(filePath: string): void {
 export async function runExport(tenantId: string, userId: string, options: ExportOptions, progress?: JobProgress): Promise<ExportResult> {
   const includeAttachments = options.includeAttachments ?? true;
   const includeAudit = options.includeAudit ?? true;
-  const omitIntakeSettings = options.omitIntakeSettings ?? false;
-  const omitDocumentDrafts = options.omitDocumentDrafts ?? false;
+  // A transfer file (U-284) never carries intake folders or unconverted drafts.
+  const transfer = options.transfer ?? false;
+  const omitIntakeSettings = (options.omitIntakeSettings ?? false) || transfer;
+  const omitDocumentDrafts = (options.omitDocumentDrafts ?? false) || transfer;
   const host = options.host ?? {};
   if (Buffer.byteLength(JSON.stringify(host), 'utf8') > HOST_MAX_BYTES) throw AppError.badRequest('host metadata is too large (16 KiB)', 'VALIDATION_ERROR');
   if (await isWorkspaceTenant(tenantId)) throw new ArchiveError('WORKSPACE_TENANT', 'The workspace is never archived.');
   assertPassphraseStrong(options.passphrase);
   const archiveId = options.archiveId ?? crypto.randomUUID();
   const asOf = resolveAsOf(options.asOf);
-  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, omitDocumentDrafts, host, passphrase: options.passphrase, archiveId, asOf }, progress));
+  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, omitDocumentDrafts, transfer, host, passphrase: options.passphrase, archiveId, asOf }, progress));
 }
 
 async function exportLocked(
   tenantId: string,
   userId: string,
-  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; omitDocumentDrafts: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string; asOf: string },
+  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; omitDocumentDrafts: boolean; transfer: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string; asOf: string },
   progress?: JobProgress,
 ): Promise<ExportResult> {
   const plan = await getPortabilityPlan();
@@ -438,12 +508,13 @@ async function exportLocked(
         [tenantId],
       )).rows[0] as { j: string };
       // Every user's password hash travels, whoever exports (owner decision Q-234).
-      const userLines = (await client.query(
+      // A transfer file carries no users and no access rows (Q-P32a): names only, in transfer_user_names.
+      const userLines = o.transfer ? [] : (await client.query(
         `SELECT row_to_json(x)::text AS j FROM (SELECT ${USERS_PROJECTION_SQL} FROM users u
            WHERE u.id IN (SELECT user_id FROM user_tenant_access WHERE tenant_id = $1) ORDER BY u.id) x`,
         [tenantId],
       )).rows as Array<{ j: string }>;
-      const accessLines = (await client.query(
+      const accessLines = o.transfer ? [] : (await client.query(
         `SELECT row_to_json(x)::text AS j FROM (SELECT ${identityProjectionSql(plan, 'user_tenant_access', 'a')} FROM user_tenant_access a WHERE a.tenant_id = $1 ORDER BY a.id) x`,
         [tenantId],
       )).rows as Array<{ j: string }>;
@@ -461,6 +532,7 @@ async function exportLocked(
         columns: new Set(Object.entries(OMITTABLE_COLUMNS).filter(([, r]) => o[r.option]).map(([k]) => k)),
         tables: new Set(Object.entries(OMITTABLE_TABLES).filter(([, r]) => o[r.option]).map(([k]) => k)),
         rowFilters: new Set(Object.entries(OMITTABLE_ROW_FILTERS).filter(([, r]) => o[r.option]).map(([k]) => k)),
+        transfer: o.transfer,
       };
       // Rows the filters leave out, counted in the same snapshot (manifest omittedRows).
       const omittedRows: Record<string, number> = {};
@@ -502,7 +574,10 @@ async function exportLocked(
       const providerFor = async () => provider ?? (provider = await getProviderForTenant(tenantId));
       const uploadDir = process.env['UPLOAD_DIR'] || '/data/uploads';
       let fileBytes = 0;
-      const desktop = isDesktop();
+      // A desktop backup and any transfer refuse missing, changed (and, for a transfer, external) files: all of
+      // them are collected and refused in one error (U-284, Q-P32k). A server backup records warnings.
+      const strict = isDesktop() || o.transfer;
+      const fileProblems: Array<{ table: string; column: string; rowId: string; reason: 'FILE_MISSING' | 'FILE_SIZE_MISMATCH' | 'EXTERNAL_FILE' }> = [];
       if (!o.includeAttachments) warnings.push('ATTACHMENTS_NOT_INCLUDED');
       for (let i = 0; i < files.length; i++) {
         const f = files[i]!;
@@ -510,6 +585,7 @@ async function exportLocked(
         const rule = plan.byName.get(f.table)!.fileColumns.find((c) => c.column === f.column)!.rule;
         const read = resolveForExport(rule, { uploadDir, provider: providerFor }, f.value, f.row);
         if (read.kind === 'external') {
+          if (o.transfer) fileProblems.push({ table: f.table, column: f.column, rowId: f.rowId, reason: 'EXTERNAL_FILE' });
           warnings.push(`EXTERNAL_FILE:${f.table}.${f.column}:${f.rowId}`);
           continue;
         }
@@ -518,9 +594,10 @@ async function exportLocked(
         try {
           bytes = await read.read!();
         } catch (err) {
-          if (desktop) {
-            const code = err instanceof ArchiveError && err.code === 'FILE_SIZE_MISMATCH' ? 'FILE_SIZE_MISMATCH' : 'FILE_MISSING';
-            throw new ArchiveError(code, `A file of ${f.table} could not be read.`, { table: f.table, rowId: f.rowId });
+          if (strict) {
+            const reason = err instanceof ArchiveError && err.code === 'FILE_SIZE_MISMATCH' ? 'FILE_SIZE_MISMATCH' : 'FILE_MISSING';
+            fileProblems.push({ table: f.table, column: f.column, rowId: f.rowId, reason });
+            continue;
           }
           warnings.push(`FILE_MISSING:${f.table}.${f.column}:${f.rowId}`);
           continue;
@@ -528,7 +605,10 @@ async function exportLocked(
         if (rule.sizeColumn) {
           const declared = f.row[rule.sizeColumn];
           if (declared !== null && declared !== undefined && Number(declared) !== bytes.length) {
-            if (desktop) throw new ArchiveError('FILE_SIZE_MISMATCH', `A file of ${f.table} does not match its recorded size.`, { table: f.table, rowId: f.rowId });
+            if (strict) {
+              fileProblems.push({ table: f.table, column: f.column, rowId: f.rowId, reason: 'FILE_SIZE_MISMATCH' });
+              continue;
+            }
             warnings.push(`FILE_SIZE_MISMATCH:${f.table}.${f.column}:${f.rowId}`);
             continue;
           }
@@ -537,6 +617,12 @@ async function exportLocked(
         manifestFiles.push({ table: f.table, column: f.column, rowId: f.rowId, resolver: rule.resolver, bytes: part.bytes, sha256: part.sha256 });
         fileBytes += part.bytes;
         if (i % 50 === 0) step('files', 70 + Math.round((i / files.length) * 20));
+      }
+      if (fileProblems.length > 0) {
+        const code = fileProblems.every((p) => p.reason === 'FILE_SIZE_MISMATCH') ? 'FILE_SIZE_MISMATCH' : 'FILE_MISSING';
+        throw new ArchiveError(code, `${fileProblems.length} attached file(s) are missing, changed or kept outside the company folder.`, {
+          table: fileProblems[0]!.table, rowId: fileProblems[0]!.rowId, files: fileProblems,
+        });
       }
 
       const manifest: ArchiveManifest = {
@@ -550,6 +636,7 @@ async function exportLocked(
         options: {
           includeAttachments: o.includeAttachments, includeAudit: o.includeAudit,
           omitIntakeSettings: o.omitIntakeSettings, omitDocumentDrafts: o.omitDocumentDrafts,
+          ...(o.transfer ? { transfer: true } : {}),
         },
         omitted: [...omit.columns, ...omit.tables, ...[...omit.rowFilters].map((n) => OMITTABLE_ROW_FILTERS[n]!.label)].sort(),
         ...(omit.rowFilters.size > 0 ? { omittedRows } : {}),
@@ -589,7 +676,7 @@ async function exportLocked(
           `INSERT INTO audit_log (tenant_id, user_id, action, entity_type, entity_id, after_data)
            VALUES ($1, $2, 'create', $3, $4, $5::jsonb)`,
           [tenantId, userId, ARCHIVE_AUDIT_ENTITY_TYPE, archiveId, JSON.stringify({
-            archiveId, sha256, bytes: stat.size, includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings, omitDocumentDrafts: o.omitDocumentDrafts, userId,
+            archiveId, sha256, bytes: stat.size, includeAttachments: o.includeAttachments, includeAudit: o.includeAudit, omitIntakeSettings: o.omitIntakeSettings, omitDocumentDrafts: o.omitDocumentDrafts, transfer: o.transfer, userId,
           })],
         );
         await client.query('COMMIT');
@@ -608,6 +695,8 @@ async function exportLocked(
         manifestSummary: {
           tables: tables.length, rows: totalRows, files: manifestFiles.length, fileBytes,
           schema: manifest.schema, source: manifest.source, unbalancedTransactions, verificationTotals,
+          // The options the file was made with (U-284, S3): a client checks transfer === true before using it.
+          options: { ...manifest.options, transfer: o.transfer },
         },
         warnings: resultWarnings,
       };
@@ -633,12 +722,13 @@ async function exportLocked(
  */
 export async function previewVerificationTotals(
   tenantId: string,
-  o: { asOf: string; includeAudit?: boolean; omitDocumentDrafts?: boolean },
+  o: { asOf: string; includeAudit?: boolean; omitDocumentDrafts?: boolean; transfer?: boolean },
 ): Promise<VerificationTotals> {
   const plan = await getPortabilityPlan();
-  const flags = { omitIntakeSettings: false, omitDocumentDrafts: o.omitDocumentDrafts ?? false };
+  const transfer = o.transfer ?? false;
+  const flags = { omitIntakeSettings: false, omitDocumentDrafts: (o.omitDocumentDrafts ?? false) || transfer, transfer };
   const omit: ExportOmissions = {
-    columns: new Set(),
+    columns: new Set(Object.entries(OMITTABLE_COLUMNS).filter(([, r]) => r.option === 'transfer' && transfer).map(([k]) => k)),
     tables: new Set(Object.entries(OMITTABLE_TABLES).filter(([, r]) => flags[r.option]).map(([k]) => k)),
     rowFilters: new Set(Object.entries(OMITTABLE_ROW_FILTERS).filter(([, r]) => flags[r.option]).map(([k]) => k)),
   };

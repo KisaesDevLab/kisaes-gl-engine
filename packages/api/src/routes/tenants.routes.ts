@@ -34,7 +34,7 @@ import { previewVerificationTotals, runExport } from '../services/tenant-portabi
 import { resolveAsOf } from '../services/tenant-portability/verification-totals.js';
 import { runWithoutViewer } from '../services/visibility.js';
 import { assertPassphraseStrong, registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
-import { startJob } from '../services/tenant-portability/jobs.js';
+import { assertArchiveJobAllowed, startJob } from '../services/tenant-portability/jobs.js';
 import { HOST_MAX_BYTES } from '../services/tenant-portability/format.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -164,6 +164,9 @@ export const exportArchiveSchema = z.object({
   /** Date of the verification totals (U-283): the owner's local date; at most the server's tomorrow; default the server's today. */
   asOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
     .describe('Date (YYYY-MM-DD) of the verification totals written to the manifest (archive-verification-totals-v1): the owner\'s local date, at most the server\'s tomorrow; default the server\'s today.'),
+  /** A transfer file for the accountant's MyBooks Online (U-284, archive-transfer-v1): names only, transfer omissions. */
+  transfer: z.boolean().optional().default(false)
+    .describe('Make a transfer file for MyBooks Online (tenant-archive-transfer-v1): no users or access rows (names only), signatures, bank link key, AI chat and MCP logs, mail-server login and check bank numbers left out, user emails in audit images replaced by names; intake folders and unconverted drafts left out; every missing, changed or external file refused in one error. 409 TENANT_BUSY while another archive job runs.'),
   passphrase: z.string().min(1).max(1024),
 });
 
@@ -198,6 +201,7 @@ export const verificationTotalsQuery = z.object({
   asOf: z.string().optional(),
   includeAudit: z.enum(['true', 'false']).optional(),
   omitDocumentDrafts: z.enum(['true', 'false']).optional(),
+  transfer: z.enum(['true', 'false']).optional(),
 });
 
 tenantsRouter.get('/:id/verification-totals', requireSessionAuth, describe({
@@ -219,6 +223,7 @@ tenantsRouter.get('/:id/verification-totals', requireSessionAuth, describe({
     asOf,
     includeAudit: query.data.includeAudit !== 'false',
     omitDocumentDrafts: query.data.omitDocumentDrafts === 'true',
+    transfer: query.data.transfer === 'true',
   }));
   res.json(totals);
 });
@@ -242,6 +247,8 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
   if (!exists) throw AppError.notFound('Company not found');
   const archiveId = crypto.randomUUID();
   const { userId } = req;
+  // 409 TENANT_BUSY (U-284, Q-P32u) before the passphrase is registered.
+  assertArchiveJobAllowed(tenantId, body.transfer);
   // The passphrase is scrubbed from logs from here until the job ends.
   registerPassphrase(body.passphrase);
   const job = startJob('export', tenantId, userId, async (progress) => {
@@ -251,6 +258,7 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
         includeAudit: body.includeAudit,
         omitIntakeSettings: body.omitIntakeSettings,
         omitDocumentDrafts: body.omitDocumentDrafts,
+        transfer: body.transfer,
         host: body.host,
         asOf,
         passphrase: body.passphrase,
@@ -259,6 +267,6 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
     } finally {
       releasePassphrase(body.passphrase);
     }
-  }, [archiveId]);
+  }, [archiveId], { transfer: body.transfer });
   res.status(202).json({ jobId: job.id, archiveId });
 });

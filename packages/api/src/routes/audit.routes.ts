@@ -3,6 +3,7 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { Router, type Request, type Response } from 'express';
+import { userDisplayNameSql } from '../utils/user-display-name.js';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
@@ -123,7 +124,7 @@ auditRouter.get('/', describe({
   const [dataResult, countResult] = await Promise.all([
     db.execute(sql`
       SELECT a.id, a.tenant_id, a.user_id,
-             (SELECT COALESCE(NULLIF(u.display_name, ''), u.email) FROM users u WHERE u.id = a.user_id) AS "userName",
+             ${sql.raw(userDisplayNameSql('a.user_id', 'a.tenant_id'))} AS "userName",
              a.action, a.entity_type, a.entity_id, a.before_data, a.after_data, a.ip_address, a.user_agent, a.created_at
       FROM audit_log a
       WHERE ${where}

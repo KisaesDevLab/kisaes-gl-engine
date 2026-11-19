@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import { AppError } from '../../utils/errors.js';
 import { errorSummaryForLog } from '../../utils/log-safe.js';
 import { runWithoutViewer } from '../visibility.js';
+import { isDesktop } from '../../desktop/profile.js';
 import { ArchiveError } from './errors.js';
 
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
@@ -36,6 +37,8 @@ export interface JobState<R = unknown> {
    * running job (M2).
    */
   resources: Set<string>;
+  /** A transfer export (U-284): no other archive job of its scope may start while it is queued or running. */
+  transfer: boolean;
 }
 
 export interface JobProgress {
@@ -65,6 +68,26 @@ export function activeJobResources(): Set<string> {
   return out;
 }
 
+/**
+ * Q-P32u (U-284): a transfer is never queued behind, or ahead of, another
+ * archive job. A transfer export is refused while any archive job of its
+ * scope is queued or running, and any archive job is refused while a
+ * transfer of its scope is. Scope: the whole install on the desktop, the
+ * same tenant on a server (an import, whose tenant does not exist yet, is
+ * in no tenant's scope there). 409 TENANT_BUSY; nothing is queued.
+ */
+export function assertArchiveJobAllowed(tenantId: string | null, transfer: boolean): void {
+  const desktop = isDesktop();
+  for (const j of jobs.values()) {
+    if (j.status !== 'queued' && j.status !== 'running') continue;
+    const inScope = desktop || (tenantId !== null && j.tenantId !== null && j.tenantId.toLowerCase() === tenantId.toLowerCase());
+    if (!inScope || !(transfer || j.transfer)) continue;
+    throw new ArchiveError('TENANT_BUSY', j.transfer
+      ? 'A transfer file is being made. Try again when it is done.'
+      : 'A backup or restore is running. Try again when it is done.', { jobKind: j.kind, transfer: j.transfer });
+  }
+}
+
 /** Starts a job; the runner reports progress and returns the result. `resources` are claimed up front. */
 export function startJob<R>(
   kind: JobState['kind'],
@@ -72,11 +95,13 @@ export function startJob<R>(
   userId: string,
   runner: (progress: JobProgress) => Promise<R>,
   resources: string[] = [],
+  opts: { transfer?: boolean } = {},
 ): JobState<R> {
   sweep();
+  assertArchiveJobAllowed(tenantId, opts.transfer === true);
   const job: JobState<R> = {
     id: crypto.randomUUID(), kind, tenantId, userId, status: 'queued', progress: 0, step: 'queued', createdAt: Date.now(),
-    resources: new Set(resources),
+    resources: new Set(resources), transfer: opts.transfer === true,
   };
   jobs.set(job.id, job);
   const progress: JobProgress = {

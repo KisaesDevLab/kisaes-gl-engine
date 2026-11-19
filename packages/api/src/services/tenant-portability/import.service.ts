@@ -26,6 +26,7 @@ import type { Tx } from '../../db/index.js';
 import * as dbSchema from '../../db/schema/index.js';
 import { rewalkCompany } from '../inventory-costing.service.js';
 import { getWorkspaceTenantId } from '../../desktop/workspace.js';
+import { isDesktop } from '../../desktop/profile.js';
 import { readSchemaInfo } from '../../startup/schema-info.js';
 import { getProviderForTenant } from '../storage/storage-provider.factory.js';
 import type { StorageProvider } from '../storage/storage-provider.interface.js';
@@ -72,7 +73,17 @@ export interface ImportOptions {
    * export with omitDocumentDrafts carries none of live drafts).
    */
   resetDocumentDrafts?: boolean;
+  /**
+   * Refuse any archive that is not a transfer file (U-284, S7) with 422
+   * NOT_A_TRANSFER_FILE before anything is verified or written. MyBooks
+   * Online's "Import a ClientLedger transfer file" page always sets it.
+   */
+  transferOnly?: boolean;
 }
+
+/** The answers to a wrong file (U-284, S7, Q-P32n). */
+export const NOT_A_TRANSFER_FILE_MESSAGE = 'This is a ClientLedger backup. Ask your client for a transfer file from Send to My Accountant.';
+export const TRANSFER_NOT_A_BACKUP_MESSAGE = 'This is a transfer file for your accountant\'s MyBooks. To move your company to another computer, use a backup.';
 
 export interface ImportResult {
   tenantId: string;
@@ -83,6 +94,8 @@ export interface ImportResult {
   verification: VerificationSummary;
   /** Expected (the archive's) vs actual verification totals (U-283, Q-P32o). */
   verificationTotals: TotalsComparison;
+  /** The archive was a transfer file (U-284). */
+  transfer: boolean;
   /** The archive manifest's opaque `host` object, echoed so the client can restore its own metadata. */
   host: Record<string, unknown>;
   warnings: string[];
@@ -255,6 +268,10 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   const step = (s: string, p: number) => progress?.set(s, p);
   step('verify-archive', 1);
   const reader = await ArchiveReader.open(options.filePath, options.passphrase);
+  // Wrong-file refusals (U-284) before anything else is read.
+  const isTransfer = reader.manifest.options.transfer === true;
+  if (options.transferOnly && !isTransfer) throw new ArchiveError('NOT_A_TRANSFER_FILE', NOT_A_TRANSFER_FILE_MESSAGE);
+  if (isTransfer && isDesktop()) throw new ArchiveError('TRANSFER_NOT_A_BACKUP', TRANSFER_NOT_A_BACKUP_MESSAGE);
   // The file hash overlaps the decrypt-and-hash pass instead of a second read afterwards.
   const [, archiveSha256] = await Promise.all([
     reader.verifyAll((done, total) => step('verify-archive', 1 + Math.round((done / total) * 15))),
@@ -301,6 +318,11 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   const tenantLinesRaw: string[] = [];
   for await (const line of reader.lines(IDENTITY_ENTRIES.tenant)) tenantLinesRaw.push(line);
   if (tenantLinesRaw.length !== 1) throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (tenant row).');
+  // A transfer file carries people as names only (U-284, Q-P32a): any user,
+  // access row or sign-in field in it is a damaged (or crafted) file.
+  if (isTransfer && (userLinesRaw.length > 0 || accessLinesRaw.length > 0 || /"(password_hash|email)"\s*:/.test(tenantLinesRaw[0]!))) {
+    throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (a transfer file carries user rows).');
+  }
   const fileIndex = new Map(manifest.files.map((f) => [`${f.table}/${f.column}/${f.rowId.toLowerCase()}`, f]));
   const files: FileRewriteContext = {
     index: fileIndex,
@@ -353,6 +375,21 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       const archivedAccess = accessLinesRaw.map((l) => parseIdentityLine<ArchivedAccess>(idMap.substitute(l), ['id', 'user_id', 'tenant_id', 'role']));
       const identity = await applyIdentity(client, { idMap, newTenantId, workspaceTenantId, users: archivedUsers, access: archivedAccess, callerUserId: options.callerUserId, createUsers });
       if (identity.skipped.length > 0) warnings.push(`USERS_NOT_CREATED:${identity.skipped.length}`);
+      // People who travel as names only (U-284, B1), in any archive: their ids are allowed references. An id that
+      // already belongs to a user of this install gets a fresh one first, so no row or grant lands on a real person.
+      const namesTable = tablesInOrder.find((m) => m.name === 'transfer_user_names');
+      if (namesTable) {
+        for await (const line of reader.lines(tablePartName('transfer_user_names'))) {
+          const id = fieldString(line, 'user_id');
+          if (!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (transfer_user_names.user_id).');
+          let mapped = idMap.get(id);
+          if (!mapped) {
+            const taken = (await client.query('SELECT 1 FROM users WHERE id = $1', [id])).rows.length > 0;
+            mapped = taken ? idMap.fresh(id) : id.toLowerCase();
+          }
+          identity.ghostIds.push(mapped);
+        }
+      }
       await idMap.loadInto(client);
 
       // Tables in FK order.
@@ -414,13 +451,13 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
 
       // Intake folders reset on request (U-93), after verification (which
       // compares the rows as archived) and before the fingerprint.
-      const resetIntakeSettings = options.resetIntakeSettings === true;
+      const resetIntakeSettings = options.resetIntakeSettings === true || isTransfer;
       if (resetIntakeSettings) {
         await client.query('UPDATE companies SET intake_settings = DEFAULT WHERE tenant_id = $1', [newTenantId]);
       }
       // Unconverted document drafts and the vendor layouts removed on request
       // (U-92), likewise; converted drafts stay with their transactions (D4).
-      const resetDocumentDrafts = options.resetDocumentDrafts === true;
+      const resetDocumentDrafts = options.resetDocumentDrafts === true || isTransfer;
       if (resetDocumentDrafts) {
         await client.query("DELETE FROM document_drafts WHERE tenant_id = $1 AND status <> 'converted'", [newTenantId]);
         await client.query('DELETE FROM vendor_layout_templates WHERE tenant_id = $1', [newTenantId]);
@@ -489,7 +526,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
          VALUES ($1, $2, 'create', 'tenant_import', $3, $4::jsonb)`,
         [newTenantId, options.callerUserId, manifest.archiveId, JSON.stringify({
           archiveId: manifest.archiveId, archiveSha256, sourceTenantId: manifest.source.tenantId, sourceName: manifest.source.name, userId: options.callerUserId,
-          resetIntakeSettings, resetDocumentDrafts, totalsMatch: totals.comparison.matches,
+          resetIntakeSettings, resetDocumentDrafts, transfer: isTransfer, totalsMatch: totals.comparison.matches,
         })],
       );
       const fingerprint = await computeTenantFingerprint(client, plan, newTenantId);
@@ -508,6 +545,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         sourceTenantId: manifest.source.tenantId,
         verification,
         verificationTotals: totals.comparison,
+        transfer: isTransfer,
         host: manifest.host,
         warnings: [...new Set(warnings)].sort(),
       };
