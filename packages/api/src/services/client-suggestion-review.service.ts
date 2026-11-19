@@ -152,7 +152,7 @@ export async function listSuggestions(
     contactEmail: portalContacts.email,
     contactFirst: portalContacts.firstName,
     contactLast: portalContacts.lastName,
-    userName: users.displayName,
+    userName: sql<string | null>`COALESCE(${users.displayName}, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = ${clientCategorySuggestions.tenantId} AND n.user_id = ${clientCategorySuggestions.submittedByUserId}))`,
     userEmail: users.email,
     payeeName: contacts.displayName,
   })

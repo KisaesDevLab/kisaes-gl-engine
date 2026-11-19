@@ -99,6 +99,8 @@ export interface ExportResult {
     verificationTotals?: VerificationTotals;
     /** The manifest options, with transfer always present (U-284, S3). */
     options: ArchiveManifest['options'] & { transfer: boolean };
+    /** The manifest's `omitted` list (U-284 E5). */
+    omitted: string[];
   };
   warnings: string[];
 }
@@ -697,6 +699,8 @@ async function exportLocked(
           schema: manifest.schema, source: manifest.source, unbalancedTransactions, verificationTotals,
           // The options the file was made with (U-284, S3): a client checks transfer === true before using it.
           options: { ...manifest.options, transfer: o.transfer },
+          // What the file leaves out (manifest `omitted`), so a client can show it without opening the file.
+          omitted: manifest.omitted ?? [],
         },
         warnings: resultWarnings,
       };

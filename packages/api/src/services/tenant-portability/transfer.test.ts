@@ -29,6 +29,8 @@ import { runExport, type ExportResult } from './export.service.js';
 import { NOT_A_TRANSFER_FILE_MESSAGE, runImport } from './import.service.js';
 import { ENVELOPE_ENTRY, IDENTITY_ENTRIES, MANIFEST_ENTRY, tablePartName, type ArchiveManifest } from './format.js';
 import { _resetJobsForTests, assertArchiveJobAllowed, startJob, waitForJob } from './jobs.js';
+import { hiddenAccountIdsFor } from '../visibility.js';
+import type { Request } from 'express';
 import { OMITTABLE_COLUMNS, OMITTABLE_TABLES, buildPortabilityPlan, scopeSql, type PortabilityPlan } from './plan.js';
 
 const PASS = 'transfer file passphrase 2026!';
@@ -217,6 +219,7 @@ describe('transfer export (U-284)', () => {
     expect(names).toContain('"display_name":"Olive Owner"');
     expect(names).toContain('"display_name":"Bob Books"');
     expect(m.tables.find((t) => t.name === 'check_signatures')!.rows).toBe(0);
+    expect(transfer.manifestSummary.omitted).toEqual(m.omitted);
   });
 
   it('holds no secret, login or email (T5)', async () => {
@@ -364,4 +367,22 @@ describe('409 TENANT_BUSY (Q-P32u)', () => {
       _resetDesktopProfileForTests();
     }
   });
+});
+
+describe('hidden accounts after a transfer import (Q-P32b, R3)', () => {
+  it('the importing owner and a bookkeeper with no permission row see them; a bookkeeper denied sensitive_accounts does not', async () => {
+    const r = await runImport({ filePath: transfer.path, passphrase: PASS, callerUserId: s.firmId, transferOnly: true });
+    tenants.push(r.tenantId);
+    const hiddenIds = (await q<{ id: string }>(`SELECT id::text AS id FROM accounts WHERE tenant_id = $1 AND is_sensitive`, [r.tenantId])).map((x) => x.id);
+    expect(hiddenIds).toHaveLength(1);
+    const home = tenants[1]!;
+    const bk = await user(home, `xfer-bk-${stamp}@cpa.example.test`, 'Firm Bookkeeper');
+    const bkDenied = await user(home, `xfer-bk-denied-${stamp}@cpa.example.test`, 'Firm Bookkeeper Denied');
+    await q(`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES ($1, $3, 'bookkeeper'), ($2, $3, 'bookkeeper')`, [bk, bkDenied, r.tenantId]);
+    await q(`INSERT INTO user_permissions (tenant_id, user_id, overrides) VALUES ($1, $2, '{"sensitive_accounts": "none"}'::jsonb)`, [r.tenantId, bkDenied]);
+    const viewer = (userId: string, role: string) => ({ tenantId: r.tenantId, userId, userRole: role, userType: 'staff', isSuperAdmin: false }) as unknown as Request;
+    expect(await hiddenAccountIdsFor(viewer(s.firmId, 'owner'))).toEqual([]);
+    expect(await hiddenAccountIdsFor(viewer(bk, 'bookkeeper'))).toEqual([]);
+    expect(await hiddenAccountIdsFor(viewer(bkDenied, 'bookkeeper'))).toEqual(hiddenIds);
+  }, 120_000);
 });

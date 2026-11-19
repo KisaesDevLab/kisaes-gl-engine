@@ -132,7 +132,7 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
     )
     SELECT rt.reconciliation_id, rt.statement_date::text AS statement_date, rt.transaction_id, rt.reconciled_amount,
       a.id AS audit_id, a.action, a.before_data, a.after_data, a.created_at AS changed_at,
-      u.display_name AS changed_by
+      COALESCE(u.display_name, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = a.tenant_id AND n.user_id = a.user_id)) AS changed_by
     FROM rec_txn rt
     JOIN audit_log a ON a.tenant_id = ${tenantId} AND a.entity_type = 'transaction'
       AND a.entity_id = rt.transaction_id AND a.action IN ('update', 'void', 'delete')
@@ -232,7 +232,8 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
       r.id AS reconciliation_id, r.statement_date::text AS statement_date,
       (SELECT SUM(x.debit - x.credit)::text FROM journal_lines x
         WHERE x.transaction_id = t.id AND x.account_id = ${accountId} AND x.is_void_reversal = false) AS amount,
-      (SELECT u.display_name FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
+      (SELECT COALESCE(u.display_name, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = al.tenant_id AND n.user_id = al.user_id))
+        FROM audit_log al LEFT JOIN users u ON u.id = al.user_id
         WHERE al.tenant_id = ${tenantId} AND al.entity_type = 'transaction' AND al.entity_id = t.id AND al.action = 'create'
         ORDER BY al.created_at LIMIT 1) AS created_by
     FROM transactions t
@@ -268,7 +269,8 @@ export async function buildReconciliationDiscrepancy(tenantId: string, accountId
 
   // ── reconciliation_undone ──
   const undos = await db.execute(sql`
-    SELECT a.entity_id, a.before_data, a.after_data, a.created_at, u.display_name AS changed_by
+    SELECT a.entity_id, a.before_data, a.after_data, a.created_at,
+      COALESCE(u.display_name, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = a.tenant_id AND n.user_id = a.user_id)) AS changed_by
     FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
     WHERE a.tenant_id = ${tenantId} AND a.entity_type = 'reconciliation' AND a.action = 'update'
       AND (CASE WHEN jsonb_typeof(a.after_data) = 'string' THEN (a.after_data #>> '{}')::jsonb ELSE a.after_data END) ? 'undo'

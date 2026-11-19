@@ -191,7 +191,8 @@ export async function buildClosingDateExceptions(
              'txnDate', j.x->>'txnDate', 'total', j.x->>'total', 'txnType', j.x->>'txnType',
              'transactionId', j.x->>'transactionId', 'method', j.x->>'method',
              'oldDate', j.x->>'oldDate', 'newDate', j.x->>'newDate') AS x,
-           (SELECT COALESCE(NULLIF(u.display_name, ''), u.email) FROM users u WHERE u.id = a.user_id) AS user_name,
+           COALESCE((SELECT COALESCE(NULLIF(u.display_name, ''), u.email) FROM users u WHERE u.id = a.user_id),
+             (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = a.tenant_id AND n.user_id = a.user_id)) AS user_name,
            to_char(t.txn_date, 'YYYY-MM-DD') AS live_date,
            COALESCE(t.total::text, CASE WHEN t.id IS NOT NULL THEN (SELECT SUM(jl.debit)::text FROM journal_lines jl
              WHERE jl.tenant_id = a.tenant_id AND jl.transaction_id = t.id AND jl.is_void_reversal = false) END) AS live_total,
