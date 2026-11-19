@@ -738,6 +738,8 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'tb_tickmark_applications.company_id': 'tenant-ref:companies',
   'tb_tickmark_applications.account_id': 'tenant-ref:accounts',
   'tb_tickmark_applications.applied_by': 'identity',
+  // U-284: the id a company's rows use for a person who travelled as a name only.
+  'transfer_user_names.user_id': 'identity',
   'template_groups.company_id': 'tenant-ref:companies',
   'template_occurrences.company_id': 'tenant-ref:companies',
   'template_occurrences.created_by': 'identity',
@@ -885,15 +887,52 @@ export const JSON_CONFIG_COLUMNS: Record<string, JsonConfigClass> = {
  * digest is computed over the archive projection, so it covers the value as
  * written, and the manifest lists the column under `omitted`.
  */
-export const OMITTABLE_COLUMNS: Record<string, { option: 'omitIntakeSettings'; replacement: string }> = {
+export const OMITTABLE_COLUMNS: Record<string, { option: 'omitIntakeSettings' | 'transfer'; replacement: string }> = {
   'companies.intake_settings': {
     option: 'omitIntakeSettings',
     replacement: `'${INTAKE_SETTINGS_DEFAULT_JSON}'`,
   },
+  // Transfer files (U-284, Q-P32h, Q-P32t). `replacement` is SQL over the row
+  // alias `a` (and the tenant id $1): nulled user references (real FKs into
+  // users, which a transfer never carries) and references into tables a
+  // transfer leaves out, the owner's mail-server login, the bank numbers in
+  // the check settings, and the audit row images with the install's user
+  // emails replaced by names and `email` keys of user rows removed.
+  'companies.ai_disclosure_accepted_by': { option: 'transfer', replacement: 'NULL' },
+  'portal_settings_per_company.bill_pay_notify_user_id': { option: 'transfer', replacement: 'NULL' },
+  'transactions.print_signature_id': { option: 'transfer', replacement: 'NULL' },
+  'companies.smtp_host': { option: 'transfer', replacement: 'NULL' },
+  'companies.smtp_user': { option: 'transfer', replacement: 'NULL' },
+  'companies.check_settings': {
+    option: 'transfer',
+    replacement: `(CASE WHEN jsonb_typeof(a."check_settings"::jsonb) = 'object'
+      THEN a."check_settings"::jsonb || '{"routingNumber": "", "accountNumber": "", "fractionalRouting": ""}'::jsonb
+      ELSE a."check_settings"::jsonb END)`,
+  },
+  'audit_log.before_data': { option: 'transfer', replacement: transferAuditImageSql('before_data') },
+  'audit_log.after_data': { option: 'transfer', replacement: transferAuditImageSql('after_data') },
 };
 
-/** Export options that leave whole tables or some rows out (U-92). */
-export type OmitOption = 'omitDocumentDrafts';
+/**
+ * The exporting install's people, lower-case email -> display name, for the
+ * transfer scrub: users homed in the tenant, with access to it, or named by
+ * its audit rows (one scalar subquery per cursor; binds $1).
+ */
+export function transferEmailNamesSql(): string {
+  return `(SELECT COALESCE(jsonb_object_agg(lower(u.email), COALESCE(NULLIF(btrim(u.display_name), ''), 'ClientLedger user')), '{}'::jsonb)
+  FROM users u WHERE u.email IS NOT NULL AND btrim(u.email) <> '' AND (u.tenant_id = $1
+    OR u.id IN (SELECT x.user_id FROM user_tenant_access x WHERE x.tenant_id = $1)
+    OR u.id IN (SELECT l.user_id FROM audit_log l WHERE l.tenant_id = $1 AND l.user_id IS NOT NULL)))`;
+}
+
+/** A transfer's audit image: secret keys stripped (as every export), then emails scrubbed (U-284, Q-P32t). */
+function transferAuditImageSql(column: string): string {
+  return `mybooks_transfer_scrub(mybooks_strip_secret_keys(a."${column}"::jsonb, '${SECRET_KEY_PATTERN}'), ${transferEmailNamesSql()},
+    a."entity_type" IN ('user', 'users', 'user_access'))`;
+}
+
+/** Export options that leave whole tables or some rows out (U-92; `transfer`, U-284). */
+export type OmitOption = 'omitDocumentDrafts' | 'transfer';
 
 /**
  * Tables an export may leave out on request (U-92, M6): the archive carries
@@ -906,6 +945,14 @@ export type OmitOption = 'omitDocumentDrafts';
  */
 export const OMITTABLE_TABLES: Record<string, { option: OmitOption }> = {
   vendor_layout_templates: { option: 'omitDocumentDrafts' },
+  // Transfer files (U-284): signature images and their grants (Q-P32h), the
+  // bank-file link key, AI chat history and MCP request logs (Q-P32t).
+  check_signatures: { option: 'transfer' },
+  check_signature_users: { option: 'transfer' },
+  bank_link_keys: { option: 'transfer' },
+  chat_conversations: { option: 'transfer' },
+  chat_messages: { option: 'transfer' },
+  mcp_request_log: { option: 'transfer' },
 };
 
 /**

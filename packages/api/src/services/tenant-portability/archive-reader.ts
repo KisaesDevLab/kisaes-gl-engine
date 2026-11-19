@@ -90,6 +90,8 @@ export function validateManifest(raw: unknown, envelope: ArchiveEnvelope): Archi
   if (!isObject(options) || typeof options['includeAttachments'] !== 'boolean' || typeof options['includeAudit'] !== 'boolean') throw corrupt('manifest options');
   if (options['omitIntakeSettings'] !== undefined && typeof options['omitIntakeSettings'] !== 'boolean') throw corrupt('manifest options');
   if (options['omitDocumentDrafts'] !== undefined && typeof options['omitDocumentDrafts'] !== 'boolean') throw corrupt('manifest options');
+  // U-284: a transfer file (names only, transfer omissions).
+  if (options['transfer'] !== undefined && typeof options['transfer'] !== 'boolean') throw corrupt('manifest options');
   const omitted = raw['omitted'];
   if (omitted !== undefined && (!Array.isArray(omitted) || omitted.length > 64 || !omitted.every((o) => typeof o === 'string' && OMITTED_RE.test(o)))) throw corrupt('manifest omitted');
   const omittedRows = raw['omittedRows'];
