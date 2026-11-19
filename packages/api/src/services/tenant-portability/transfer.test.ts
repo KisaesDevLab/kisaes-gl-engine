@@ -407,6 +407,15 @@ describe('P32 review fixes (U-284 E6)', () => {
     const who = await q<{ who: string }>(`SELECT ${userDisplayNameSql('b.created_by', 'b.tenant_id')} AS who FROM budgets b WHERE b.tenant_id = $1`, [a.tenantId]);
     expect(who.map((w) => w.who)).toEqual(['Dave Desk (ClientLedger)']);
   }, 240_000);
+  it('S1: an archive that lists a user of its own as a names-only person is ARCHIVE_CORRUPT', async () => {
+    const backup = await runExport(s.tenantId, s.ownerId, { passphrase: PASS });
+    const crafted = path.join(work, 's1-overlap.zip');
+    const line = JSON.stringify({ id: crypto.randomUUID(), tenant_id: s.tenantId, user_id: s.bookId, display_name: 'Bob Books', created_at: '2026-01-01T00:00:00+00:00' });
+    await rewriteParts(backup.path, crafted, (part) => (part === tablePartName('transfer_user_names') ? [line] : undefined));
+    const err = await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: s.firmId }), 'ARCHIVE_CORRUPT');
+    expect(err.details).toMatchObject({ table: 'transfer_user_names' });
+  }, 120_000);
+
   it('S2: a transfer file with rows in a table a transfer leaves out is ARCHIVE_CORRUPT, even when its omitted list hides it', async () => {
     const backup = await runExport(s.tenantId, s.ownerId, { passphrase: PASS });
     const keyLines: string[] = [];
