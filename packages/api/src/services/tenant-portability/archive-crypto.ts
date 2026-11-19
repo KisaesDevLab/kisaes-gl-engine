@@ -3,7 +3,7 @@
 // See LICENSE and NOTICE.md for terms.
 
 /**
- * Tenant archive encryption (U-05, formatVersion 1).
+ * Tenant archive encryption (U-05; formatVersion 1 and 2 share it, U-282).
  *
  * Key: PBKDF2-SHA512, 600,000 iterations (the engine's v2 setting,
  * derivePackageKey) over the passphrase and a per-archive salt.
@@ -29,7 +29,7 @@ import { Transform, type TransformCallback } from 'node:stream';
 import { derivePackageKey, validatePassphraseStrength } from '../portable-encryption.service.js';
 import { registerSecret, unregisterSecret } from '../../utils/secret-scrubber.js';
 import { ArchiveError } from './errors.js';
-import { ARCHIVE_FORMAT, ARCHIVE_FORMAT_VERSION } from './format.js';
+import { ARCHIVE_FORMAT, ARCHIVE_FORMAT_VERSION, ARCHIVE_TOO_NEW_MESSAGE, MIN_ARCHIVE_FORMAT_VERSION } from './format.js';
 
 export const KDF = 'pbkdf2-sha512';
 export const KDF_ITERATIONS = 600_000;
@@ -42,7 +42,7 @@ const FRAME_HEADER_BYTES = 5;
 const KEY_CHECK_PLAINTEXT = Buffer.from('mybooks-tenant-archive key check v1', 'utf8');
 const KEY_CHECK_PATH = 'envelope/keyCheck';
 
-/** Closed parameter sets accepted for formatVersion 1 (S-i). */
+/** Closed parameter sets accepted for formatVersion 1 and 2 (S-i). */
 const ALLOWED_ITERATIONS = new Set([KDF_ITERATIONS]);
 const ALLOWED_CHUNK_BYTES = new Set([CHUNK_BYTES]);
 const MIN_SALT = 16;
@@ -173,7 +173,12 @@ function b64(v: unknown, what: string, min: number, max: number): Buffer {
 export function validateEnvelope(raw: unknown): ArchiveEnvelope {
   if (!isObject(raw)) throw new ArchiveError('ARCHIVE_UNSUPPORTED', 'envelope is not an object');
   if (raw['format'] !== ARCHIVE_FORMAT) throw new ArchiveError('ARCHIVE_UNSUPPORTED', 'not a tenant archive');
-  if (raw['formatVersion'] !== ARCHIVE_FORMAT_VERSION) throw new ArchiveError('ARCHIVE_UNSUPPORTED', `unsupported formatVersion`);
+  const formatVersion = raw['formatVersion'];
+  if (!Number.isSafeInteger(formatVersion) || (formatVersion as number) < MIN_ARCHIVE_FORMAT_VERSION) throw new ArchiveError('ARCHIVE_UNSUPPORTED', 'unsupported formatVersion');
+  // A newer writer (U-282): the update message, before any key derivation.
+  if ((formatVersion as number) > ARCHIVE_FORMAT_VERSION) {
+    throw new ArchiveError('ARCHIVE_TOO_NEW', ARCHIVE_TOO_NEW_MESSAGE, { archiveFormatVersion: formatVersion, supportedFormatVersion: ARCHIVE_FORMAT_VERSION });
+  }
   if (typeof raw['archiveId'] !== 'string' || !UUID_RE.test(raw['archiveId'])) throw new ArchiveError('ARCHIVE_UNSUPPORTED', 'archiveId is not a uuid');
   if (typeof raw['createdAt'] !== 'string' || Number.isNaN(Date.parse(raw['createdAt']))) throw new ArchiveError('ARCHIVE_UNSUPPORTED', 'createdAt is not a date');
   const enc = raw['encryption'];
@@ -188,7 +193,8 @@ export function validateEnvelope(raw: unknown): ArchiveEnvelope {
   b64(kc['tag'], 'keyCheck.tag', TAG_BYTES, TAG_BYTES);
   return {
     format: ARCHIVE_FORMAT,
-    formatVersion: ARCHIVE_FORMAT_VERSION,
+    // The version read, not the constant (U-282): the manifest must carry the same.
+    formatVersion: formatVersion as number,
     archiveId: raw['archiveId'],
     createdAt: raw['createdAt'],
     encryption: {

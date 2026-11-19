@@ -15,6 +15,7 @@ import {
 } from './archive-crypto.js';
 import { scrubSecrets } from '../../utils/secret-scrubber.js';
 import { ArchiveError } from './errors.js';
+import { ARCHIVE_FORMAT_VERSION, ARCHIVE_TOO_NEW_MESSAGE } from './format.js';
 
 const PASS = 'correct horse battery staple 42';
 const ARCHIVE_ID = '11111111-2222-4333-8444-555555555555';
@@ -199,7 +200,9 @@ describe('envelope and key check', () => {
       { ...envelope, encryption: { ...envelope.encryption, kdf: 'scrypt' } },
       { ...envelope, encryption: { ...envelope.encryption, cipher: 'aes-128-gcm' } },
       { ...envelope, encryption: { ...envelope.encryption, salt: Buffer.alloc(8).toString('base64') } },
-      { ...envelope, formatVersion: 2 },
+      { ...envelope, formatVersion: 0 },
+      { ...envelope, formatVersion: 1.5 },
+      { ...envelope, formatVersion: '2' },
       { ...envelope, format: 'other' },
       { ...envelope, keyCheck: { ...envelope.keyCheck, tag: 'AAAA' } },
     ];
@@ -217,6 +220,27 @@ describe('envelope and key check', () => {
     }
     expect(KDF_ITERATIONS).toBe(600_000);
   }, 30_000);
+
+  it('reads formatVersion 1 and 2 as written and refuses a newer one with ARCHIVE_TOO_NEW (U-282)', () => {
+    const { envelope } = createEnvelope(ARCHIVE_ID, PASS, new NoncePrefixRegistry());
+    expect(envelope.formatVersion).toBe(ARCHIVE_FORMAT_VERSION);
+    expect(ARCHIVE_FORMAT_VERSION).toBe(2);
+    expect(validateEnvelope({ ...envelope, formatVersion: 1 }).formatVersion).toBe(1);
+    expect(validateEnvelope({ ...envelope, formatVersion: 2 }).formatVersion).toBe(2);
+    for (const v of [3, 99]) {
+      const t0 = process.hrtime.bigint();
+      let err: unknown;
+      try {
+        validateEnvelope({ ...envelope, formatVersion: v });
+      } catch (e) {
+        err = e;
+      }
+      expect(Number(process.hrtime.bigint() - t0) / 1e6).toBeLessThan(50);
+      expect((err as ArchiveError).code).toBe('ARCHIVE_TOO_NEW');
+      expect((err as ArchiveError).statusCode).toBe(409);
+      expect((err as ArchiveError).message).toBe(ARCHIVE_TOO_NEW_MESSAGE);
+    }
+  });
 });
 
 describe('passphrase handling', () => {

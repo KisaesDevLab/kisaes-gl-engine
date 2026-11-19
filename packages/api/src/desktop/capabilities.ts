@@ -1795,4 +1795,13 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * company's (and tenant-wide ones). QuickBooks Online Paycheck / Payroll Check / Payroll Adjustment rows keep no
    * Name or Memo (Q-P31m). Open-item amounts are formatted exactly.
    */
-  'imports-review-fixes-v1',];
+  'imports-review-fixes-v1',
+  /**
+   * U-282 (ClientLedger P32; no migration). Tenant archives are written as formatVersion 2 (the container, crypto and
+   * parts of version 1; new manifest members are optional) and versions 1 and 2 are read. The manifest's formatVersion
+   * must equal the envelope's (else 422 ARCHIVE_CORRUPT). A formatVersion above 2 is refused from the plaintext
+   * envelope, before key derivation, with 409 ARCHIVE_TOO_NEW "This archive was made by a newer version. Update the
+   * application and try again." (details archiveFormatVersion, supportedFormatVersion), as a newer schema already was.
+   * A client reading `.clbackup` files itself accepts 1..2.
+   */
+  'tenant-archive-v2',];
