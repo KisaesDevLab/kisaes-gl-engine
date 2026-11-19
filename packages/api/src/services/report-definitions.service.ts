@@ -285,7 +285,7 @@ export async function listDefinitions(tenantId: string, companyId: string, viewe
   if (opts.groupId === 'none') conds.push(isNull(reportDefinitions.groupId));
   else if (opts.groupId) conds.push(eq(reportDefinitions.groupId, opts.groupId));
   if (opts.kind) conds.push(eq(reportDefinitions.kind, opts.kind));
-  const rows = await db.select({ d: reportDefinitions, createdByName: users.displayName })
+  const rows = await db.select({ d: reportDefinitions, createdByName: sql<string | null>`COALESCE(${users.displayName}, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = ${reportDefinitions.tenantId} AND n.user_id = ${reportDefinitions.createdBy}))` })
     .from(reportDefinitions)
     .leftJoin(users, eq(users.id, reportDefinitions.createdBy))
     .where(and(...conds))
@@ -295,7 +295,7 @@ export async function listDefinitions(tenantId: string, companyId: string, viewe
 }
 
 export async function getDefinition(tenantId: string, companyId: string, id: string, viewer: Viewer) {
-  const [r] = await db.select({ d: reportDefinitions, createdByName: users.displayName })
+  const [r] = await db.select({ d: reportDefinitions, createdByName: sql<string | null>`COALESCE(${users.displayName}, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = ${reportDefinitions.tenantId} AND n.user_id = ${reportDefinitions.createdBy}))` })
     .from(reportDefinitions)
     .leftJoin(users, eq(users.id, reportDefinitions.createdBy))
     .where(and(defScope(tenantId, companyId), eq(reportDefinitions.id, id)))

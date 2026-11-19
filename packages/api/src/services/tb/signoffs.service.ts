@@ -10,7 +10,7 @@
 // Sign-offs are PERIOD-END scoped (migration 0208): one live sign-off per
 // (grouping, period end, role); signing 08/31 never satisfies 07/31.
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { tbGroupings, tbLeadsheetSignoffs, users } from '../../db/schema/index.js';
 import { AppError } from '../../utils/errors.js';
@@ -56,7 +56,7 @@ export async function checkCompletionGate(tenantId: string, companyId: string, p
 // staleness check and the workpaper cache key exact for RJE edits.
 export async function listSignoffs(tenantId: string, companyId: string, periodEnd: string) {
   const [signoffs, currentStamp] = await Promise.all([
-    db.select({ s: tbLeadsheetSignoffs, signedByName: users.displayName })
+    db.select({ s: tbLeadsheetSignoffs, signedByName: sql<string | null>`COALESCE(${users.displayName}, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = ${tbLeadsheetSignoffs.tenantId} AND n.user_id = ${tbLeadsheetSignoffs.userId}))` })
       .from(tbLeadsheetSignoffs)
       .leftJoin(users, eq(tbLeadsheetSignoffs.userId, users.id))
       .where(and(

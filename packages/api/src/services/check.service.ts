@@ -779,7 +779,7 @@ export async function listSpoiledCheckNumbers(tenantId: string, bankAccountId?: 
   if (bankAccountId) conds.push(sql`s.bank_account_id = ${bankAccountId}`);
   const rows = await db.execute(sql`
     SELECT s.check_number, s.transaction_id, s.bank_account_id, s.reason, s.spoiled_at, s.spoiled_by,
-      u.display_name AS spoiled_by_name, t.txn_date
+      COALESCE(u.display_name, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = s.tenant_id AND n.user_id = s.spoiled_by)) AS spoiled_by_name, t.txn_date
     FROM spoiled_check_numbers s
     LEFT JOIN users u ON u.id = s.spoiled_by
     LEFT JOIN transactions t ON t.id = s.transaction_id AND t.tenant_id = s.tenant_id

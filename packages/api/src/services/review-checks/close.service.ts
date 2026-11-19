@@ -72,8 +72,8 @@ export async function getClose(
   }>(sql`
     SELECT c.status, c.prepared_by, c.prepared_at, c.prepared_note,
       c.reviewed_by, c.reviewed_at, c.reviewed_note,
-      COALESCE(pu.display_name, pu.email) AS prepared_name,
-      COALESCE(ru.display_name, ru.email) AS reviewed_name
+      COALESCE(pu.display_name, pu.email, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = c.tenant_id AND n.user_id = c.prepared_by)) AS prepared_name,
+      COALESCE(ru.display_name, ru.email, (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = c.tenant_id AND n.user_id = c.reviewed_by)) AS reviewed_name
     FROM closes c
     LEFT JOIN users pu ON pu.id = c.prepared_by
     LEFT JOIN users ru ON ru.id = c.reviewed_by
