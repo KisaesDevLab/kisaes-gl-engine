@@ -29,6 +29,8 @@
  * the rows that travel: accounts, clients (contacts customer|both), vendors
  * (vendor|both), items, transactions (every status), postedTransactions,
  * attachments and attachmentBytes (Σ attachments.file_size), auditEntries.
+ * In a tenant with one company, rows with no company_id count for it (money
+ * too); with several, they count in the tenant-wide counts only.
  * A `scope` function gives the row scope, so an export counts through its
  * own omissions (exportScopeSql) and the import counts what it inserted.
  *
@@ -163,7 +165,10 @@ export async function computeVerificationTotals(
   const tenantCounts = zeroCounts();
   for (const f of VT_COUNT_FIELDS) for (const n of counts[f].values()) tenantCounts[f] += n;
 
-  // Money, per company, from the ledger lines of posted accrual entries.
+  // Money, per company, from the ledger lines of posted accrual entries. In a
+  // one-company tenant, rows with no company (tenant-wide accounts, older
+  // lines) are that company's; with several companies they count tenant-wide only.
+  const single = companies.length === 1;
   const out: CompanyVerificationTotals[] = [];
   for (const co of companies) {
     const fyStart = opts.fiscalYearStart?.(co.id) ?? fiscalYearStartFor(asOf, co.m ?? 1);
@@ -182,13 +187,13 @@ export async function computeVerificationTotals(
        FROM journal_lines jl
        JOIN transactions t ON t.id = jl.transaction_id
        JOIN accounts ac ON ac.id = jl.account_id
-       WHERE jl.tenant_id = $1 AND jl.company_id = $2::uuid
+       WHERE jl.tenant_id = $1 AND (jl.company_id = $2::uuid OR ($5::boolean AND jl.company_id IS NULL))
          AND t.status = 'posted' AND t.basis IN ('both', 'accrual') AND t.txn_date <= $3::date`,
-      [tenantId, co.id, asOf, fyStart],
+      [tenantId, co.id, asOf, fyStart, single],
     );
     const m = r.rows[0] as Record<string, string>;
     const c = zeroCounts();
-    for (const f of VT_COUNT_FIELDS) c[f] = counts[f].get(co.id) ?? 0;
+    for (const f of VT_COUNT_FIELDS) c[f] = (counts[f].get(co.id) ?? 0) + (single ? counts[f].get(NO_COMPANY) ?? 0 : 0);
     out.push({
       companyId: opts.mapCompanyId ? opts.mapCompanyId(co.id) : co.id,
       name: co.name ?? '',
