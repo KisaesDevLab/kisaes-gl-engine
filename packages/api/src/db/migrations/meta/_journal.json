@@ -1989,6 +1989,13 @@
       "when": 1788500029380,
       "tag": "0283_transfer_user_names",
       "breakpoints": true
+    },
+    {
+      "idx": 284,
+      "version": "7",
+      "when": 1788600029380,
+      "tag": "0284_transfer_scrub_fixes",
+      "breakpoints": true
     }
   ]
 }

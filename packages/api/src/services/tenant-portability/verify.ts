@@ -250,8 +250,12 @@ export async function verifyImport(input: VerifyInput): Promise<VerificationSumm
   if (unbalanced !== manifest.unbalancedTransactions) failures.push({ check: 'unbalancedTransactions', expected: manifest.unbalancedTransactions, actual: unbalanced });
 
   // c2. References (M1): every imported row points inside the new scope, at an allowed user or a global row.
-  failures.push(...await verifyReferences(client, plan, newTenantId,
-    [...input.identity.matched, ...input.identity.created, ...input.identity.ghostIds, input.callerUserId], skippedTables));
+  // A transfer file's rows name only its names-only people (U-284 E6, S2): the importer is not an allowed
+  // reference there, so a crafted file can never credit the books to the person importing them.
+  const allowedUsers = manifest.options.transfer === true
+    ? [...input.identity.matched, ...input.identity.created, ...input.identity.ghostIds]
+    : [...input.identity.matched, ...input.identity.created, ...input.identity.ghostIds, input.callerUserId];
+  failures.push(...await verifyReferences(client, plan, newTenantId, allowedUsers, skippedTables));
 
   // c3. Re-encrypted values (M5): the stored ciphertext must decrypt to what the archive carried.
   for (const r of input.reencrypted) {

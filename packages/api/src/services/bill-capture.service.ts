@@ -49,6 +49,7 @@ import {
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { log } from '../utils/logger.js';
+import { userDisplayNames } from '../utils/user-display-name.js';
 import * as attachmentService from './attachment.service.js';
 import * as billService from './bill.service.js';
 import * as contactsService from './contacts.service.js';
@@ -438,10 +439,8 @@ async function decorate(tenantId: string, rows: BillCaptureRow[]): Promise<Captu
       ? db.select({ id: transactions.id, txnNumber: transactions.txnNumber, status: transactions.status }).from(transactions)
         .where(and(eq(transactions.tenantId, tenantId), inArray(transactions.id, billIds)))
       : Promise.resolve([]),
-    userIds.length
-      ? db.select({ id: users.id, displayName: users.displayName, email: users.email }).from(users)
-        .where(inArray(users.id, userIds))
-      : Promise.resolve([]),
+    // Names-only people of a transfer file show as "Name (ClientLedger)" (U-284).
+    userDisplayNames(tenantId, userIds),
     portalIds.length
       ? db.select({ id: portalContacts.id, firstName: portalContacts.firstName, lastName: portalContacts.lastName, email: portalContacts.email })
         .from(portalContacts).where(and(eq(portalContacts.tenantId, tenantId), inArray(portalContacts.id, portalIds)))
@@ -451,7 +450,7 @@ async function decorate(tenantId: string, rows: BillCaptureRow[]): Promise<Captu
   ]);
   const contactName = new Map(contactRows.map((c) => [c.id, c.displayName]));
   const bill = new Map(billRows.map((b) => [b.id, b]));
-  const userName = new Map(userRows.map((u) => [u.id, u.displayName || u.email]));
+  const userName = userRows;
   const portalName = new Map(portalRows.map((p) => [p.id, [p.firstName, p.lastName].filter(Boolean).join(' ') || p.email]));
   const mime = new Map(attachRows.map((a) => [a.id, a.mimeType]));
 

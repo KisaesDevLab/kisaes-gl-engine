@@ -44,7 +44,7 @@ import { computeTenantFingerprint } from './fingerprint.js';
 import { IDENTITY_ENTRIES, filePartName, tablePartName, type ArchiveManifest, type ManifestTable } from './format.js';
 import { applyIdentity, parseIdentityLine, type ArchivedAccess, type ArchivedUser } from './identity.js';
 import type { JobProgress } from './jobs.js';
-import { NATURAL_KEYS, OMITTABLE_ROW_FILTERS, getPortabilityPlan, scopeSql, type PortabilityPlan, type TablePlan } from './plan.js';
+import { NATURAL_KEYS, OMITTABLE_COLUMNS, OMITTABLE_ROW_FILTERS, OMITTABLE_TABLES, getPortabilityPlan, scopeSql, type PortabilityPlan, type TablePlan } from './plan.js';
 import { IdMap, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { applyArchiveSession, withArchiveConnection, xactLockTenantExclusive, type ArchiveClient } from './session.js';
 import { verifyImport, type ReencryptedValue, type VerificationSummary, type WrittenFile } from './verify.js';
@@ -257,6 +257,48 @@ export async function assertOmissionsHold(client: ArchiveClient, plan: Portabili
       throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (it carries rows of ${table} it lists as left out).`, { omitted: o });
     }
   }
+  if (manifest.options.transfer === true) await assertTransferOmissionsHold(client, plan, newTenantId);
+}
+
+/** The check-settings keys a transfer empties (OMITTABLE_COLUMNS `companies.check_settings`). */
+const TRANSFER_CHECK_SETTINGS_KEYS = ['routingNumber', 'accountNumber', 'fractionalRouting'] as const;
+
+/**
+ * U-284 E6 (S2): a transfer file is held to what this engine's transfer
+ * leaves out, never to the file's own `omitted` list. Every table with
+ * option `transfer` in OMITTABLE_TABLES must be empty, every column with
+ * option `transfer` and replacement NULL in OMITTABLE_COLUMNS must be null,
+ * and the check-settings bank numbers must be empty. Anything else is a
+ * damaged (or crafted) file: 422 ARCHIVE_CORRUPT naming the table or column.
+ * The audit images (also `transfer` columns) are scrubbed by value at the
+ * export and cannot be re-checked here: the importing install does not know
+ * the exporting install's emails.
+ */
+export async function assertTransferOmissionsHold(client: ArchiveClient, plan: PortabilityPlan, newTenantId: string): Promise<void> {
+  const count = async (sql: string): Promise<number> =>
+    Number(((await client.query(sql, [newTenantId])).rows[0] as { n: number }).n);
+  for (const [table, rule] of Object.entries(OMITTABLE_TABLES)) {
+    if (rule.option !== 'transfer' || !plan.byName.has(table)) continue;
+    if (await count(`SELECT count(*)::int AS n FROM "${table}" a WHERE ${scopeSql(plan, table, 'a')}`) > 0) {
+      throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (a transfer file carries rows of ${table}).`, { omitted: table });
+    }
+  }
+  for (const [key, rule] of Object.entries(OMITTABLE_COLUMNS)) {
+    if (rule.option !== 'transfer') continue;
+    const [table, column] = key.split('.') as [string, string];
+    const t = plan.byName.get(table);
+    if (!t || !t.columns.some((c) => c.name === column)) continue;
+    let bad: string | null = null;
+    if (rule.replacement === 'NULL') {
+      bad = `a."${column}" IS NOT NULL`;
+    } else if (key === 'companies.check_settings') {
+      bad = `jsonb_typeof(a."check_settings"::jsonb) = 'object' AND (${TRANSFER_CHECK_SETTINGS_KEYS
+        .map((k) => `COALESCE(a."check_settings"::jsonb ->> '${k}', '') <> ''`).join(' OR ')})`;
+    }
+    if (bad && await count(`SELECT count(*)::int AS n FROM "${table}" a WHERE (${scopeSql(plan, table, 'a')}) AND ${bad}`) > 0) {
+      throw new ArchiveError('ARCHIVE_CORRUPT', `The archive is damaged (a transfer file carries ${key}).`, { omitted: key });
+    }
+  }
 }
 
 export async function runImport(options: ImportOptions, progress?: JobProgress): Promise<ImportResult> {
@@ -377,11 +419,17 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
       if (identity.skipped.length > 0) warnings.push(`USERS_NOT_CREATED:${identity.skipped.length}`);
       // People who travel as names only (U-284, B1), in any archive: their ids are allowed references. An id that
       // already belongs to a user of this install gets a fresh one first, so no row or grant lands on a real person.
+      // A names-only id is never also a user of the same archive (S1): an honest
+      // export never writes both, so the overlap is a damaged (or crafted) file.
       const namesTable = tablesInOrder.find((m) => m.name === 'transfer_user_names');
       if (namesTable) {
+        const archivedUserIds = new Set(userLinesRaw.map((l) => pkOfLine(l, 'id').toLowerCase()));
         for await (const line of reader.lines(tablePartName('transfer_user_names'))) {
           const id = fieldString(line, 'user_id');
           if (!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (transfer_user_names.user_id).');
+          if (archivedUserIds.has(id.toLowerCase())) {
+            throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (a names-only person is also a user).', { table: 'transfer_user_names' });
+          }
           let mapped = idMap.get(id);
           if (!mapped) {
             const taken = (await client.query('SELECT 1 FROM users WHERE id = $1', [id])).rows.length > 0;
