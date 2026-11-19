@@ -33,7 +33,7 @@ import { describe } from '../middleware/describe.js';
 import { AppError } from '../utils/errors.js';
 import { errorSummaryForLog } from '../utils/log-safe.js';
 import { isDesktop, desktopProfile } from '../desktop/profile.js';
-import { getJob, jobView, startJob } from '../services/tenant-portability/jobs.js';
+import { assertArchiveJobAllowed, getJob, jobView, startJob } from '../services/tenant-portability/jobs.js';
 import { archiveDir } from '../services/tenant-portability/export.service.js';
 import { runImport } from '../services/tenant-portability/import.service.js';
 import { ArchiveError } from '../services/tenant-portability/errors.js';
@@ -144,6 +144,9 @@ export const importArchiveSchema = z.object({
   /** Restore with no unconverted document drafts or vendor layouts (U-92, document-drafts-v1); ClientLedger sets it for transfer files. */
   resetDocumentDrafts: z.boolean().optional().default(false)
     .describe('Restore with no unconverted document drafts and no vendor layouts (document-drafts-v1); converted drafts stay with their transactions; applied after content verification. ClientLedger sets it for transfer files.'),
+  /** Refuse anything but a ClientLedger transfer file (U-284, tenant-archive-transfer-v1): 422 NOT_A_TRANSFER_FILE. */
+  transferOnly: z.boolean().optional().default(false)
+    .describe('Refuse an archive that is not a transfer file with 422 NOT_A_TRANSFER_FILE before anything is written (tenant-archive-transfer-v1). The MyBooks Online transfer import page always sets it.'),
   /** Desktop (CL_LAN != 1) only: absolute path of a local .zip / .clbackup, opened read-only. */
   path: z.string().min(1).max(4096).optional(),
 });
@@ -192,6 +195,7 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   if (typeof body['scratch'] === 'string') body['scratch'] = body['scratch'] === 'true';
   if (typeof body['resetIntakeSettings'] === 'string') body['resetIntakeSettings'] = body['resetIntakeSettings'] === 'true';
   if (typeof body['resetDocumentDrafts'] === 'string') body['resetDocumentDrafts'] = body['resetDocumentDrafts'] === 'true';
+  if (typeof body['transferOnly'] === 'string') body['transferOnly'] = body['transferOnly'] === 'true';
   next();
 }, validate(importArchiveSchema), describe({
   summary: 'Import an archive as a new company (202; multipart `file`, or {path} on desktop without LAN)',
@@ -224,6 +228,8 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   // M3: a user who keeps guessing waits before any key derivation runs.
   try {
     assertPassphraseAttemptAllowed(userId);
+    // 409 TENANT_BUSY (U-284, Q-P32u) before the passphrase is registered; the upload is removed.
+    assertArchiveJobAllowed(null, false);
   } catch (err) {
     if (temporary) fs.rmSync(filePath, { force: true });
     throw err;
@@ -232,7 +238,7 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
   registerPassphrase(body.passphrase);
   const job = startJob('import', null, userId, async (progress) => {
     try {
-      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId, resetIntakeSettings: body.resetIntakeSettings, resetDocumentDrafts: body.resetDocumentDrafts }, progress);
+      const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId, resetIntakeSettings: body.resetIntakeSettings, resetDocumentDrafts: body.resetDocumentDrafts, transferOnly: body.transferOnly }, progress);
       clearPassphraseFailures(userId);
       return result;
     } catch (err) {

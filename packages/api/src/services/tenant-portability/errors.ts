@@ -32,6 +32,10 @@ export const ARCHIVE_ERROR_STATUS = {
   STALE: 409,
   /** Rows of the archive belong to users this caller may not create (H1): a super admin must import it. */
   IMPORT_NEEDS_SUPER_ADMIN: 403,
+  /** transferOnly was set and the archive is not a transfer file (U-284, S7): a backup. */
+  NOT_A_TRANSFER_FILE: 422,
+  /** A transfer file opened by a desktop restore (U-284, Q-P32n): it is for the accountant's MyBooks Online. */
+  TRANSFER_NOT_A_BACKUP: 422,
   /** Too many wrong passphrases from this user in the window (M3). */
   PASSPHRASE_RATE_LIMITED: 429,
   /** The bundled files would not fit on the upload volume. */
