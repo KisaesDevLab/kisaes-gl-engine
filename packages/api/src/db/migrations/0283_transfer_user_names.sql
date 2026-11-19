@@ -15,7 +15,9 @@
 -- mybooks_transfer_scrub(doc, names, strip_email): a deep copy of an audit
 -- row image in which every string holding one of the exporting install's
 -- user emails (keys of `names`, lower-case) has it replaced by that user's
--- display name, and, when strip_email, every `email` key is removed. JSON
+-- display name, and, when strip_email, every `email` key is removed; the
+-- mail-server login keys (smtp_host, smtp_user) and the check printing bank
+-- numbers are removed at every depth (Q-P32t). JSON
 -- string images (as middleware/audit.ts writes them) are scrubbed inside and
 -- re-wrapped. Used by the transfer export only. Additive only.
 
@@ -40,10 +42,16 @@ BEGIN
   END IF;
   CASE jsonb_typeof(doc)
     WHEN 'object' THEN
+      -- Always removed: the mail-server login (smtp host and user) and the
+      -- check printing bank numbers (routing, fractional routing, and the
+      -- account number of an object that carries a routing number).
       RETURN COALESCE(
         (SELECT jsonb_object_agg(o.k, mybooks_transfer_scrub(o.v, names, strip_email))
            FROM jsonb_each(doc) AS o(k, v)
-          WHERE NOT (strip_email AND o.k ~* '^e_?mail$')),
+          WHERE NOT (strip_email AND o.k ~* '^e_?mail$')
+            AND o.k !~* '^smtp_?(host|user)$'
+            AND o.k !~* '^(routing_?number|fractional_?routing)$'
+            AND NOT (o.k ~* '^account_?number$' AND (doc ? 'routingNumber' OR doc ? 'routing_number'))),
         '{}'::jsonb);
     WHEN 'array' THEN
       RETURN COALESCE(

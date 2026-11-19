@@ -1823,4 +1823,25 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * keep the old ids' sort order, so the import's stock re-walk changes nothing; a change is the difference
    * inventoryRewalk.changedDocuments. Archive jobs run without a viewer.
    */
-  'archive-verification-totals-v1',];
+  'archive-verification-totals-v1',
+  /**
+   * U-284 (ClientLedger P32; migration 0283_transfer_user_names, additive + rollback). Transfer files:
+   * POST /tenants/:id/archives {transfer: true} (implies omitIntakeSettings and omitDocumentDrafts) writes no users and
+   * no access rows; table transfer_user_names carries the company's names-only people plus one row per user id its
+   * rows reference (display name, else "ClientLedger user"). Left out (manifest `omitted`): check_signatures,
+   * check_signature_users, bank_link_keys, chat_conversations, chat_messages, mcp_request_log; nulled:
+   * companies.ai_disclosure_accepted_by, portal_settings_per_company.bill_pay_notify_user_id,
+   * transactions.print_signature_id, companies.smtp_host, companies.smtp_user; companies.check_settings
+   * routingNumber / accountNumber / fractionalRouting emptied; audit before/after images: the install's user emails
+   * become display names and `email` keys of user rows are removed (mybooks_transfer_scrub). Every missing, changed
+   * or external file is refused in one error (422 FILE_MISSING / FILE_SIZE_MISMATCH, details.files [{table, column,
+   * rowId, reason}]; desktop backups also list all). manifestSummary.options echoes {..., transfer}. Import: any
+   * archive's transfer_user_names ids are allowed references (an id taken by a real user gets a fresh one); a
+   * transfer archive with users, access rows or sign-in keys is 422 ARCHIVE_CORRUPT; it resets intake folders and
+   * drafts; desktop mode refuses it (422 TRANSFER_NOT_A_BACKUP); `transferOnly` refuses any other archive (422
+   * NOT_A_TRANSFER_FILE). Result adds `transfer`. 409 TENANT_BUSY (never queued): a transfer while any archive job of
+   * its scope is queued or running, and any archive job while a transfer is (scope: the install on desktop, the
+   * tenant on a server). GET /tenants/:id/verification-totals takes transfer=true. The audit list shows names-only
+   * people as "Name (ClientLedger)".
+   */
+  'tenant-archive-transfer-v1',];
