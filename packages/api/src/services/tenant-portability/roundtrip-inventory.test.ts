@@ -27,7 +27,7 @@ import * as invoiceService from '../invoice.service.js';
 import * as salesDocs from '../sales-docs.service.js';
 import * as unitsService from '../units.service.js';
 import { runExport, type ExportResult } from './export.service.js';
-import { runImport } from './import.service.js';
+import { _importTestHooks, runImport } from './import.service.js';
 import { IdMap } from './remap.js';
 import { rewalkCompany } from '../inventory-costing.service.js';
 import { ArchiveReader } from './archive-reader.js';
@@ -253,18 +253,26 @@ async function importFlipped(file: string, flip: [string, string]) {
   const [low, high] = [`00000000-0000-4000-8000-${tail()}`, `ffffffff-ffff-4fff-bfff-${tail()}`];
   // a < b on the original: a gets the high id, b the low one (and the other way round).
   const forced = new Map(a < b ? [[a, high], [b, low]] : [[a, low], [b, high]]);
-  const fresh = IdMap.prototype.fresh;
-  const spy = vi.spyOn(IdMap.prototype, 'fresh').mockImplementation(function (this: IdMap, oldId: string) {
-    const want = forced.get(oldId.toLowerCase());
-    if (want && !this.get(oldId)) { this.set(oldId, want); return want; }
-    return fresh.call(this, oldId);
+  // The import allocates ids in old-id order (U-283), so the flip is forced
+  // before the order-preserving allocation, and the totals difference the
+  // re-walk then makes on purpose is reported, not refused.
+  const freshOrdered = IdMap.prototype.freshOrdered;
+  const spy = vi.spyOn(IdMap.prototype, 'freshOrdered').mockImplementation(function (this: IdMap, oldIds: Iterable<string>) {
+    const list = [...oldIds];
+    for (const o of list) {
+      const want = forced.get(o.toLowerCase());
+      if (want && !this.get(o)) this.set(o, want);
+    }
+    freshOrdered.call(this, list);
   });
+  _importTestHooks.ignoreTotals = true;
   try {
     const imported = await runImport({ filePath: file, passphrase: PASS, callerUserId: callerId });
     createdTenants.push(imported.tenantId);
     return imported;
   } finally {
     spy.mockRestore();
+    delete _importTestHooks.ignoreTotals;
   }
 }
 
@@ -382,6 +390,36 @@ describe('the import re-walks every item (PR-4 RB1: documents that tie on date a
         FROM inventory_movements s JOIN transactions t ON t.id = s.transaction_id WHERE s.tenant_id = $1 AND t.txn_number = $2`, [tid, `LS-${stamp}`]);
       expect(r[0]!.back, tid === co.tenantId ? 'original' : 'imported').toBe(r[0]!.r);
       await invariantsHold(tid);
+    }
+  }, 600_000);
+});
+
+describe('order-preserving ids make the import re-walk a no-op (U-283, B2, T2)', () => {
+  it('two documents with the same date and created_at but different costs: totals match and nothing is re-costed', async () => {
+    expect(callerId).not.toBe('');
+    const co = await stockedTenant('t2');
+    await bill(co, '2026-03-02', '4', '2.00', '8.00', 'U1');
+    const sale = await sell(co, '2026-03-03', '2', 'US');
+    const late = await bill(co, '2026-03-03', '4', '8.00', '32.00', 'U2');
+    const lateId = (late as { id: string }).id;
+    const tied = '2026-03-03T12:00:00.000Z';
+    await q(`UPDATE transactions SET created_at = $1::timestamptz WHERE id IN ($2, $3)`, [tied, sale.id, lateId]);
+    await q(`UPDATE inventory_movements SET txn_created_at = $1::timestamptz WHERE transaction_id IN ($2, $3)`, [tied, sale.id, lateId]);
+    await db.transaction(async (tx) => { await rewalkCompany(tx, co.tenantId, co.companyId, 'test'); });
+    const exported = await runExport(co.tenantId, callerId, { passphrase: PASS });
+    for (let i = 0; i < 3; i++) {
+      const imported = await runImport({ filePath: exported.path, passphrase: PASS, callerUserId: callerId });
+      createdTenants.push(imported.tenantId);
+      expect(imported.verificationTotals.matches).toBe(true);
+      expect(imported.verificationTotals.differences).toEqual([]);
+      const audits = await q(`SELECT 1 FROM audit_log WHERE tenant_id = $1 AND (CASE WHEN jsonb_typeof(after_data) = 'string' THEN (after_data #>> '{}')::jsonb ELSE after_data END)->>'costingTrigger' = 'tenant_import'`, [imported.tenantId]);
+      expect(audits, 'the re-walk changed no document').toHaveLength(0);
+      const ids = await q<{ id: string; n: string }>(`SELECT id::text AS id, txn_number AS n FROM transactions WHERE tenant_id = $1 AND (txn_number = $2 OR vendor_invoice_number = 'U2')`,
+        [imported.tenantId, `US-${stamp}`]);
+      expect(ids).toHaveLength(2);
+      const newSale = ids.find((r) => r.n === `US-${stamp}`)!.id;
+      const newLate = ids.find((r) => r.n !== `US-${stamp}`)!.id;
+      expect(newSale < newLate).toBe(sale.id < lateId);
     }
   }, 600_000);
 });

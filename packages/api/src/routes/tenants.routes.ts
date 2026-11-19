@@ -10,6 +10,7 @@
  *   POST   /               create a company (createOwnedTenant; no firm join)
  *   PATCH  /:id            rename the tenant label (409 STALE on an expectedUpdatedAt mismatch)
  *   POST   /:id/archives   start an archive export job -> 202 {jobId, archiveId}
+ *   GET    /:id/verification-totals   preview of the export's verification totals (U-283)
  *
  * Every endpoint that names a tenant answers 409 WORKSPACE_TENANT for the
  * desktop workspace. Writes need an interactive session and the owner
@@ -29,7 +30,9 @@ import { AppError } from '../utils/errors.js';
 import { assertNotWorkspace } from '../desktop/workspace.js';
 import { isDesktop } from '../desktop/profile.js';
 import * as authService from '../services/auth.service.js';
-import { runExport } from '../services/tenant-portability/export.service.js';
+import { previewVerificationTotals, runExport } from '../services/tenant-portability/export.service.js';
+import { resolveAsOf } from '../services/tenant-portability/verification-totals.js';
+import { runWithoutViewer } from '../services/visibility.js';
 import { assertPassphraseStrong, registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
 import { startJob } from '../services/tenant-portability/jobs.js';
 import { HOST_MAX_BYTES } from '../services/tenant-portability/format.js';
@@ -158,7 +161,66 @@ export const exportArchiveSchema = z.object({
     .describe('Leave unconverted document drafts (and their audit rows), vendor layouts and live drafts\' files out (document-drafts-v1); converted drafts and files other records use travel. ClientLedger sets it for transfer files.'),
   /** Opaque application metadata, stored in the manifest, never interpreted (<= 16 KiB). */
   host: z.record(z.unknown()).optional(),
+  /** Date of the verification totals (U-283): the owner's local date; at most the server's tomorrow; default the server's today. */
+  asOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    .describe('Date (YYYY-MM-DD) of the verification totals written to the manifest (archive-verification-totals-v1): the owner\'s local date, at most the server\'s tomorrow; default the server\'s today.'),
   passphrase: z.string().min(1).max(1024),
+});
+
+const amount = z.string().regex(/^-?\d+\.\d{4}$/);
+const vtCounts = z.object({
+  accounts: z.number().int(), clients: z.number().int(), vendors: z.number().int(), items: z.number().int(),
+  transactions: z.number().int(), postedTransactions: z.number().int(), attachments: z.number().int(),
+  attachmentBytes: z.number().int(), auditEntries: z.number().int(),
+});
+/** Verification totals vt1 (U-283): money as exact decimal strings (4 places), counts as integers. */
+export const verificationTotalsSchema = z.object({
+  definition: z.literal('vt1'),
+  basis: z.literal('accrual'),
+  asOf: z.string(),
+  companies: z.array(z.object({
+    companyId: z.string().uuid(),
+    name: z.string(),
+    fiscalYearStart: z.string(),
+    totalAssets: amount,
+    totalLiabilities: amount,
+    totalEquity: amount,
+    netIncome: z.object({ from: z.string(), to: z.string(), amount }),
+    accountsReceivable: amount,
+    accountsPayable: amount,
+    trialBalance: z.object({ debits: amount, credits: amount }),
+    counts: vtCounts,
+  })),
+  counts: vtCounts,
+});
+
+export const verificationTotalsQuery = z.object({
+  asOf: z.string().optional(),
+  includeAudit: z.enum(['true', 'false']).optional(),
+  omitDocumentDrafts: z.enum(['true', 'false']).optional(),
+});
+
+tenantsRouter.get('/:id/verification-totals', requireSessionAuth, describe({
+  summary: 'Preview the verification totals an archive export of the company would carry (archive-verification-totals-v1)',
+  tags: ['tenant-archives'],
+  params: z.object({ id: z.string().uuid() }),
+  query: verificationTotalsQuery,
+  response: verificationTotalsSchema,
+}), async (req, res) => {
+  const tenantId = req.params['id']!;
+  await assertTenantOwner(req, tenantId);
+  await assertNotWorkspace(tenantId);
+  const query = verificationTotalsQuery.safeParse(req.query);
+  if (!query.success) throw AppError.badRequest('Invalid query.', 'VALIDATION_ERROR');
+  const asOf = resolveAsOf(query.data.asOf);
+  const exists = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { id: true } });
+  if (!exists) throw AppError.notFound('Company not found');
+  const totals = await runWithoutViewer(() => previewVerificationTotals(tenantId, {
+    asOf,
+    includeAudit: query.data.includeAudit !== 'false',
+    omitDocumentDrafts: query.data.omitDocumentDrafts === 'true',
+  }));
+  res.json(totals);
 });
 
 tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSchema), describe({
@@ -175,6 +237,7 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
   if (body.host && Buffer.byteLength(JSON.stringify(body.host), 'utf8') > HOST_MAX_BYTES) {
     throw AppError.badRequest('host metadata is too large (16 KiB)', 'VALIDATION_ERROR');
   }
+  const asOf = resolveAsOf(body.asOf);
   const exists = await db.query.tenants.findFirst({ where: eq(tenants.id, tenantId), columns: { id: true } });
   if (!exists) throw AppError.notFound('Company not found');
   const archiveId = crypto.randomUUID();
@@ -189,6 +252,7 @@ tenantsRouter.post('/:id/archives', requireSessionAuth, validate(exportArchiveSc
         omitIntakeSettings: body.omitIntakeSettings,
         omitDocumentDrafts: body.omitDocumentDrafts,
         host: body.host,
+        asOf,
         passphrase: body.passphrase,
         archiveId,
       }, progress);

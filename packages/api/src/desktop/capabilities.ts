@@ -1804,4 +1804,23 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * application and try again." (details archiveFormatVersion, supportedFormatVersion), as a newer schema already was.
    * A client reading `.clbackup` files itself accepts 1..2.
    */
-  'tenant-archive-v2',];
+  'tenant-archive-v2',
+  /**
+   * U-283 (ClientLedger P32; no migration). Verification totals `vt1`: per company (accrual basis, posted entries,
+   * dated <= asOf) totalAssets, totalLiabilities, totalEquity (with current and unclosed earnings, so A = L + E),
+   * netIncome {from: fiscalYearStart, to: asOf, amount}, accountsReceivable, accountsPayable (system tags),
+   * trialBalance {debits, credits}, as exact decimal strings with 4 places; counts (integers) per company and
+   * tenant-wide of the rows that travel: accounts, clients, vendors, items, transactions (every status),
+   * postedTransactions, attachments, attachmentBytes, auditEntries. Hidden accounts always count.
+   * GET /api/v1/tenants/:id/verification-totals?asOf&includeAudit&omitDocumentDrafts (export rights) previews them;
+   * POST /tenants/:id/archives takes asOf (YYYY-MM-DD, at most the server's tomorrow, default today; else 400
+   * VALIDATION_ERROR) and writes them to the manifest and manifestSummary.verificationTotals. The import result adds
+   * verificationTotals {definition, expected (null for an archive without them), actual (archive company ids),
+   * matches (null without expected), differences [{companyId, field, expected, actual}], backfills [{name, fields}]}.
+   * Same definition: any count or money difference rolls back with 422 ARCHIVE_TOTALS_MISMATCH {expected, actual,
+   * differences}, except money fields an upgrade backfill of this import changed (warning TOTALS_DIFFER:<fields>:
+   * <backfills>); another definition compares counts only (warning TOTALS_DEFINITION_DIFFERS:<definition>). New ids
+   * keep the old ids' sort order, so the import's stock re-walk changes nothing; a change is the difference
+   * inventoryRewalk.changedDocuments. Archive jobs run without a viewer.
+   */
+  'archive-verification-totals-v1',];

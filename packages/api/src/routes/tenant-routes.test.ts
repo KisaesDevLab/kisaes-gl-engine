@@ -364,3 +364,38 @@ describe('lifecycle routes', () => {
     expect(ok.status).toBe(200);
   }, 60_000);
 });
+
+describe('verification totals (U-283)', () => {
+  it('previews the totals for the owner, carries them in the export result, and refuses others, the workspace and a bad date', async () => {
+    const created = await call('POST', '/api/v1/tenants', { name: `Routes VT ${stamp}`, businessType: 'default' });
+    expect(created.status).toBe(201);
+    const id = created.json['id'] as string;
+    tenantsToClean.push(id);
+    const asOf = new Date().toISOString().slice(0, 10);
+    const preview = await call('GET', `/api/v1/tenants/${id}/verification-totals?asOf=${asOf}`);
+    expect(preview.status).toBe(200);
+    expect(preview.json).toMatchObject({ definition: 'vt1', basis: 'accrual', asOf });
+    const company = (preview.json['companies'] as Array<Record<string, unknown>>)[0]!;
+    expect(company['totalAssets']).toBe('0.0000');
+    expect((company['counts'] as Record<string, number>)['accounts']).toBeGreaterThan(0);
+    const drafts = await call('GET', `/api/v1/tenants/${id}/verification-totals?asOf=${asOf}&omitDocumentDrafts=true&includeAudit=false`);
+    expect(drafts.status).toBe(200);
+    expect((drafts.json['counts'] as Record<string, number>)['auditEntries']).toBe(0);
+    expect((await call('GET', `/api/v1/tenants/${id}/verification-totals`, undefined, readonlyJwt)).status).toBe(403);
+    expect((await call('GET', `/api/v1/tenants/${workspaceId}/verification-totals`)).status).toBe(409);
+    for (const bad of ['2026-13-01', 'yesterday', '2999-01-01']) {
+      const r = await call('GET', `/api/v1/tenants/${id}/verification-totals?asOf=${bad}`);
+      expect(r.status, bad).toBe(400);
+      expect((r.json['error'] as { code: string }).code).toBe('VALIDATION_ERROR');
+    }
+    expect((await call('POST', `/api/v1/tenants/${id}/archives`, { passphrase: PASS, asOf: '2999-01-01' })).status).toBe(400);
+    const started = await call('POST', `/api/v1/tenants/${id}/archives`, { passphrase: PASS, asOf });
+    expect(started.status).toBe(202);
+    const job = await waitJob(started.json['jobId'] as string);
+    expect(job['status']).toBe('succeeded');
+    const summary = (job['result'] as { manifestSummary: { verificationTotals: Record<string, unknown> } }).manifestSummary;
+    expect(summary.verificationTotals).toEqual(preview.json);
+    const info = await call('GET', '/api/v1/desktop/info');
+    expect(info.json['capabilities']).toEqual(expect.arrayContaining(['tenant-archive-v2', 'archive-verification-totals-v1']));
+  }, 120_000);
+});

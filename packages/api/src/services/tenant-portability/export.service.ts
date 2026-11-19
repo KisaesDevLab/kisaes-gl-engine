@@ -49,6 +49,7 @@ import {
 } from './plan.js';
 import { digestFor, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { activeJobResources } from './jobs.js';
+import { computeVerificationTotals, resolveAsOf, type VerificationTotals } from './verification-totals.js';
 import { acquireSharedTenantLock, applyArchiveSession, releaseSharedTenantLock, tryExclusiveTenantLock, withArchiveConnection, type ArchiveClient } from './session.js';
 
 export interface ExportOptions {
@@ -63,6 +64,8 @@ export interface ExportOptions {
    */
   omitDocumentDrafts?: boolean;
   host?: Record<string, unknown>;
+  /** Date of the verification totals (U-283): the owner's local date, validated by resolveAsOf; default the server's today. */
+  asOf?: string;
   passphrase: string;
   /** Pre-assigned archive id (the route returns it with the job id). */
   archiveId?: string;
@@ -84,6 +87,8 @@ export interface ExportResult {
     schema: ArchiveManifest['schema'];
     source: ArchiveManifest['source'];
     unbalancedTransactions: number;
+    /** The verification totals written to the manifest (U-283). */
+    verificationTotals?: VerificationTotals;
   };
   warnings: string[];
 }
@@ -390,13 +395,14 @@ export async function runExport(tenantId: string, userId: string, options: Expor
   if (await isWorkspaceTenant(tenantId)) throw new ArchiveError('WORKSPACE_TENANT', 'The workspace is never archived.');
   assertPassphraseStrong(options.passphrase);
   const archiveId = options.archiveId ?? crypto.randomUUID();
-  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, omitDocumentDrafts, host, passphrase: options.passphrase, archiveId }, progress));
+  const asOf = resolveAsOf(options.asOf);
+  return withScrubbedPassphrase(options.passphrase, () => exportLocked(tenantId, userId, { includeAttachments, includeAudit, omitIntakeSettings, omitDocumentDrafts, host, passphrase: options.passphrase, archiveId, asOf }, progress));
 }
 
 async function exportLocked(
   tenantId: string,
   userId: string,
-  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; omitDocumentDrafts: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string },
+  o: { includeAttachments: boolean; includeAudit: boolean; omitIntakeSettings: boolean; omitDocumentDrafts: boolean; host: Record<string, unknown>; passphrase: string; archiveId: string; asOf: string },
   progress?: JobProgress,
 ): Promise<ExportResult> {
   const plan = await getPortabilityPlan();
@@ -484,6 +490,10 @@ async function exportLocked(
       await exportChecks(client, plan, tenantId, warnings, o.includeAudit, omit);
       const globalRows = await collectGlobalRows(client, plan, globals);
       const schema = await readSchemaInfo();
+      // Verification totals of what travels (U-283): the same snapshot, the export's own row scope.
+      const verificationTotals = await computeVerificationTotals(client, tenantId, {
+        asOf: o.asOf, scope: (table, alias) => exportScopeSql(plan, plan.byName.get(table)!, o.includeAudit, omit, alias),
+      });
 
       // Files (rule 7), read after the rows.
       step('files', 70);
@@ -556,6 +566,7 @@ async function exportLocked(
         warnings: [...new Set(warnings)].sort(),
         globalRows,
         canonical: Object.fromEntries(plan.tables.map((t) => [t.name, t.canonical])),
+        verificationTotals,
       };
       await _exportTestHooks.beforeFinalize?.({ tenantId });
       step('manifest', 92);
@@ -596,7 +607,7 @@ async function exportLocked(
         sha256,
         manifestSummary: {
           tables: tables.length, rows: totalRows, files: manifestFiles.length, fileBytes,
-          schema: manifest.schema, source: manifest.source, unbalancedTransactions,
+          schema: manifest.schema, source: manifest.source, unbalancedTransactions, verificationTotals,
         },
         warnings: resultWarnings,
       };
@@ -611,6 +622,36 @@ async function exportLocked(
       throw err;
     } finally {
       await releaseSharedTenantLock(client, tenantId).catch(() => undefined);
+    }
+  });
+}
+
+/**
+ * The verification totals an export with these options would carry
+ * (U-283, Q-P32l): the same function and row scope, in a REPEATABLE READ,
+ * READ ONLY snapshot of its own. Writes nothing.
+ */
+export async function previewVerificationTotals(
+  tenantId: string,
+  o: { asOf: string; includeAudit?: boolean; omitDocumentDrafts?: boolean },
+): Promise<VerificationTotals> {
+  const plan = await getPortabilityPlan();
+  const flags = { omitIntakeSettings: false, omitDocumentDrafts: o.omitDocumentDrafts ?? false };
+  const omit: ExportOmissions = {
+    columns: new Set(),
+    tables: new Set(Object.entries(OMITTABLE_TABLES).filter(([, r]) => flags[r.option]).map(([k]) => k)),
+    rowFilters: new Set(Object.entries(OMITTABLE_ROW_FILTERS).filter(([, r]) => flags[r.option]).map(([k]) => k)),
+  };
+  const includeAudit = o.includeAudit ?? true;
+  return withArchiveConnection(async (client) => {
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+    try {
+      await applyArchiveSession(client);
+      return await computeVerificationTotals(client, tenantId, {
+        asOf: o.asOf, scope: (table, alias) => exportScopeSql(plan, plan.byName.get(table)!, includeAudit, omit, alias),
+      });
+    } finally {
+      await client.query('ROLLBACK').catch(() => undefined);
     }
   });
 }

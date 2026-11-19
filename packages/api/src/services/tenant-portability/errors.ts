@@ -15,6 +15,8 @@ export const ARCHIVE_ERROR_STATUS = {
   ARCHIVE_COLUMN_TYPE_CHANGED: 422,
   ARCHIVE_COLUMN_MISSING: 422,
   ARCHIVE_VERIFY_FAILED: 422,
+  /** The import's verification totals differ from the archive's (U-283, Q-P32o); details {expected, actual, differences}. */
+  ARCHIVE_TOTALS_MISMATCH: 422,
   ARCHIVE_UNSUPPORTED_REFERENCE: 422,
   ARCHIVE_NOT_ELIGIBLE: 409,
   ARCHIVE_STALE: 409,
