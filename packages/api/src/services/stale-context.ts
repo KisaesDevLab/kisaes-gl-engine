@@ -20,6 +20,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { NextFunction, Request, Response } from 'express';
 import { sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { AppError } from '../utils/errors.js';
+import { attachOpenApiMeta } from '../middleware/describe.js';
 import { assertNotStale } from '../utils/record-stamps.js';
 
 interface ExpectedStamp {
@@ -55,7 +56,7 @@ export function takeExpectedUpdatedAt(req: Request): string | undefined {
  * path parameter `param`. Leaves the request unchanged when no stamp came.
  */
 export function expectStamp(table: string, param = 'id') {
-  return function clExpectStamp(req: Request, _res: Response, next: NextFunction): void {
+  return attachOpenApiMeta(function clExpectStamp(req: Request, _res: Response, next: NextFunction): void {
     const expected = takeExpectedUpdatedAt(req);
     const id = req.params[param];
     if (expected === undefined || !id) {
@@ -64,7 +65,10 @@ export function expectStamp(table: string, param = 'id') {
     }
     const list = [...(storage.getStore() ?? []), { table, id, expected, consumed: false }];
     storage.run(list, next);
-  };
+  }, {
+    // The stamp field: `expectedUpdatedAt` in the JSON body (the query for a DELETE).
+    extensions: { 'x-stamp': 'expectedUpdatedAt' },
+  });
 }
 
 /** Runs `fn` with an expected stamp (service callers and tests). */

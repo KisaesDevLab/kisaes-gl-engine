@@ -3089,7 +3089,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_accounts_by_id",
@@ -3236,7 +3237,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/accounts/{id}/ledger": {
@@ -3881,7 +3883,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/admin/backup-verify": {
@@ -15351,7 +15354,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-assign": {
@@ -15437,7 +15440,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-categorize": {
@@ -15511,7 +15514,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-exclude": {
@@ -15559,7 +15562,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-post-to-suspense": {
@@ -15609,7 +15612,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-recleanse": {
@@ -15657,7 +15660,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-reprocess-rules": {
@@ -15709,7 +15712,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-set-contact": {
@@ -15769,7 +15772,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-set-name": {
@@ -15792,7 +15795,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-set-tag": {
@@ -15815,7 +15818,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-unexclude": {
@@ -15863,7 +15866,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/counts": {
@@ -25518,7 +25521,8 @@
         ],
         "x-idempotency": true,
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/checks/{id}/memo": {
@@ -25578,7 +25582,8 @@
           "checks"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/coa-templates/options": {
@@ -26153,7 +26158,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/closing-password": {
@@ -28338,7 +28343,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/list": {
@@ -29277,7 +29282,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/users/{userId}/deactivate": {
@@ -29444,7 +29449,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/users/{userId}/reactivate": {
@@ -30450,7 +30455,8 @@
           "contacts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "description": "Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.",
@@ -30886,7 +30892,8 @@
           "contacts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/contacts/{id}/envelope": {
@@ -36449,7 +36456,7 @@
           "document-numbers"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/document-reading/assist": {
@@ -55976,7 +55983,7 @@
           "practice"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/practice/conditional-rules/export.csv": {
@@ -56091,7 +56098,7 @@
           "practice"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/practice/conditional-rules/sandbox/recent-samples": {
@@ -63589,7 +63596,7 @@
           "recurring"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(schedule)"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/recurring/{id}/post-now": {
@@ -63655,7 +63662,7 @@
           "recurring"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(schedule)"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/remote-backup/config": {
@@ -64722,7 +64729,7 @@
           "report-builder"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(version)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/report-builder/definitions/import/preview": {
@@ -77130,7 +77137,7 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/tags/groups/{id}": {
@@ -77163,7 +77170,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "put": {
         "operationId": "put_api_v1_tags_groups_by_id",
@@ -77221,7 +77229,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/merge": {
@@ -77443,7 +77452,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/transactions/{id}/add": {
@@ -77499,7 +77509,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "n-a"
+        "x-stale": "n-a",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/transactions/{id}/remove": {
@@ -77555,7 +77566,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "n-a"
+        "x-stale": "n-a",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/usage-summary": {
@@ -77610,7 +77622,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_tags_by_id",
@@ -77991,7 +78004,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/{id}/usage": {
@@ -100581,7 +100595,8 @@
         ],
         "x-idempotency": true,
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/transactions/{id}/activity": {

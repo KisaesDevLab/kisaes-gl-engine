@@ -193,7 +193,8 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['WRITE /api/v1/auth/**', N], ['WRITE /api/v1/users/me/**', N],
   // Banking.
   ['POST /api/v1/banking/connections', C], ['WRITE /api/v1/banking/connections/**', N],
-  ['POST /api/v1/banking/feed/accept', G], ['POST /api/v1/banking/feed/bulk-*', B],
+  // Feed actions act on pending feed items: each item is locked and its status checked.
+  ['POST /api/v1/banking/feed/accept', G], ['POST /api/v1/banking/feed/bulk-*', G],
   ['POST /api/v1/banking/feed/import', C], ['POST /api/v1/banking/feed/import-batch', C],
   ['DELETE /api/v1/banking/feed/import-batches/*', G], ['POST /api/v1/banking/feed/undo', G],
   ['POST /api/v1/banking/feed/backfill-check-payees', N], ['POST /api/v1/banking/check-payees/backfill', N],
@@ -218,14 +219,17 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['POST /api/v1/checks/envelopes', N], ['POST /api/v1/checks/render', N], ['POST /api/v1/checks/test-print', N],
   ['PUT /api/v1/checks/*', U], ['PATCH /api/v1/checks/*/memo', U],
   // Company settings and users.
-  ['PUT /api/v1/company', U], ['PUT /api/v1/company/settings', U], ['PUT /api/v1/company/1099-thresholds', U],
+  // 1099 thresholds: the body states the whole set for the year.
+  ['PUT /api/v1/company', U], ['PUT /api/v1/company/settings', U], ['PUT /api/v1/company/1099-thresholds', N],
   ['PUT /api/v1/company/closing-password', U], ['POST /api/v1/company/closing-password/reset', N],
-  ['PUT /api/v1/company/intake-settings', U], ['PUT /api/v1/company/invoice-template', U],
+  // The default invoice layout: edited as a layout through PUT /company/invoice-layouts/:id (stamped).
+  ['PUT /api/v1/company/intake-settings', U], ['PUT /api/v1/company/invoice-template', N],
   ['POST /api/v1/company/invite-user', C], ['POST /api/v1/company/logo', N], ['POST /api/v1/company/setup-complete', N],
   ['POST /api/v1/company/invoice-layouts', C], ['POST /api/v1/company/invoice-layouts/*/default', N],
   ['WRITE /api/v1/company/invoice-layouts/*', U],
   ['POST /api/v1/company/permission-templates', C], ['WRITE /api/v1/company/permission-templates/*', U],
-  ['PATCH /api/v1/company/users/*', U], ['PUT /api/v1/company/users/*/permissions', U],
+  // Team settings: an owner or admin edits them; the body states the whole value.
+  ['PATCH /api/v1/company/users/*', N], ['PUT /api/v1/company/users/*/permissions', N],
   ['POST /api/v1/company/users/*/*', G],
   // Contacts.
   ['POST /api/v1/contacts', C], ['POST /api/v1/contacts/bulk-type', B], ['POST /api/v1/contacts/import', C],
@@ -245,7 +249,7 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['POST /api/v1/dashboard/**', N],
   // Document drafts and numbers.
   ['POST /api/v1/document-drafts', C], ['PUT /api/v1/document-drafts/*', U], ['POST /api/v1/document-drafts/*/*', G],
-  ['POST /api/v1/document-numbers/claim', G], ['PUT /api/v1/document-numbers/*', U],
+  ['POST /api/v1/document-numbers/claim', G], ['PUT /api/v1/document-numbers/*', N],
   ['POST /api/v1/document-reading/**', N], ['POST /api/v1/downloads/**', N],
   ['POST /api/v1/duplicates/merge', B], ['POST /api/v1/duplicates/**', N],
   ['POST /api/v1/estimates', C], ['POST /api/v1/estimates/*/convert', G],
@@ -281,16 +285,18 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['WRITE /api/v1/practice/1099/vendors/**', N], ['POST /api/v1/practice/1099/**', N],
   // Conditional (bank) rules.
   ['POST /api/v1/practice/conditional-rules', C], ['POST /api/v1/practice/conditional-rules/import', C],
-  ['POST /api/v1/practice/conditional-rules/reorder', B], ['WRITE /api/v1/practice/conditional-rules/*', U],
+  ['POST /api/v1/practice/conditional-rules/reorder', N], ['POST /api/v1/practice/conditional-rules/evaluate', N],
+  ['WRITE /api/v1/practice/conditional-rules/*', U],
   ['POST /api/v1/practice/conditional-rules/*/fork-to-tenant', C],
   ['POST /api/v1/practice/conditional-rules/*/demote', G], ['POST /api/v1/practice/conditional-rules/*/promote', G],
   ['POST /api/v1/practice/conditional-rules/**', N],
   // Recurring schedules (recurring-guard-v1: STALE_SCHEDULE).
   ['POST /api/v1/recurring', C], ['POST /api/v1/recurring/run-due', N], ['POST /api/v1/recurring/*/post-now', G],
-  ['WRITE /api/v1/recurring/*', S], ['POST /api/v1/recurring/*/archive', S], ['POST /api/v1/recurring/*/unarchive', S],
+  ['WRITE /api/v1/recurring/*', S], ['POST /api/v1/recurring/*/archive', G], ['POST /api/v1/recurring/*/unarchive', G],
   // Saved reports carry a version (report-definitions).
   ['POST /api/v1/report-builder/definition-groups', C], ['WRITE /api/v1/report-builder/definition-groups/*', V],
-  ['POST /api/v1/report-builder/definitions', C], ['WRITE /api/v1/report-builder/definitions/*', V],
+  ['POST /api/v1/report-builder/definitions', C], ['POST /api/v1/report-builder/definitions/export', N],
+  ['WRITE /api/v1/report-builder/definitions/*', V],
   ['POST /api/v1/report-builder/**', N], ['POST /api/v1/reports/**', N],
   // Sales receipts and sales tax.
   ['POST /api/v1/sales-receipts', C], ['POST /api/v1/sales-receipts/preview', N], ['PUT /api/v1/sales-receipts/*', U],
@@ -300,7 +306,7 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['POST /api/v1/sales-tax/*', C], ['PUT /api/v1/sales-tax/*/*', U], ['POST /api/v1/sales-tax/*/*/*', G],
   // Tags.
   ['POST /api/v1/tags', C], ['POST /api/v1/tags/bulk-tag', B], ['POST /api/v1/tags/bulk-untag', B],
-  ['POST /api/v1/tags/merge', B], ['POST /api/v1/tags/groups', C], ['PUT /api/v1/tags/groups/reorder', B],
+  ['POST /api/v1/tags/merge', B], ['POST /api/v1/tags/groups', C], ['PUT /api/v1/tags/groups/reorder', N],
   ['WRITE /api/v1/tags/groups/*', U], ['POST /api/v1/tags/saved-filters', C],
   ['DELETE /api/v1/tags/saved-filters/*', N], ['PUT /api/v1/tags/transactions/*', U],
   ['POST /api/v1/tags/transactions/*/*', N], ['WRITE /api/v1/tags/*', U],
@@ -334,6 +340,9 @@ export const STALE_EXEMPT_RECORD_WRITES: Readonly<Record<string, string>> = {
   'PUT /api/v1/practice/1099/vendors/{contactId}/profile': 'the 1099 profile; the body states the whole value',
   'DELETE /api/v1/tags/saved-filters/{id}': "the caller's own saved filter",
   'DELETE /api/v1/users/me/tfa/devices/{id}': "the caller's own trusted device",
+  'PUT /api/v1/document-numbers/{type}': 'the next number of a kind; the body states the whole value (claims are state-guarded)',
+  'PATCH /api/v1/company/users/{userId}': 'team settings an owner or admin edits; the body states the whole value',
+  'PUT /api/v1/company/users/{userId}/permissions': 'team permissions an owner or admin edits; the body states the whole value',
 };
 
 // ── Matching ─────────────────────────────────────────────────────────
