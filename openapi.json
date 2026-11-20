@@ -76915,6 +76915,16 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "stamps": {
+                    "additionalProperties": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "format": "uuid"
+                    },
+                    "type": "object"
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -76969,6 +76979,16 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "stamps": {
+                    "additionalProperties": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "format": "uuid"
+                    },
+                    "type": "object"
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
