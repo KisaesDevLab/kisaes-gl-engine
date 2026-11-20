@@ -86,18 +86,25 @@ END $$;
 --> statement-breakpoint
 
 -- AFTER INSERT/UPDATE/DELETE on a child table. TG_ARGV: pairs of
--- (header table, foreign key column). An UPDATE that changes none of the
--- named key columns or any other column but the ignore list still bumps;
--- quiet writers skip.
+-- (header table, foreign key column), optionally followed by one argument
+-- '-col1,col2': columns the engine maintains on the child (an UPDATE that
+-- changes only those does not bump). Quiet writers skip.
 CREATE OR REPLACE FUNCTION mybooks_stamp_child() RETURNS trigger
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql AS $
 DECLARE
   i int := 0;
   o jsonb := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
   n jsonb := CASE WHEN TG_OP <> 'DELETE' THEN to_jsonb(NEW) END;
+  nargs int := TG_NARGS;
+  ignored text[];
 BEGIN
   IF coalesce(current_setting('mybooks.stamp_quiet', true), '') = 'on' THEN RETURN NULL; END IF;
-  WHILE i + 1 < TG_NARGS LOOP
+  IF nargs > 0 AND left(TG_ARGV[nargs - 1], 1) = '-' THEN
+    ignored := string_to_array(substr(TG_ARGV[nargs - 1], 2), ',');
+    nargs := nargs - 1;
+    IF TG_OP = 'UPDATE' AND (o - ignored) = (n - ignored) THEN RETURN NULL; END IF;
+  END IF;
+  WHILE i + 1 < nargs LOOP
     IF o IS NOT NULL AND (o ->> TG_ARGV[i + 1]) IS NOT NULL THEN
       PERFORM mybooks_stamp_bump(TG_ARGV[i], (o ->> TG_ARGV[i + 1])::uuid);
     END IF;
@@ -182,7 +189,7 @@ CREATE TRIGGER mybooks_stamp_ins BEFORE INSERT ON tag_groups FOR EACH ROW
 
 -- Child triggers.
 CREATE TRIGGER mybooks_stamp_child AFTER INSERT OR UPDATE OR DELETE ON journal_lines FOR EACH ROW
-  WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_child('transactions', 'transaction_id');
+  WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_child('transactions', 'transaction_id', '-billed_status,inventory_movement_id');
 --> statement-breakpoint
 CREATE TRIGGER mybooks_stamp_child AFTER INSERT OR UPDATE OR DELETE ON transaction_tags FOR EACH ROW
   WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_child('transactions', 'transaction_id');

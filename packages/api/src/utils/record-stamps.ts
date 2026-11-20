@@ -54,6 +54,7 @@ export const STAMP_HEADERS: Readonly<Record<string, readonly string[]>> = {
 };
 
 export const STAMP_CHILDREN: Readonly<Record<string, ReadonlyArray<readonly [string, string]>>> = {
+  // billed_status and inventory_movement_id are maintained (billing, costing): they move no stamp.
   journal_lines: [['transactions', 'transaction_id']],
   transaction_tags: [['transactions', 'transaction_id']],
   payment_applications: [['transactions', 'payment_id'], ['transactions', 'invoice_id']],
@@ -114,3 +115,15 @@ export function assertNotStale(
   }
 }
 
+
+/**
+ * The current stamp of the record an attachment or tag write touched (U-291,
+ * S2): a contact, or else a transaction of that id. Null when there is none.
+ * Child writes return it so an open form saves on the stamp its own write made.
+ */
+export async function parentStamp(exec: DbOrTx, tenantId: string, kind: string, id: string): Promise<string | null> {
+  const table = kind === 'contact' ? sql`contacts` : sql`transactions`;
+  const r = await exec.execute(sql`SELECT updated_at FROM ${table} WHERE tenant_id = ${tenantId} AND id = ${id}`);
+  const row = r.rows[0] as { updated_at: Date | string | null } | undefined;
+  return row?.updated_at ? new Date(row.updated_at).toISOString() : null;
+}

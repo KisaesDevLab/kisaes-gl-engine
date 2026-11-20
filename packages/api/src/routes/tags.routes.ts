@@ -2,6 +2,8 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { parentStamp } from '../utils/record-stamps.js';
+import { db } from '../db/index.js';
 import { expectStamp, expectItemStamps } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
@@ -179,17 +181,18 @@ tagsRouter.put('/groups/reorder', async (req, res) => {
 
 tagsRouter.post('/transactions/:id/add', expectStamp('transactions'), validate(transactionTagsSchema), async (req, res) => {
   await tagsService.addTags(req.tenantId, req.params['id']!, req.body.tagIds);
-  res.json({ message: 'Tags added' });
+  res.json({ message: 'Tags added', updatedAt: await parentStamp(db, req.tenantId, 'transaction', req.params['id']!) });
 });
 
 tagsRouter.post('/transactions/:id/remove', expectStamp('transactions'), validate(transactionTagsSchema), async (req, res) => {
   await tagsService.removeTags(req.tenantId, req.params['id']!, req.body.tagIds);
-  res.json({ message: 'Tags removed' });
+  res.json({ message: 'Tags removed', updatedAt: await parentStamp(db, req.tenantId, 'transaction', req.params['id']!) });
 });
 
 tagsRouter.put('/transactions/:id', expectStamp('transactions'), validate(transactionTagsSchema), async (req, res) => {
   await tagsService.replaceTags(req.tenantId, req.params['id']!, req.body.tagIds);
-  res.json({ message: 'Tags replaced' });
+  // The entry's new stamp (U-291): the open form saves on it.
+  res.json({ message: 'Tags replaced', updatedAt: await parentStamp(db, req.tenantId, 'transaction', req.params['id']!) });
 });
 
 tagsRouter.post('/bulk-tag', validate(bulkTagSchema), async (req, res) => {
