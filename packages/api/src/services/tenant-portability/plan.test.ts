@@ -389,12 +389,14 @@ describe('rule 8: triggers', () => {
 
   it('records the gl_version_stamps side effect (N5)', () => {
     // U-119 (migration 0277): the application tables bump the stamp too.
-    expect([...plan.sideEffectEdges].sort((x, y) => x.source.localeCompare(y.source))).toEqual([
+    // U-294 (migration 0289): every stamped table also writes the desktop change feed (change_feed).
+    expect([...plan.sideEffectEdges].filter((e) => e.target !== 'change_feed').sort((x, y) => x.source.localeCompare(y.source))).toEqual([
       { source: 'bill_payment_applications', target: 'gl_version_stamps' },
       { source: 'journal_lines', target: 'gl_version_stamps' },
       { source: 'payment_applications', target: 'gl_version_stamps' },
       { source: 'vendor_credit_applications', target: 'gl_version_stamps' },
     ]);
+    expect(plan.sideEffectEdges.filter((e) => e.target === 'change_feed').length).toBe(23);
   });
 });
 

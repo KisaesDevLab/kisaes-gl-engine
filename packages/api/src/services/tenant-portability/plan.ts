@@ -1118,6 +1118,8 @@ export const VOLATILE_COLUMNS: Record<string, VolatileColumn> = {
 /** Columns outside the tenant's own rows that point at a tenant, and what the delete plan does with them. */
 export const CROSS_TENANT_COLUMNS: Record<string, CrossTenantAction> = {
   'backup_runs.tenant_id': 'set-null',
+  // U-294: change-feed rows of a tenant go with it (ids only; the feed is install-wide).
+  'change_feed.tenant_id': 'delete',
   'share_session_participants.viewer_tenant_id': 'delete',
   'global_rule_submissions.source_tenant_id': 'set-null',
   'tenant_archive_imports.source_tenant_id': 'keep',
