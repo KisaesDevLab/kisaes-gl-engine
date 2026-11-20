@@ -33,6 +33,7 @@ import * as classificationService from './practice-classification.service.js';
 import type { Submitter, LiveSuggestion } from './portal-categorization.service.js';
 import { resolveReviewMode } from './suggestion-review-mode.service.js';
 import { sortDirSql } from '../utils/list-query.js';
+import { userDisplayNames } from '../utils/user-display-name.js';
 
 export interface SuggestionRow {
   id: string;
@@ -139,7 +140,8 @@ export async function listSuggestions(
     case 'payee': sortExpr = sql`LOWER(COALESCE(${contacts.displayName}, ${s.suggestedContactLabel}))`; break;
     case 'note': sortExpr = sql`LOWER(${s.clientNote})`; break;
     case 'from': sortExpr = sql`LOWER(CASE WHEN ${s.submittedByUserId} IS NOT NULL
-        THEN COALESCE(NULLIF(${users.displayName}, ''), ${users.email})
+        THEN COALESCE(NULLIF(${users.displayName}, ''), ${users.email},
+          (SELECT n.display_name || ' (ClientLedger)' FROM transfer_user_names n WHERE n.tenant_id = ${s.tenantId} AND n.user_id = ${s.submittedByUserId}))
         ELSE COALESCE(NULLIF(TRIM(CONCAT_WS(' ', ${portalContacts.firstName}, ${portalContacts.lastName})), ''), ${portalContacts.email}) END)`; break;
   }
   const orderBy = sortExpr
@@ -629,6 +631,8 @@ export async function notifyStaffOfSuggestions(
  */
 export async function submitterNames(
   live: Iterable<LiveSuggestion>,
+  /** The suggestions' tenant: names-only people of a transfer file show as "Name (ClientLedger)" (U-284). */
+  tenantId?: string,
 ): Promise<{ users: Map<string, string>; contacts: Map<string, string> }> {
   const userIds = new Set<string>();
   const contactIds = new Set<string>();
@@ -637,7 +641,9 @@ export async function submitterNames(
     if (l.submittedByContactId) contactIds.add(l.submittedByContactId);
   }
   const out = { users: new Map<string, string>(), contacts: new Map<string, string>() };
-  if (userIds.size > 0) {
+  if (userIds.size > 0 && tenantId) {
+    out.users = await userDisplayNames(tenantId, userIds);
+  } else if (userIds.size > 0) {
     const rows = await db.select({ id: users.id, displayName: users.displayName, email: users.email })
       .from(users).where(inArray(users.id, [...userIds]));
     for (const r of rows) out.users.set(r.id, r.displayName || r.email);

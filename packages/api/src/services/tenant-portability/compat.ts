@@ -13,6 +13,16 @@
  * file name) newer than the E5 baseline must add its DROPPED_TABLES /
  * DROPPED_COLUMNS / TYPE_CHANGES / BACKFILL / RELAXED_COLUMNS / WIDENED_CHECKS entry; archive-reader.test.ts checks
  * this against the migrations journal.
+ *
+ * Import-time data steps (U-283, P32 review M7): an upgrade step that writes
+ * company data on import (a backfill like SALES_TAX_BACKFILL_SCHEMA_VERSION's,
+ * a re-walk, a new default row) runs in import.service.ts after verification
+ * and MUST be wrapped in `trackBackfill('<name>')` there. The verification
+ * totals are strict on every restore: counts are taken before these steps and
+ * money after them, so an untracked step that moves money fails every older
+ * archive with ARCHIVE_TOTALS_MISMATCH instead of a named TOTALS_DIFFER
+ * warning. A step that cannot move money goes on the allowlist, with its
+ * reason, in import-steps-tracked.test.ts, which fails otherwise.
  */
 
 import { ArchiveError } from './errors.js';

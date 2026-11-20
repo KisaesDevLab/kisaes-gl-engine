@@ -220,7 +220,7 @@ uncategorizedRouter.get('/in-suspense', async (req, res) => {
   // and the Practice tab can show "a teammate already suggested X".
   if (req.query['includeSuggestions'] === 'true' && result.rows.length > 0) {
     const live = await categorization.liveSuggestionsFor(req.tenantId, result.rows.map((r) => r.transactionId));
-    const names = await suggestionReview.submitterNames(live.values());
+    const names = await suggestionReview.submitterNames(live.values(), req.tenantId);
     const rows = result.rows.map((r) => {
       const l = live.get(r.transactionId);
       const pendingSuggestion = l ? {

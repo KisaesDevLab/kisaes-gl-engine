@@ -20,14 +20,15 @@ import * as unzipper from 'unzipper';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { encrypt } from '../../utils/encryption.js';
-import { userDisplayNameSql } from '../../utils/user-display-name.js';
+import { userDisplayNameSql, userDisplayNames } from '../../utils/user-display-name.js';
 import { loadDesktopProfile, _resetDesktopProfileForTests } from '../../desktop/profile.js';
 import { ArchiveReader } from './archive-reader.js';
 import { encryptEntryBuffer, NoncePrefixRegistry, openEnvelope, validateEnvelope } from './archive-crypto.js';
 import { ArchiveError } from './errors.js';
 import { runExport, type ExportResult } from './export.service.js';
 import { NOT_A_TRANSFER_FILE_MESSAGE, runImport } from './import.service.js';
-import { ENVELOPE_ENTRY, IDENTITY_ENTRIES, MANIFEST_ENTRY, tablePartName, type ArchiveManifest } from './format.js';
+import { ENVELOPE_ENTRY, IDENTITY_ENTRIES, MANIFEST_ENTRY, tablePartName, zipEntryName, type ArchiveManifest } from './format.js';
+import { digestFor } from './remap.js';
 import { _resetJobsForTests, assertArchiveJobAllowed, startJob, waitForJob } from './jobs.js';
 import { hiddenAccountIdsFor } from '../visibility.js';
 import type { Request } from 'express';
@@ -153,6 +154,62 @@ async function rewriteManifest(src: string, dst: string, mutate: (m: ArchiveMani
   out.pipe(stream);
   for (const f of d.files) if (f.path !== MANIFEST_ENTRY) out.append(await f.buffer(), { name: f.path });
   out.append(encryptEntryBuffer(key, envelope.archiveId, MANIFEST_ENTRY.slice(0, -'.enc'.length), Buffer.from(JSON.stringify(manifest), 'utf8'), new NoncePrefixRegistry()), { name: MANIFEST_ENTRY });
+  await out.finalize();
+  await done;
+}
+
+/**
+ * A crafted copy of an archive (E6): `edit` may return new lines for any
+ * table or identity part (undefined keeps it); sizes, hashes, row counts and
+ * content digests are recomputed so only the engine's own rules can refuse it.
+ */
+async function rewriteParts(
+  src: string,
+  dst: string,
+  edit: (part: string, lines: string[]) => string[] | undefined,
+  mutate: (m: ArchiveManifest) => void = () => undefined,
+): Promise<void> {
+  const d = await unzipper.Open.file(src);
+  const envelope = validateEnvelope(JSON.parse((await d.files.find((f) => f.path === ENVELOPE_ENTRY)!.buffer()).toString('utf8')));
+  const key = openEnvelope(envelope, PASS);
+  const reader = await ArchiveReader.open(src, PASS);
+  const manifest = JSON.parse(JSON.stringify(reader.manifest)) as ArchiveManifest;
+  const changed: Record<string, Buffer> = {};
+  const body = (lines: string[]) => Buffer.from(lines.map((l) => `${l}\n`).join(''), 'utf8');
+  for (const t of manifest.tables) {
+    const part = tablePartName(t.name);
+    const lines: string[] = [];
+    for await (const l of reader.lines(part)) lines.push(l);
+    const next = edit(part, lines);
+    if (!next) continue;
+    const b = body(next);
+    const digest = digestFor(t.pk);
+    for (const l of next) digest.add(l);
+    Object.assign(t, { sha256: crypto.createHash('sha256').update(b).digest('hex'), bytes: b.length, rows: next.length, contentDigest: digest.hex() });
+    changed[part] = b;
+  }
+  for (const [part, p] of Object.entries(manifest.identity.parts)) {
+    const lines: string[] = [];
+    for await (const l of reader.lines(part)) lines.push(l);
+    const next = edit(part, lines);
+    if (!next) continue;
+    const b = body(next);
+    Object.assign(p, { sha256: crypto.createHash('sha256').update(b).digest('hex'), bytes: b.length, rows: next.length });
+    changed[part] = b;
+  }
+  mutate(manifest);
+  const out = archiver('zip', { store: true });
+  const stream = fs.createWriteStream(dst);
+  const done = new Promise<void>((resolve, reject) => {
+    stream.on('close', resolve);
+    out.on('error', reject);
+  });
+  out.pipe(stream);
+  const registry = new NoncePrefixRegistry();
+  const skip = new Set([MANIFEST_ENTRY, ...Object.keys(changed).map(zipEntryName)]);
+  for (const f of d.files) if (!skip.has(f.path)) out.append(await f.buffer(), { name: f.path });
+  for (const [part, b] of Object.entries(changed)) out.append(encryptEntryBuffer(key, envelope.archiveId, part, b, registry), { name: zipEntryName(part) });
+  out.append(encryptEntryBuffer(key, envelope.archiveId, MANIFEST_ENTRY.slice(0, -'.enc'.length), Buffer.from(JSON.stringify(manifest), 'utf8'), registry), { name: MANIFEST_ENTRY });
   await out.finalize();
   await done;
 }
@@ -298,6 +355,133 @@ describe('transfer import (U-284)', () => {
     await rewriteManifest(backup.path, crafted, (m) => { m.options.transfer = true; });
     await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: s.firmId }), 'ARCHIVE_CORRUPT');
   }, 120_000);
+});
+
+describe('P32 review fixes (U-284 E6)', () => {
+  /** Rows of a company that must not change when another import runs. */
+  async function snapshot(tenantId: string): Promise<string> {
+    const parts: string[] = [];
+    for (const [table, order] of [['audit_log', 'id'], ['budgets', 'id'], ['user_tenant_access', 'user_id'], ['user_permissions', 'user_id'], ['transfer_user_names', 'user_id']] as const) {
+      const r = await q<{ j: string | null }>(`SELECT string_agg(row_to_json(a)::text, '|' ORDER BY a.${order}) AS j FROM "${table}" a WHERE a.tenant_id = $1`, [tenantId]);
+      parts.push(`${table}:${r[0]?.j ?? ''}`);
+    }
+    return parts.join('\n');
+  }
+
+  it('S1: a backup user under a names-only id gets a fresh id; the transfer company keeps its grants and authorship', async () => {
+    // Another install (simulated): Dave, a user there, authors a budget; it sends a transfer, and later a backup.
+    const src = crypto.randomUUID();
+    await q(`INSERT INTO tenants (id, name, slug) VALUES ($1, $2, $3)`, [src, `XFER S1 ${stamp}`, `xfer-s1-${stamp}`]);
+    tenants.push(src);
+    const carol = await user(src, `carol-${stamp}@s1.example.test`, 'Carol Owner');
+    const daveEmail = `dave-${stamp}@s1.example.test`;
+    const dave = crypto.randomUUID();
+    await q(`INSERT INTO users (id, tenant_id, email, password_hash, display_name, role, is_active) VALUES ($1, $2, $3, $4, 'Dave Desk', 'bookkeeper', true)`, [dave, src, daveEmail, HASH]);
+    await q(`INSERT INTO user_tenant_access (user_id, tenant_id, role) VALUES ($1, $3, 'owner'), ($2, $3, 'bookkeeper')`, [carol, dave, src]);
+    const co = (await q<{ id: string }>(`INSERT INTO companies (tenant_id, business_name, entity_type, setup_complete) VALUES ($1, 'S1 Co', 'llc', true) RETURNING id`, [src]))[0]!.id;
+    await q(`INSERT INTO budgets (tenant_id, company_id, name, fiscal_year, created_by) VALUES ($1, $2, 'Dave budget', 2026, $3)`, [src, co, dave]);
+    const xfer = await runExport(src, carol, { passphrase: PASS, transfer: true, asOf: '2026-06-30' });
+    const backup = await runExport(src, carol, { passphrase: PASS });
+    // This install never had Dave.
+    await q(`DELETE FROM user_tenant_access WHERE user_id = $1`, [dave]);
+    await q(`DELETE FROM users WHERE id = $1`, [dave]);
+    // The firm imports the transfer: Dave's id is free here, so it stays as a names-only id.
+    const a = await runImport({ filePath: xfer.path, passphrase: PASS, callerUserId: s.firmId, transferOnly: true });
+    tenants.push(a.tenantId);
+    expect((await q<{ id: string }>(`SELECT user_id::text AS id FROM transfer_user_names WHERE tenant_id = $1 AND display_name = 'Dave Desk'`, [a.tenantId]))[0]?.id).toBe(dave);
+    expect((await q(`SELECT 1 FROM budgets WHERE tenant_id = $1 AND created_by = $2`, [a.tenantId, dave])).length).toBe(1);
+    await q(`INSERT INTO user_permissions (tenant_id, user_id, overrides) VALUES ($1, $2, '{"sensitive_accounts": "none"}'::jsonb)`, [a.tenantId, s.firmId]);
+    const before = await snapshot(a.tenantId);
+    // A super admin restores the backup, which carries Dave as a user under that same id.
+    const admin = await user(tenants[1]!, `xfer-s1-admin-${stamp}@example.test`, 'S1 Admin', true);
+    const b = await runImport({ filePath: backup.path, passphrase: PASS, callerUserId: admin });
+    tenants.push(b.tenantId);
+    expect(b.verification.identity.created).toBe(1);
+    const created = (await q<{ id: string }>(`SELECT id::text AS id FROM users WHERE lower(email) = $1`, [daveEmail]))[0]!.id;
+    users.push(created);
+    expect(created).not.toBe(dave);
+    expect((await q(`SELECT 1 FROM users WHERE id = $1`, [dave])).length).toBe(0);
+    expect((await q(`SELECT 1 FROM budgets WHERE tenant_id = $1 AND created_by = $2`, [b.tenantId, created])).length).toBe(1);
+    // The transfer company: same rows, same grants, and Dave is still a name, not the new user.
+    expect(await snapshot(a.tenantId)).toBe(before);
+    const who = await q<{ who: string }>(`SELECT ${userDisplayNameSql('b.created_by', 'b.tenant_id')} AS who FROM budgets b WHERE b.tenant_id = $1`, [a.tenantId]);
+    expect(who.map((w) => w.who)).toEqual(['Dave Desk (ClientLedger)']);
+  }, 240_000);
+  it('S1: an archive that lists a user of its own as a names-only person is ARCHIVE_CORRUPT', async () => {
+    const backup = await runExport(s.tenantId, s.ownerId, { passphrase: PASS });
+    const crafted = path.join(work, 's1-overlap.zip');
+    const line = JSON.stringify({ id: crypto.randomUUID(), tenant_id: s.tenantId, user_id: s.bookId, display_name: 'Bob Books', created_at: '2026-01-01T00:00:00+00:00' });
+    await rewriteParts(backup.path, crafted, (part) => (part === tablePartName('transfer_user_names') ? [line] : undefined));
+    const err = await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: s.firmId }), 'ARCHIVE_CORRUPT');
+    expect(err.details).toMatchObject({ table: 'transfer_user_names' });
+  }, 120_000);
+
+  it('S2: a transfer file with rows in a table a transfer leaves out is ARCHIVE_CORRUPT, even when its omitted list hides it', async () => {
+    const backup = await runExport(s.tenantId, s.ownerId, { passphrase: PASS });
+    const keyLines: string[] = [];
+    for await (const l of (await ArchiveReader.open(backup.path, PASS)).lines(tablePartName('bank_link_keys'))) keyLines.push(l);
+    expect(keyLines).toHaveLength(1);
+    const crafted = path.join(work, 's2-table.zip');
+    await rewriteParts(transfer.path, crafted, (part) => (part === tablePartName('bank_link_keys') ? keyLines : undefined),
+      (m) => { m.omitted = (m.omitted ?? []).filter((o) => o !== 'bank_link_keys'); });
+    const err = await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: s.firmId, transferOnly: true }), 'ARCHIVE_CORRUPT');
+    expect(err.details).toMatchObject({ omitted: 'bank_link_keys' });
+  }, 180_000);
+
+  it('S2: a transfer file with a value in a column a transfer clears is ARCHIVE_CORRUPT (smtp_host, check bank numbers)', async () => {
+    const cases: Array<{ column: string; edit: (l: string) => string }> = [
+      { column: 'companies.smtp_host', edit: (l) => l.replace(/"smtp_host":null/, `"smtp_host":"evil-${stamp}.example.test"`) },
+      { column: 'companies.check_settings', edit: (l) => l.replace(/(\\?"routingNumber\\?"\s*:\s*\\?")(\\?")/, `$1${ROUTING}$2`) },
+    ];
+    for (const c of cases) {
+      const crafted = path.join(work, `s2-${c.column}.zip`);
+      let edited = false;
+      await rewriteParts(transfer.path, crafted, (part, lines) => {
+        if (part !== tablePartName('companies')) return undefined;
+        const next = lines.map(c.edit);
+        edited = next.join('\n') !== lines.join('\n');
+        return next;
+      }, (m) => { m.omitted = (m.omitted ?? []).filter((o) => o !== c.column); });
+      expect(edited, c.column).toBe(true);
+      const err = await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: s.firmId, transferOnly: true }), 'ARCHIVE_CORRUPT');
+      expect(err.details, c.column).toMatchObject({ omitted: c.column });
+    }
+  }, 240_000);
+
+  it('S2: a transfer file cannot credit its rows to the person importing it', async () => {
+    const crafted = path.join(work, 's2-caller.zip');
+    await rewriteParts(transfer.path, crafted, (part, lines) => (part === tablePartName('budgets') ? lines.map((l) => l.split(s.bookId).join(s.firmId)) : undefined));
+    const tenantsBefore = (await q<{ n: number }>(`SELECT count(*)::int AS n FROM user_tenant_access WHERE user_id = $1`, [s.firmId]))[0]!.n;
+    const err = await expectCode(runImport({ filePath: crafted, passphrase: PASS, callerUserId: s.firmId, transferOnly: true }), 'ARCHIVE_VERIFY_FAILED');
+    expect((err.details as { failures: Array<{ check: string; table?: string }> }).failures).toContainEqual(expect.objectContaining({ check: 'reference', table: 'budgets.created_by' }));
+    expect((await q<{ n: number }>(`SELECT count(*)::int AS n FROM user_tenant_access WHERE user_id = $1`, [s.firmId]))[0]!.n).toBe(tenantsBefore);
+  }, 180_000);
+
+  it('S3: userDisplayNames shows users by name and names-only people as "Name (ClientLedger)", per tenant', async () => {
+    const r = await runImport({ filePath: transfer.path, passphrase: PASS, callerUserId: s.firmId, transferOnly: true });
+    tenants.push(r.tenantId);
+    const bob = (await q<{ id: string }>(`SELECT user_id::text AS id FROM transfer_user_names WHERE tenant_id = $1 AND display_name = 'Bob Books'`, [r.tenantId]))[0]!.id;
+    const stranger = crypto.randomUUID();
+    const names = await userDisplayNames(r.tenantId, [bob, s.firmId, stranger, 'not-a-uuid']);
+    expect(Object.fromEntries(names)).toEqual({ [bob]: 'Bob Books (ClientLedger)', [s.firmId]: 'Firm Staff' });
+    // Another tenant does not see this company's names-only people.
+    expect((await userDisplayNames(s.tenantId, [bob])).size).toBe(0);
+  }, 120_000);
+
+  it('M6: the scrub writes names with backslashes literally and drops account numbers inside check settings only', async () => {
+    const names = JSON.stringify({ 'a@b.test': 'Back\\1slash \\& co\\' });
+    const [r] = await q<{ j: Record<string, unknown> }>(`SELECT mybooks_transfer_scrub($1::jsonb, $2::jsonb, false) AS j`, [JSON.stringify({ note: 'by A@B.test today' }), names]);
+    expect(r!.j).toEqual({ note: 'by Back\\1slash \\& co\\ today' });
+    const doc = {
+      check_settings: { accountNumber: '123456789', bankName: 'First Bank' },
+      after: { checkSettings: JSON.stringify({ accountNumber: '55555', nested: { account_number: '777' } }) },
+      account: { account_number: '1000', name: 'Cash' },
+    };
+    const [s2] = await q<{ j: Record<string, unknown> }>(`SELECT mybooks_transfer_scrub($1::jsonb, '{}'::jsonb, false) AS j`, [JSON.stringify(doc)]);
+    expect(s2!.j['check_settings']).toEqual({ bankName: 'First Bank' });
+    expect(JSON.parse((s2!.j['after'] as { checkSettings: string }).checkSettings)).toEqual({ nested: {} });
+    expect(s2!.j['account']).toEqual({ account_number: '1000', name: 'Cash' });
+  });
 });
 
 describe('missing files are all refused in one run (T7, Q-P32k)', () => {

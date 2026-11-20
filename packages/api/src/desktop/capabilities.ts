@@ -1843,5 +1843,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * its scope is queued or running, and any archive job while a transfer is (scope: the install on desktop, the
    * tenant on a server). GET /tenants/:id/verification-totals takes transfer=true. The audit list shows names-only
    * people as "Name (ClientLedger)".
+   * E6 (P32 review; migration 0284_transfer_scrub_fixes, function bodies only, with a rollback; no new flag): an
+   * import never creates a user under an id a names-only person holds (fresh id instead); a transfer import is
+   * 422 ARCHIVE_CORRUPT (details.omitted names the table or column) when a transfer-omitted table has rows or a
+   * cleared column has a value, whatever the file's own `omitted` says; a transfer's rows may not name the importer;
+   * the scrub writes names literally and removes account numbers inside check settings.
    */
   'tenant-archive-transfer-v1',];

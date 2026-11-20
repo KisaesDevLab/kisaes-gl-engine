@@ -20,6 +20,7 @@ import { sql } from 'drizzle-orm';
 import type { TransactionActivityEvent, TransactionActivityKind } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
+import { userDisplayNames } from '../utils/user-display-name.js';
 
 type Row = Record<string, unknown>;
 
@@ -177,12 +178,12 @@ export async function getTransactionActivity(
 
   const names = async (table: 'users' | 'contacts' | 'accounts', ids: Set<string>): Promise<Map<string, string>> => {
     if (ids.size === 0) return new Map();
+    // Firm staff live in another tenant, so users are looked up by id
+    // alone — the ids come from this tenant's own records; people who came
+    // in through a transfer file show as "Name (ClientLedger)" (U-284).
+    if (table === 'users') return userDisplayNames(tenantId, ids);
     const list = sql.join([...ids].map((id) => sql`${id}::uuid`), sql`, `);
-    const q = table === 'users'
-      // Firm staff live in another tenant, so users are looked up by id
-      // alone — the ids come from this tenant's own records.
-      ? sql`SELECT id, COALESCE(NULLIF(display_name, ''), email) AS name FROM users WHERE id IN (${list})`
-      : table === 'contacts'
+    const q = table === 'contacts'
         ? sql`SELECT id, display_name AS name FROM contacts WHERE tenant_id = ${tenantId} AND id IN (${list})`
         : sql`SELECT id, CASE WHEN account_number IS NOT NULL AND account_number <> '' THEN account_number || ' · ' || name ELSE name END AS name
               FROM accounts WHERE tenant_id = ${tenantId} AND id IN (${list})`;

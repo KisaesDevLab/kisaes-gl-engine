@@ -8,7 +8,7 @@
  * Users are matched by normalized email. A matched user is never modified
  * and the archived id maps to the existing id. An unmatched user is created
  * with the archived id (or a fresh one when that id belongs to a different
- * email), homed in the destination workspace (desktop) or the new tenant
+ * email or to a names-only person, `userIdTaken`), homed in the destination workspace (desktop) or the new tenant
  * (server), never a super admin, TFA off, lockout cleared; on desktop it
  * also gets a `readonly` workspace access row. Archived access rows are
  * inserted with mapped ids, and the importing caller gets an `owner` row
@@ -144,6 +144,21 @@ export function parseIdentityLine<T>(line: string, required: readonly string[]):
   return obj as T;
 }
 
+/**
+ * Whether `userId` may not be given to a new users row (U-284 E6, S1): it
+ * is a user of this install, or a names-only person of any company here
+ * (transfer_user_names, any tenant). A names-only id never becomes a real
+ * user, so an archive that carries a user under the same id can never take
+ * over a company's grants or authorship; that user gets a fresh id.
+ */
+export async function userIdTaken(client: ArchiveClient, userId: string): Promise<boolean> {
+  const r = await client.query(
+    `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1) OR EXISTS (SELECT 1 FROM transfer_user_names WHERE user_id = $1) AS taken`,
+    [userId],
+  );
+  return (r.rows[0] as { taken: boolean }).taken === true;
+}
+
 export async function userRowJson(client: ArchiveClient, userId: string): Promise<string> {
   const r = await client.query('SELECT row_to_json(u)::text AS j FROM users u WHERE u.id = $1', [userId]);
   return (r.rows[0] as { j: string } | undefined)?.j ?? '';
@@ -175,8 +190,9 @@ export async function applyIdentity(client: ArchiveClient, input: IdentityInput)
       result.ghostIds.push(takenByOther ? idMap.fresh(u.id) : u.id.toLowerCase());
       continue;
     }
-    // Unmatched: the archived id, unless it belongs to a different email.
-    const taken = (await client.query('SELECT 1 FROM users WHERE id = $1', [u.id])).rows.length > 0;
+    // Unmatched: the archived id, unless it belongs to a different email or
+    // to a names-only person of any company here (S1).
+    const taken = await userIdTaken(client, u.id);
     const newId = taken ? idMap.fresh(u.id) : u.id.toLowerCase();
     const homeTenant = workspaceTenantId ?? newTenantId;
     await client.query(
