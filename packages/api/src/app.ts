@@ -326,7 +326,10 @@ import { invoiceEmailJson } from './routes/invoices.routes.js';
 app.use(invoiceEmailJson);
 app.use(express.json({ limit: '10mb' }));
 // Desktop LAN mode only (U-292): stale-checked writes must carry their stamp (428 STALE_REQUIRED).
-import { staleRequired } from './middleware/stale-required.js';
+import { staleRequired, stampLocations } from './middleware/stale-required.js';
+// Desktop: a stale-checked route's stamp, in the body or the query, is put in both, so the
+// route reads exactly what the 428 check accepted (P33 review S3).
+if (isDesktop()) app.use(stampLocations());
 if (isDesktop() && desktopProfile().lan) app.use(staleRequired());
 // Bound the array elements a body may carry before any schema sees it
 // (middleware/json-array-cap.ts): zod 3 keeps one issue per failing

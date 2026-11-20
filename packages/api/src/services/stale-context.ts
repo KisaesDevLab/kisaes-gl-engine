@@ -38,11 +38,14 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})
 /** Takes `expectedUpdatedAt` out of the body (or, for DELETE, the query). 400 when malformed. */
 export function takeExpectedUpdatedAt(req: Request): string | undefined {
   const body = req.body as Record<string, unknown> | undefined;
+  // Same precedence as the 428 check (stampOf): the body's unless absent or
+  // null, else the query's (P33 review S3).
   let raw: unknown;
   if (body && typeof body === 'object' && 'expectedUpdatedAt' in body) {
     raw = body['expectedUpdatedAt'];
     delete body['expectedUpdatedAt'];
-  } else if (typeof req.query['expectedUpdatedAt'] === 'string') {
+  }
+  if ((raw === undefined || raw === null) && typeof req.query['expectedUpdatedAt'] === 'string' && req.query['expectedUpdatedAt'].length > 0) {
     raw = req.query['expectedUpdatedAt'];
   }
   if (raw === undefined || raw === null) return undefined;
