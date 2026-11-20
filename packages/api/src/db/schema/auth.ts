@@ -104,4 +104,9 @@ export const sessions = pgTable('sessions', {
   // 0157); carried through refresh rotation → JWT auth_time.
   authTime: timestamp('auth_time', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // Session chain (migration 0285, U-290): one id from sign-in through every
+  // refresh rotation; access tokens carry it as `sid`.
+  chainId: uuid('chain_id').notNull().defaultRandom(),
+  // LAN device fingerprint the chain was created from (NULL: host app, server).
+  deviceId: varchar('device_id', { length: 64 }),
 });

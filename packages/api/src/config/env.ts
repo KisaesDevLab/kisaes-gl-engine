@@ -32,6 +32,8 @@ export const envSchema = z.object({
   ENGINE_COMMIT: z.string().trim().max(80).optional(),
   JWT_SECRET: z.string().min(20, 'JWT_SECRET must be at least 20 characters for security'),
   JWT_ACCESS_EXPIRY: z.string().default('15m'),
+  // Concurrent sign-ins per user; the oldest is ended beyond it (U-290: the desktop LAN host sets 6).
+  MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(100).default(3),
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
   // CLOUDFLARE_TUNNEL_PLAN Phase 3 — idle timeout on admin routes.
   // requireSuperAdmin() rejects tokens older than this. Default 30m

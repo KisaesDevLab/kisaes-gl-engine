@@ -61,6 +61,9 @@ export interface JwtPayload {
    *  privileged surfaces can bound the absolute session age — `iat` alone
    *  resets on every 15-minute refresh. */
   auth_time?: number;
+  /** Session chain id (U-290, lan-sessions-v1): in desktop LAN mode every
+   *  request checks that a live session of this chain exists. */
+  sid?: string;
 }
 
 export interface ForgotPasswordInput {

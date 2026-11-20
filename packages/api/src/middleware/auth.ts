@@ -4,15 +4,16 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { JwtPayload } from '@kis-books/shared';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { db } from '../db/index.js';
-import { users } from '../db/schema/index.js';
+import { users, sessions } from '../db/schema/index.js';
 import { apiKeyAuth } from './api-key-auth.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
-import { isDesktop } from '../desktop/profile.js';
+import { desktopProfile, isDesktop } from '../desktop/profile.js';
+import { currentLanContext } from '../desktop/lan-context.js';
 import { workspaceFence } from '../desktop/workspace.js';
 import { hiddenAccountIdsFor, refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
 import { refuseReportOutsideArea } from '../services/report-areas.js';
@@ -42,6 +43,8 @@ declare global {
        *  refuse anything but a real session — a scoped/expiring API key
        *  must never be upgradable into a full JWT+refresh pair. */
       authKind?: 'session' | 'api_key' | 'download_token';
+      /** JWT `sid` claim: the session chain (U-290). */
+      sessionChainId?: string;
     }
   }
 }
@@ -85,6 +88,26 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
   });
 }
 
+/**
+ * Desktop LAN mode (U-290, lan-sessions-v1): the access token's session
+ * chain must still have a live row, created from this request's device
+ * (none for the host app). Revoking a session (deleting its rows) or
+ * evicting it therefore ends its access tokens at the next request.
+ */
+async function assertLiveSession(userId: string, sid: string | undefined): Promise<void> {
+  if (!sid || !UUID_RE.test(sid)) throw AppError.unauthorized('Sign in again.', 'SESSION_REVOKED');
+  const [row] = await db.select({ deviceId: sessions.deviceId })
+    .from(sessions)
+    .where(and(eq(sessions.chainId, sid), eq(sessions.userId, userId), sql`${sessions.expiresAt} > NOW()`))
+    .limit(1);
+  if (!row) throw AppError.unauthorized('This sign-in has ended. Sign in again.', 'SESSION_REVOKED');
+  if ((row.deviceId ?? null) !== (currentLanContext()?.device ?? null)) {
+    throw AppError.unauthorized('This sign-in belongs to another computer. Sign in again.', 'SESSION_DEVICE_MISMATCH');
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function authenticatePrincipal(req: Request, res: Response, next: NextFunction) {
   const hasApiKey = !!req.headers['x-api-key'];
   const hasJwt = !!req.headers.authorization?.startsWith('Bearer ');
@@ -95,6 +118,10 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
 
   if (hasApiKey) {
     if (!isDesktop()) return apiKeyAuth(req, res, next);
+    // LAN (U-290): a workstation signs in; an API key is bound to no device.
+    if (req.lanClass === 'workstation') {
+      throw AppError.unauthorized('API keys are not accepted from other computers. Sign in instead.', 'API_KEY_NOT_ON_LAN');
+    }
     // Desktop: the workspace fence runs once the key's tenant is known.
     return apiKeyAuth(req, res, (err?: unknown) => {
       if (err) {
@@ -155,6 +182,7 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
   }
 
   const token = authHeader.slice(7);
+  let sid: string | undefined;
   try {
     const payload = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as JwtPayload & {
       iat?: number; typ?: string; tfa_pending?: boolean; checks_stepup?: boolean;
@@ -191,6 +219,8 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
     req.tokenIssuedAt = typeof payload.iat === 'number' ? payload.iat : undefined;
     req.authTime = typeof payload.auth_time === 'number' ? payload.auth_time : undefined;
     req.authKind = 'session';
+    sid = typeof payload.sid === 'string' ? payload.sid : undefined;
+    req.sessionChainId = sid;
     if (!isDesktop()) next();
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -199,6 +229,7 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
   // Desktop: the workspace fence runs outside the token try/catch so a
   // database error is not reported as an invalid token.
   if (isDesktop()) {
+    if (desktopProfile().lan) await assertLiveSession(req.userId, sid);
     await workspaceFence(req);
     next();
   }

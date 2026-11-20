@@ -1873,4 +1873,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * is true. Server mode and desktop mode without CL_LAN are unchanged.
    */
   'lan-profile-v1',
+  /**
+   * U-290 (ClientLedger P33; migration 0285_session_chains, additive + rollback). Access tokens carry `sid`, the
+   * session chain (sign-in plus every refresh rotation and tenant switch after it). Sessions store the LAN device
+   * they were created from (X-CL-Device; none for the host app). In LAN mode every authenticated request needs a
+   * live session of its chain from the same device: else 401 SESSION_REVOKED (ended, evicted, or a token without
+   * sid) or SESSION_DEVICE_MISMATCH; refresh and switch-tenant from another device are 401 SESSION_DEVICE_MISMATCH.
+   * API keys from a workstation are 401 API_KEY_NOT_ON_LAN. MAX_SESSIONS_PER_USER comes from env (default 3; the
+   * LAN host sets 6). Host-only, super admin: GET /desktop/sessions {sessions: [{id, userId, email, displayName,
+   * deviceId, signedInAt, lastRefreshAt, expiresAt, current}]}, DELETE /desktop/sessions/:id {revoked} (404 when not
+   * live), DELETE /desktop/sessions?device=<hex> {revoked}; both audited. Host-only, launch token: POST
+   * /desktop/audit-events {event: lan_device_paired|lan_device_removed|lan_host_key_regenerated|lan_host_mode_on|
+   * lan_host_mode_off, deviceId?, label?} → 201 {recorded: true} (409 NOT_INITIALIZED before first run).
+   */
+  'lan-sessions-v1',
 ];
