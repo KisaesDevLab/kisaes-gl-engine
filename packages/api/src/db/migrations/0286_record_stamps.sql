@@ -58,11 +58,14 @@ BEGIN
 END $$;
 --> statement-breakpoint
 
--- BEFORE INSERT on a header table: a new record always has a stamp.
+-- BEFORE INSERT on a header table: a new record always has a stamp, and its own
+-- creating transaction (lines, tags, applications written with it) does not move it,
+-- so a record nobody edited keeps updated_at = its creation stamp.
 CREATE OR REPLACE FUNCTION mybooks_stamp_insert() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.updated_at IS NULL THEN NEW.updated_at := date_trunc('milliseconds', clock_timestamp()); END IF;
+  PERFORM set_config(mybooks_stamp_key(TG_TABLE_NAME, NEW.id), 'done', true);
   RETURN NEW;
 END $$;
 --> statement-breakpoint

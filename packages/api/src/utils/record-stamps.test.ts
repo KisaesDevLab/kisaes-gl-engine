@@ -251,6 +251,20 @@ describe('stamps (B3, T5)', () => {
     expect(m.json.error.details.stale[0].id).toBe(c1);
   });
 
+  it('a record nobody edited keeps its creation stamp; voiding a JE voids its untouched reversal', async () => {
+    const c = await e.call(A, '/api/v1/transactions', {
+      method: 'POST', jwt: jwtA,
+      body: { ...jeBody(undefined, '7.00'), reverseOn: '2026-04-01' },
+    });
+    expect(c.status, JSON.stringify(c.json)).toBe(201);
+    const id = c.json.transaction.id as string;
+    const rows = await e.query<{ same: boolean }>(
+      "SELECT date_trunc('milliseconds', created_at) = date_trunc('milliseconds', updated_at) AS same FROM transactions WHERE reverses_transaction_id = $1", [id]);
+    expect(rows).toEqual([{ same: true }]);
+    const v = await e.call(A, `/api/v1/transactions/${id}/void`, { method: 'POST', jwt: jwtA, body: { reason: 'x', expectedUpdatedAt: c.json.transaction.updatedAt } });
+    expect(v.status, JSON.stringify(v.json)).toBe(200);
+  });
+
   it('a transaction of another company is not found (GET and void)', async () => {
     const t = await je(jwtA);
     const other = '00000000-0000-4000-8000-000000000001';
