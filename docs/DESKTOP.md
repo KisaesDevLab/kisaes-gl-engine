@@ -295,7 +295,7 @@ Every Redis touchpoint checks `redisEnabled()`. That function is always true for
 }
 ```
 
-The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades the status. On desktop, `/health` returns 200 when the database is up.
+The v1 fields come first and are unchanged. A `"disabled"` Redis never degrades the status. On desktop, `/health` returns 200 when the database is up. The database check (`SELECT 1`) runs on its own one-connection pool (`db/index.ts` `healthPool`), so it answers at once while every connection of the main pool is held by requests waiting on row locks (ClientLedger P33 soak).
 
 ## Outbound connections (egress guard)
 

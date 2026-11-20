@@ -45,10 +45,8 @@ const books = {
   cash: '', supplies: '', income: '', bank: '', clearing: '', ar: '', ap: '', asset: '', cogs: '', part: '',
   customers: [] as string[], vendors: [] as string[], shared: [] as string[],
 };
-/** What the tests before the race left: A/P and A/R open (cents), units sold. */
-let apBefore = 0;
-let arBefore = 0;
-let soldBefore = 0;
+/** What the setup and the tests before the race made: A/R and A/P open (cents), units sold, numbered documents. */
+const pre = { ar: 0, ap: 0, sold: 0, invoices: 0, vendorCredits: 0, checks: 0 };
 
 type Res = Awaited<ReturnType<LanEngine['call']>>;
 
@@ -108,7 +106,7 @@ beforeAll(async () => {
     contactId: supplier, txnDate: DATE, vendorInvoiceNumber: 'STOCK-1', lines: [
       { accountId: books.asset, amount: (STOCK / 4).toFixed(2), itemId: books.part, quantity: String(STOCK), unitPrice: '0.25' }],
   }));
-  apBefore = STOCK * 25;
+  pre.ap += STOCK * 25;
   for (let c = 0; c < CLIENTS; c++) {
     books.customers.push(await contact('customer', `Race client ${c}`));
     books.vendors.push(await contact('vendor', `Race vendor ${c}`));
@@ -163,23 +161,25 @@ describe('company row locks (company-row-lock.ts)', () => {
   it('an invoice, a numbered check and a vendor credit save while another posting holds its KEY SHARE', async () => {
     await holdKeyShare(async () => {
       const deadline = <T>(p: Promise<T>) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('waited for the KEY SHARE')), 4000))]);
+      // An inventory sale: the invoice number claim and the costing lock.
       await ok(deadline(post(0, '/api/v1/invoices', {
         contactId: books.customers[0], txnDate: DATE, lines: [{ itemId: books.part, quantity: '1', unitPrice: '10.00', isTaxable: false }],
       })));
+      Object.assign(pre, { invoices: pre.invoices + 1, sold: pre.sold + 1, ar: pre.ar + 1000 });
       const bill = await ok(deadline(post(0, '/api/v1/bills', {
         contactId: books.vendors[0], txnDate: DATE, vendorInvoiceNumber: 'LOCK-1', lines: [{ accountId: books.supplies, amount: '3.00' }],
       })));
+      // A check numbered now: the check counter.
       await ok(deadline(post(0, '/api/v1/bill-payments', {
         bankAccountId: books.bank, txnDate: DATE, method: 'check_handwritten', bills: [{ billId: (bill.bill ?? bill.transaction ?? bill).id, amount: '3.00' }],
       })));
+      pre.checks += 1;
+      // The vendor credit number.
       await ok(deadline(post(0, '/api/v1/vendor-credits', {
         contactId: books.vendors[0], txnDate: DATE, lines: [{ accountId: books.supplies, amount: '1.00' }],
       })));
-      apBefore -= 100;
+      Object.assign(pre, { vendorCredits: pre.vendorCredits + 1, ap: pre.ap - 100 });
     });
-    // The invoice above sold one unit: the race below counts from here.
-    soldBefore += 1;
-    arBefore += 1000;
   });
 });
 
@@ -337,6 +337,10 @@ describe('posting lock order (P33 soak)', () => {
     const tallies = await Promise.all(Array.from({ length: CLIENTS }, (_, c) => client(c)));
     running = false;
     await probe;
+    // A backend reports its deadlock count when it goes idle, within 10 s
+    // (PostgreSQL 15+ cumulative statistics); this also counts deadlocks an
+    // engine-side retry (transactionWithRetry) hid from the client.
+    await new Promise((r) => setTimeout(r, 11_000));
     const after = await deadlocks();
     const retry: Record<string, number> = {};
     const done: Record<string, number> = {};
@@ -376,8 +380,8 @@ describe('posting lock order (P33 soak)', () => {
     expect(tb!.d).toBe(tb!.c);
     // A/R and A/P tie: the control account = the open documents = what the clients left open.
     const cents = (v: string) => Math.round(Number(v) * 100);
-    const arOpen = tallies.reduce((s, t) => s + t.arOpen, 0) + arBefore;
-    const apOpen = tallies.reduce((s, t) => s + t.apOpen, 0) + apBefore;
+    const arOpen = tallies.reduce((s, t) => s + t.arOpen, 0) + pre.ar;
+    const apOpen = tallies.reduce((s, t) => s + t.apOpen, 0) + pre.ap;
     const [ar] = await e.query<{ gl: string; docs: string }>(`
       SELECT (SELECT balance FROM accounts WHERE id = $1)::text AS gl,
         (SELECT COALESCE(SUM(balance_due), 0) FROM transactions WHERE txn_type = 'invoice' AND status = 'posted')::text AS docs`, [books.ar]);
@@ -391,7 +395,7 @@ describe('posting lock order (P33 soak)', () => {
     expect(cents(ap!.docs)).toBe(apOpen);
     // Inventory: on hand = stock - sales; every sale costed at the one cost
     // (0.25), the running figures in position order, the asset account = on hand at cost.
-    const sold = (done['inventory sale'] ?? 0) + soldBefore;
+    const sold = (done['inventory sale'] ?? 0) + pre.sold;
     const [part] = await e.query<{ q: string; last_q: string; last_v: string; sales: number; costs: string }>(`
       SELECT (SELECT SUM(quantity) FROM inventory_movements WHERE item_id = $1 AND NOT voided)::text AS q,
         (SELECT running_qty::text FROM inventory_movements WHERE item_id = $1 AND NOT voided
@@ -410,14 +414,14 @@ describe('posting lock order (P33 soak)', () => {
     expect(Number(asset!.b)).toBe((STOCK - sold) * 0.25);
     // Invoice, vendor credit and check numbers: one per document, gap-free (a refused post takes none).
     const inv = await e.query<{ n: string }>("SELECT txn_number AS n FROM transactions WHERE txn_type = 'invoice'");
-    expect(inv).toHaveLength((done['invoice'] ?? 0) + (done['inventory sale'] ?? 0) + 1);
+    expect(inv).toHaveLength((done['invoice'] ?? 0) + (done['inventory sale'] ?? 0) + pre.invoices);
     expect(contiguous(inv.map((x) => Number(/(\d+)$/.exec(x.n)![1])))).toBe(true);
     const vc = await e.query<{ n: string }>("SELECT txn_number AS n FROM transactions WHERE txn_type = 'vendor_credit'");
-    expect(vc).toHaveLength((done['vendor credit'] ?? 0) + 1);
+    expect(vc).toHaveLength((done['vendor credit'] ?? 0) + pre.vendorCredits);
     expect(contiguous(vc.map((x) => Number(/(\d+)$/.exec(x.n)![1])))).toBe(true);
     const checks = await e.query<{ n: number }>(
       "SELECT check_number AS n FROM transactions WHERE txn_type = 'bill_payment' AND check_number IS NOT NULL");
-    expect(checks).toHaveLength((done['numbered check'] ?? 0) + 1);
+    expect(checks).toHaveLength((done['numbered check'] ?? 0) + pre.checks);
     expect(contiguous(checks.map((x) => x.n))).toBe(true);
   }, 900_000);
 });
