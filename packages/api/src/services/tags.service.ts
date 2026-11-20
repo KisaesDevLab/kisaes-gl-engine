@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp, checkExpectedStamp } from './stale-context.js';
 import { eq, and, or, sql, ilike, count, inArray, asc, type SQL } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
@@ -137,6 +138,8 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
 }
 
 export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {
+  const expectedStamp = takeExpectedStamp('tags', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag'); // U-291
   if (input.name) {
     const existing = await db.query.tags.findFirst({
       where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
@@ -157,12 +160,13 @@ export async function update(tenantId: string, id: string, input: UpdateTagInput
   try {
     [updated] = await db.update(tags)
       .set({ ...changes, updatedAt: new Date() })
-      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id), staleCondition(tags.updatedAt, expectedStamp)))
       .returning();
   } catch (err) {
     if (changes.tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(changes.tagNumber);
     throw err;
   }
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This tag');
   if (!updated) throw AppError.notFound('Tag not found');
   await auditLog(tenantId, 'update', 'tag', updated.id, before ?? null, updated, userId);
   return updated;
@@ -251,6 +255,8 @@ export async function getUsage(tenantId: string, tagId: string): Promise<TagUsag
 }
 
 export async function remove(tenantId: string, id: string, userId?: string) {
+  const expectedStamp = takeExpectedStamp('tags', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag'); // U-291
   // Surface a structured 409 before the raw FK violation hits, so the UI
   // can show "this tag is used by N transactions / M budgets / …" and
   // offer reassignment / merge instead of failing with an opaque
@@ -268,7 +274,8 @@ export async function remove(tenantId: string, id: string, userId?: string) {
   // still sweep it defensively to handle any race between the usage count
   // and the delete.
   await db.delete(transactionTags).where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, id)));
-  await db.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)));
+  const gone = await db.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, id), staleCondition(tags.updatedAt, expectedStamp))).returning({ id: tags.id });
+  if (gone.length === 0 && expectedStamp !== undefined) throw staleConflict(null, 'This tag');
   await auditLog(tenantId, 'delete', 'tag', id, tag, null, userId);
 }
 
@@ -374,18 +381,24 @@ export async function createGroup(tenantId: string, input: { name: string; descr
 }
 
 export async function updateGroup(tenantId: string, id: string, input: { name?: string; description?: string | null; isSingleSelect?: boolean }) {
+  const expectedStamp = takeExpectedStamp('tag_groups', id); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group');
   const [updated] = await db.update(tagGroups)
     .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id)))
+    .where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id), staleCondition(tagGroups.updatedAt, expectedStamp)))
     .returning();
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This tag group');
   if (!updated) throw AppError.notFound('Tag group not found');
   return updated;
 }
 
 export async function deleteGroup(tenantId: string, id: string) {
+  const expectedStamp = takeExpectedStamp('tag_groups', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group'); // U-291
   // Ungroup tags (set group_id = null)
   await db.update(tags).set({ groupId: null }).where(and(eq(tags.tenantId, tenantId), eq(tags.groupId, id)));
-  await db.delete(tagGroups).where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id)));
+  const gone = await db.delete(tagGroups).where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id), staleCondition(tagGroups.updatedAt, expectedStamp))).returning({ id: tagGroups.id });
+  if (gone.length === 0 && expectedStamp !== undefined) throw staleConflict(null, 'This tag group');
 }
 
 export async function reorderGroups(tenantId: string, orderedIds: string[]) {
@@ -461,10 +474,11 @@ async function onLockedTransaction(
   await assertTransactionInTenant(tenantId, transactionId);
   await db.transaction(async (tx) => {
     await lockTransactionHeaders(tx, tenantId, [transactionId]);
-    if (expectedUpdatedAt !== undefined) {
-      const [row] = await tx.select({ updatedAt: transactions.updatedAt }).from(transactions)
-        .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId))).limit(1);
-      if (row) assertNotStale(row, expectedUpdatedAt);
+    const [row] = await tx.select({ updatedAt: transactions.updatedAt }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId))).limit(1);
+    if (row) {
+      if (expectedUpdatedAt !== undefined) assertNotStale(row, expectedUpdatedAt);
+      else checkExpectedStamp('transactions', transactionId, row);
     }
     await fn(tx);
   });
@@ -527,6 +541,9 @@ export async function setTransactionLineTag(
 
   await db.transaction(async (tx) => {
     await lockTransactionHeaders(tx, tenantId, [transactionId]);
+    const [stampRow] = await tx.select({ updatedAt: transactions.updatedAt }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId))).limit(1);
+    if (stampRow) checkExpectedStamp('transactions', transactionId, stampRow);
     await tx.update(journalLines).set({ tagId })
       .where(and(
         eq(journalLines.tenantId, tenantId),

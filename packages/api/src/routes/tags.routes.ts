@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createTagSchema, updateTagSchema, mergeTagsSchema, createTagGroupSchema, updateTagGroupSchema, transactionTagsSchema, bulkTagSchema, createSavedFilterSchema } from '@kis-books/shared';
@@ -115,7 +116,7 @@ tagsRouter.get('/:id/usage', async (req, res) => {
   res.json({ tag, usage });
 });
 
-tagsRouter.put('/:id', describe({
+tagsRouter.put('/:id', expectStamp('tags'), describe({
   summary: 'Update a tag',
   description: `tagNumber omitted keeps the stored number; "" or null clears it. ${tagNumberConflict}`,
   response: tagEnvelope,
@@ -124,7 +125,7 @@ tagsRouter.put('/:id', describe({
   res.json({ tag });
 });
 
-tagsRouter.delete('/:id', async (req, res) => {
+tagsRouter.delete('/:id', expectStamp('tags'), async (req, res) => {
   await tagsService.remove(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Tag deleted' });
 });
@@ -159,12 +160,12 @@ tagsRouter.post('/groups', validate(createTagGroupSchema), async (req, res) => {
   res.status(201).json({ group });
 });
 
-tagsRouter.put('/groups/:id', validate(updateTagGroupSchema), async (req, res) => {
+tagsRouter.put('/groups/:id', expectStamp('tag_groups'), validate(updateTagGroupSchema), async (req, res) => {
   const group = await tagsService.updateGroup(req.tenantId, req.params['id']!, req.body);
   res.json({ group });
 });
 
-tagsRouter.delete('/groups/:id', async (req, res) => {
+tagsRouter.delete('/groups/:id', expectStamp('tag_groups'), async (req, res) => {
   await tagsService.deleteGroup(req.tenantId, req.params['id']!);
   res.json({ message: 'Group deleted' });
 });
@@ -176,29 +177,29 @@ tagsRouter.put('/groups/reorder', async (req, res) => {
 
 // ─── Transaction Tagging ─────────────────────────────────────────
 
-tagsRouter.post('/transactions/:id/add', validate(transactionTagsSchema), async (req, res) => {
+tagsRouter.post('/transactions/:id/add', expectStamp('transactions'), validate(transactionTagsSchema), async (req, res) => {
   await tagsService.addTags(req.tenantId, req.params['id']!, req.body.tagIds);
   res.json({ message: 'Tags added' });
 });
 
-tagsRouter.post('/transactions/:id/remove', validate(transactionTagsSchema), async (req, res) => {
+tagsRouter.post('/transactions/:id/remove', expectStamp('transactions'), validate(transactionTagsSchema), async (req, res) => {
   await tagsService.removeTags(req.tenantId, req.params['id']!, req.body.tagIds);
   res.json({ message: 'Tags removed' });
 });
 
-tagsRouter.put('/transactions/:id', validate(transactionTagsSchema), async (req, res) => {
+tagsRouter.put('/transactions/:id', expectStamp('transactions'), validate(transactionTagsSchema), async (req, res) => {
   await tagsService.replaceTags(req.tenantId, req.params['id']!, req.body.tagIds);
   res.json({ message: 'Tags replaced' });
 });
 
 tagsRouter.post('/bulk-tag', validate(bulkTagSchema), async (req, res) => {
-  await tagsService.bulkAddTags(req.tenantId, req.body.transactionIds, req.body.tagIds);
-  res.json({ message: 'Bulk tagged' });
+  const r = await tagsService.bulkAddTags(req.tenantId, req.body.transactionIds, req.body.tagIds, req.body.stamps);
+  res.json({ message: 'Bulk tagged', stale: r.stale });
 });
 
 tagsRouter.post('/bulk-untag', validate(bulkTagSchema), async (req, res) => {
-  await tagsService.bulkRemoveTags(req.tenantId, req.body.transactionIds, req.body.tagIds);
-  res.json({ message: 'Bulk untagged' });
+  const r = await tagsService.bulkRemoveTags(req.tenantId, req.body.transactionIds, req.body.tagIds, req.body.stamps);
+  res.json({ message: 'Bulk untagged', stale: r.stale });
 });
 
 // Saved filters GET/POST/DELETE routes are defined above /:id to avoid route conflict

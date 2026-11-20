@@ -55,6 +55,9 @@ export const transactionTagsSchema = z.object({
 export const bulkTagSchema = z.object({
   transactionIds: z.array(z.string().uuid()),
   tagIds: z.array(z.string().uuid()),
+  // Per-item stamps (U-291, stale-all-v1): transaction id -> updatedAt as read.
+  // A stale transaction is skipped and listed in the reply's `stale`.
+  stamps: z.record(z.string().uuid(), z.string().datetime({ offset: true })).optional(),
 });
 
 export const tagFilterSchema = z.object({

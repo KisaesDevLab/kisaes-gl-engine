@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema, bulkUpdateContactTypeSchema } from '@kis-books/shared';
@@ -98,12 +99,12 @@ contactsRouter.get('/:id', companyContext, describe({
   res.json({ contact });
 });
 
-contactsRouter.put('/:id', companyContext, validate(updateContactSchema), async (req, res) => {
+contactsRouter.put('/:id', companyContext, expectStamp('contacts'), validate(updateContactSchema), async (req, res) => {
   const contact = await contactsService.update(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId);
   res.json({ contact });
 });
 
-contactsRouter.delete('/:id', async (req, res) => {
+contactsRouter.delete('/:id', expectStamp('contacts'), async (req, res) => {
   const contact = await contactsService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ contact });
 });

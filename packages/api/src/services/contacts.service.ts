@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp } from './stale-context.js';
 import { eq, and, sql, count, or, inArray, getTableColumns, asc, desc, type SQL } from 'drizzle-orm';
 import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -189,6 +190,8 @@ export async function create(tenantId: string, input: CreateContactInput, userId
 }
 
 export async function update(tenantId: string, id: string, input: UpdateContactInput, userId?: string, companyId?: string) {
+  const expectedStamp = takeExpectedStamp('contacts', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('contacts', id, expectedStamp, 'This contact'); // U-291
   const existing = await getById(tenantId, id);
   if (input.priceLevelId && input.priceLevelId !== existing.priceLevelId) {
     await priceLevels.assertAssignable(db, tenantId, input.priceLevelId, companyId);
@@ -212,9 +215,10 @@ export async function update(tenantId: string, id: string, input: UpdateContactI
   const [updated] = await db
     .update(contacts)
     .set(normalized)
-    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, id)))
+    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, id), staleCondition(contacts.updatedAt, expectedStamp)))
     .returning();
 
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This contact');
   if (!updated) {
     throw AppError.internal('Failed to update contact');
   }
@@ -243,13 +247,16 @@ export async function bulkUpdateType(
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
+  const expectedStamp = takeExpectedStamp('contacts', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('contacts', id, expectedStamp, 'This contact'); // U-291
   const existing = await getById(tenantId, id);
 
   const [updated] = await db
     .update(contacts)
     .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, id)))
+    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.id, id), staleCondition(contacts.updatedAt, expectedStamp)))
     .returning();
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This contact');
 
   await auditLog(tenantId, 'update', 'contact', id, existing, updated, userId);
   return updated;

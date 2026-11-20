@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import {
@@ -243,7 +244,7 @@ transactionsRouter.post('/', keyedCreate, describe({
   res.status(201).json({ transaction: result, ...extra });
 });
 
-transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, describe({
+transactionsRouter.put('/:id', apDocumentPermission('update'), keyedById, expectStamp('transactions'), describe({
   summary: 'Edit a transaction (body per txnType; deposit, transfer, expense and journal entry documented)',
   description: INVENTORY_ROUTE_NOTE + ' ' + 'Response 200 `{transaction}`; a deposit adds `clearingWouldGoNegative` (boolean). A deposit edit on a transaction that is not a deposit is 404. ' +
     'A journal entry edit: reverseOn omitted keeps the automatic reversal on its stored date (re-posted there when the edit changes it), null removes it, ' +

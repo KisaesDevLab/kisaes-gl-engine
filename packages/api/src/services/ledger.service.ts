@@ -1111,6 +1111,7 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
 
 // assertNotStale moved to utils/record-stamps.ts (U-291); re-exported for existing callers.
 import { assertNotStale } from '../utils/record-stamps.js';
+import { checkExpectedStamp } from './stale-context.js';
 export { assertNotStale };
 
 /**
@@ -1600,6 +1601,8 @@ export async function updateTransaction(
       throw AppError.notFound('Transaction not found');
     }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
+    // The caller's stamp (U-291, stale-all-v1), compared under the row lock.
+    checkExpectedStamp('transactions', txnId, existing);
     // Sensitive accounts (U-33): old and new lines, before the closed-period check.
     await assertTxnVisible(tx, tenantId, txnId);
     await assertNoHiddenLines(input.lines.map((l) => l.accountId));

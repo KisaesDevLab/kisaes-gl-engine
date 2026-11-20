@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { checkExpectedStamp } from './stale-context.js';
 import { eq, and, sql, count, inArray } from 'drizzle-orm';
 import type { WriteCheckInput, UpdateCheckInput } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
@@ -469,6 +470,7 @@ export async function updateCheck(
     if (!existing || !isCheckRow(existing) || existing.status === 'deleted') {
       throw AppError.notFound('Check not found');
     }
+    checkExpectedStamp('transactions', checkId, existing, 'This check');
     if (existing.txnType !== 'expense') {
       throw AppError.badRequest('A check that pays bills is changed from its bill payment.', 'CHECK_NOT_EDITABLE');
     }
@@ -993,7 +995,9 @@ async function updatePrintedMemoInTx(
 ) {
   const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, checkId)];
   if (companyId) conds.push(eq(transactions.companyId, companyId));
-  const [txn] = await tx.select().from(transactions).where(and(...conds)).limit(1);
+  // Locked (U-291): the memo edit compares the caller's stamp under the lock.
+  const [txn] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
+  if (txn) checkExpectedStamp('transactions', checkId, txn, 'This check');
 
   if (!txn || !isCheckRow(txn)) throw AppError.notFound('Check not found');
   if (txn.status === 'void') throw AppError.badRequest('Cannot edit the memo on a voided check');
