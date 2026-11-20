@@ -23,7 +23,7 @@ import { AppError } from '../utils/errors.js';
 import { attachOpenApiMeta } from '../middleware/describe.js';
 import { assertNotStale } from '../utils/record-stamps.js';
 
-interface ExpectedStamp {
+export interface ExpectedStamp {
   table: string;
   id: string;
   expected: string;
@@ -93,6 +93,22 @@ export function checkExpectedStamp(table: string, id: string, row: { updatedAt: 
   if (!entry) return;
   entry.consumed = true;
   assertNotStale(row, entry.expected, what);
+}
+
+/**
+ * The request's expected stamps not yet compared (U-291 race fix). A database
+ * transaction that runs again after a deadlock (transactionWithRetry) re-arms
+ * the ones its rolled-back attempt compared, so the new attempt compares them
+ * again under its own row lock: the attempt that compared was rolled back and
+ * another save may have committed since.
+ */
+export function expectedStampsMark(): ReadonlySet<ExpectedStamp> {
+  return new Set((storage.getStore() ?? []).filter((e) => !e.consumed));
+}
+
+/** Re-arms the stamps of `mark` compared since it was taken (see expectedStampsMark). */
+export function rearmExpectedStamps(mark: ReadonlySet<ExpectedStamp>): void {
+  for (const e of mark) e.consumed = false;
 }
 
 /**

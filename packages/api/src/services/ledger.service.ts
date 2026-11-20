@@ -1810,13 +1810,14 @@ export async function updateTransaction(
         await tx.update(journalLines).set({ tagId: tagFor(inLine), description: inLine.description || null, ...settlementColumns(inLine) })
           .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, lineId)));
       }
-      // 2. Replace the other lines: reverse old balances, delete, insert new, apply.
+      // 2. Replace the other lines: delete, reverse old balances, insert new,
+      //    apply. Lines before balances (see the full edit below).
       if (replaced.length > 0) {
-        await updateAccountBalances(tx, tenantId, replaced.map((l) => ({ accountId: l.accountId, debit: l.credit, credit: l.debit })));
         await tx.delete(journalLines).where(and(
           eq(journalLines.tenantId, tenantId),
           inArray(journalLines.id, replaced.map((l) => l.id)),
         ));
+        await updateAccountBalances(tx, tenantId, replaced.map((l) => ({ accountId: l.accountId, debit: l.credit, credit: l.debit })));
       }
       const newPLValues = newLines.map((line, i) => ({
         tenantId, companyId: companyId || null, transactionId: txnId,
@@ -1870,8 +1871,17 @@ export async function updateTransaction(
       return { ...updatedTxn, lines: refreshed };
     }
 
-    // Get original lines and reverse their balances
+    // Get original lines, delete them, then reverse their balances. Lines
+    // before balances, as every posting does (postTransaction, void, delete):
+    // a journal_lines write takes the company's gl_version_stamps row
+    // (0144), so a path that moved balances first took the account rows
+    // before that row while a new posting took them after it, and the two
+    // deadlocked (U-291 race fix, ClientLedger P33 soak).
     const originalLines = await tx.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
+
+    // Delete old lines (tenant_id scoped — defense in depth per CLAUDE.md #17)
+    await tx.delete(journalLines)
       .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
 
     if (originalLines.length > 0 && existing.status === 'posted') {
@@ -1882,10 +1892,6 @@ export async function updateTransaction(
       }));
       await updateAccountBalances(tx, tenantId, reversingLines);
     }
-
-    // Delete old lines (tenant_id scoped — defense in depth per CLAUDE.md #17)
-    await tx.delete(journalLines)
-      .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.transactionId, txnId)));
 
     // Update transaction
     await tx.update(transactions).set({
@@ -2840,16 +2846,20 @@ export async function bulkUpdateTransactions(
         if (catLines.length === 1 && !billedMove) {
           const line = catLines[0]!;
           if (line.accountId !== setCategoryAccountId) {
+            // The line first, then the balances, both accounts in one call
+            // (id order): the lock order of every posting (U-291 race fix).
+            await tx.update(journalLines)
+              .set({ accountId: setCategoryAccountId })
+              .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, line.id)));
             if (txn.status === 'posted') {
               // Move the denormalised balance: reverse the line off its old
               // account, apply it to the new one. Amounts are unchanged so the
               // trial balance still balances; only the per-account split moves.
-              await updateAccountBalances(tx, tenantId, [{ accountId: line.accountId, debit: line.credit, credit: line.debit }]);
-              await updateAccountBalances(tx, tenantId, [{ accountId: setCategoryAccountId, debit: line.debit, credit: line.credit }]);
+              await updateAccountBalances(tx, tenantId, [
+                { accountId: line.accountId, debit: line.credit, credit: line.debit },
+                { accountId: setCategoryAccountId, debit: line.debit, credit: line.credit },
+              ]);
             }
-            await tx.update(journalLines)
-              .set({ accountId: setCategoryAccountId })
-              .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.id, line.id)));
           }
           changed = true;
         } else if (setPayeeContactId === undefined && setTagId === undefined) {
@@ -2894,6 +2904,13 @@ export async function bulkUpdateTransactions(
           if ((cleared.rows as unknown[]).length > 0) {
             if (soleChange) { skipped.push({ id: txnId, reason: 'reconciled' }); continue; }
           } else {
+            // The lines first, then the balances in one call (U-291 race fix).
+            await tx.update(journalLines)
+              .set({ accountId: moveToAccountId })
+              .where(and(
+                eq(journalLines.tenantId, tenantId),
+                inArray(journalLines.id, moveLines.map((l) => l.id)),
+              ));
             if (txn.status === 'posted') {
               // Shift the denormalised balances: reverse the lines off the from
               // account, apply them to the to account. Amounts are unchanged so
@@ -2901,15 +2918,11 @@ export async function bulkUpdateTransactions(
               let d = new Decimal('0');
               let c = new Decimal('0');
               for (const l of moveLines) { d = d.plus(l.debit || '0'); c = c.plus(l.credit || '0'); }
-              await updateAccountBalances(tx, tenantId, [{ accountId: moveFromAccountId, debit: c.toFixed(4), credit: d.toFixed(4) }]);
-              await updateAccountBalances(tx, tenantId, [{ accountId: moveToAccountId, debit: d.toFixed(4), credit: c.toFixed(4) }]);
+              await updateAccountBalances(tx, tenantId, [
+                { accountId: moveFromAccountId, debit: c.toFixed(4), credit: d.toFixed(4) },
+                { accountId: moveToAccountId, debit: d.toFixed(4), credit: c.toFixed(4) },
+              ]);
             }
-            await tx.update(journalLines)
-              .set({ accountId: moveToAccountId })
-              .where(and(
-                eq(journalLines.tenantId, tenantId),
-                inArray(journalLines.id, moveLines.map((l) => l.id)),
-              ));
             changed = true;
           }
         }
