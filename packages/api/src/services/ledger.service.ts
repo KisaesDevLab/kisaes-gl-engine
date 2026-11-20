@@ -1109,29 +1109,9 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
   }
 }
 
-/**
- * Optimistic concurrency on a locked row (U-84, ap-edit-v1): `expected` is
- * the record's updatedAt as the caller last read it (ISO 8601). Compared to
- * the millisecond, as JSON carries it, after the row is read FOR UPDATE, so
- * two writers can't both pass. Mismatch: 409 STALE, details.updatedAt = the
- * stored value; nothing changes. Omitted: no check (old behaviour).
- */
-export function assertNotStale(
-  row: { updatedAt: Date | null },
-  expected: string | undefined,
-  what = 'This transaction',
-): void {
-  if (expected === undefined) return;
-  const stored = row.updatedAt ? row.updatedAt.getTime() : null;
-  const wanted = Date.parse(expected);
-  if (stored === null || Number.isNaN(wanted) || stored !== wanted) {
-    throw AppError.conflict(
-      `${what} was changed by someone else since you opened it. Reload it and make your change again.`,
-      'STALE',
-      { updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null },
-    );
-  }
-}
+// assertNotStale moved to utils/record-stamps.ts (U-291); re-exported for existing callers.
+import { assertNotStale } from '../utils/record-stamps.js';
+export { assertNotStale };
 
 /**
  * An invoice may be voided only while no live payment or credit is applied

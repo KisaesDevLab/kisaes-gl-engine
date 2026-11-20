@@ -43,6 +43,7 @@
  * INVENTORY_DOCUMENT_UNSUPPORTED.
  */
 
+import { quietStamps } from '../utils/record-stamps.js';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { DbOrTx, Tx } from '../db/index.js';
 import { inventoryMovements, items, journalLines, transactions } from '../db/schema/index.js';
@@ -570,8 +571,8 @@ export async function apply(tx: Tx, tenantId: string, txnId: string, opts: Apply
           tenantId, companyId, itemId, transactionId: txnId, txnCreatedAt: createdAt, ...fields, fallbackCost: part.purchaseCost ?? null,
         }).returning();
       }
-      await tx.update(journalLines).set({ inventoryMovementId: current!.id })
-        .where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.id, spec.lineIds)));
+      await quietStamps(tx, () => tx.update(journalLines).set({ inventoryMovementId: current!.id })
+        .where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.id, spec.lineIds))));
       if (unchanged) {
         // S4: nothing moved for this movement; its derived lines come back from the stored row.
         reconcile.set(current!.id, current!);
@@ -1032,6 +1033,8 @@ async function reconcileLines(tx: Tx, tenantId: string, movements: readonly Move
       for (const l of want) add(l.accountId, d(l.debit).minus(d(l.credit)));
     }
   }
+  // Derived costing lines are maintained by the engine: they move no record stamp (U-291).
+  await quietStamps(tx, async () => {
   for (const ids of chunks(toDelete)) {
     await tx.delete(journalLines).where(and(eq(journalLines.tenantId, tenantId), inArray(journalLines.id, ids)));
   }
@@ -1043,6 +1046,7 @@ async function reconcileLines(tx: Tx, tenantId: string, movements: readonly Move
         ${pgArray(rows.map((r) => r.credit))}::numeric[]) AS v(id, debit, credit)
       WHERE jl.id = v.id AND jl.tenant_id = ${tenantId}`);
   }
+  });
 }
 
 /**
