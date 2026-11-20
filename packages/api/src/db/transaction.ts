@@ -11,7 +11,10 @@
  * everything it does is on `tx` (rows, audit rows, idempotency claim). The
  * helper also undoes the request-scoped state an attempt leaves behind
  * outside the database: the Idempotency-Key claim (re-claimed on the new
- * tx) and the inventory warnings noted for the reply. Callers opt in only
+ * tx), the inventory warnings noted for the reply, and the request's expected
+ * record stamps (U-291 race fix: an attempt compares each once; the next
+ * attempt compares them again under its own row lock, else a save committed
+ * in between would be overwritten). Callers opt in only
  * where the callback has no other side effect outside the transaction (no
  * files, queues, mail or HTTP before the commit).
  *
@@ -30,6 +33,7 @@ import { db, type Tx } from './index.js';
 import { log } from '../utils/logger.js';
 import { idempotencyFailed, releaseRolledBackClaim } from '../services/idempotency-context.js';
 import { inventoryWarningsMark, rollbackInventoryWarnings } from '../services/inventory-warnings-context.js';
+import { expectedStampsMark, rearmExpectedStamps } from '../services/stale-context.js';
 
 /** Postgres error codes after which the whole transaction may simply run again. */
 const RETRY_CODES = new Set(['40P01', '40001']);
@@ -70,6 +74,7 @@ export async function transactionWithRetry<T>(
   for (let attempt = 1; ; attempt++) {
     let attemptTx: Tx | undefined;
     const mark = inventoryWarningsMark();
+    const stamps = expectedStampsMark();
     try {
       return await open((tx) => {
         attemptTx = tx;
@@ -79,6 +84,7 @@ export async function transactionWithRetry<T>(
       if (attempt >= attempts || !isTransactionRetryable(err) || idempotencyFailed()) throw err;
       if (attemptTx) releaseRolledBackClaim(attemptTx);
       rollbackInventoryWarnings(mark);
+      rearmExpectedStamps(stamps);
       log.warn({
         component: 'db', event: 'transaction_retry', code: sqlState(err), attempt,
         ...(opts.label ? { label: opts.label } : {}),

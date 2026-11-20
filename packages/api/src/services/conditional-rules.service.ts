@@ -15,6 +15,7 @@ import type {
 import { db } from '../db/index.js';
 import { conditionalRules, conditionalRuleAudit } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { takeExpectedStamp, staleCondition, staleConflictOf } from './stale-context.js';
 
 // CRUD service for conditional_rules. The engine evaluator
 // (conditional-rules-engine.service.ts) is a pure separate
@@ -339,11 +340,14 @@ export async function update(
   if (input.active !== undefined) set.active = input.active;
   if (input.autoAccept !== undefined) set.autoAccept = input.autoAccept;
 
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('conditional_rules', id);
   const [row] = await db
     .update(conditionalRules)
     .set(set)
-    .where(eq(conditionalRules.id, before.id))
+    .where(and(eq(conditionalRules.id, before.id), staleCondition(conditionalRules.updatedAt, expected)))
     .returning();
+  if (!row && expected !== undefined) throw await staleConflictOf('conditional_rules', before.id, 'This rule');
   if (!row) throw AppError.notFound('Conditional rule not found');
   return mapRow(row);
 }
@@ -356,7 +360,12 @@ export async function remove(
   // Resolve scope-aware visibility first so the caller can't
   // delete rules outside their reach.
   const target = await getById(tenantId, id, { firmId: opts.firmId });
-  await db.delete(conditionalRules).where(eq(conditionalRules.id, target.id));
+  // The route's stamp (U-291), compared in the DELETE itself (race fix).
+  const expected = takeExpectedStamp('conditional_rules', id);
+  const gone = await db.delete(conditionalRules)
+    .where(and(eq(conditionalRules.id, target.id), staleCondition(conditionalRules.updatedAt, expected)))
+    .returning({ id: conditionalRules.id });
+  if (gone.length === 0 && expected !== undefined) throw await staleConflictOf('conditional_rules', target.id, 'This rule');
 }
 
 // Re-sequence priorities in 100-step increments so a future

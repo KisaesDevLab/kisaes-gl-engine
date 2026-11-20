@@ -15,6 +15,7 @@ import { db, type Tx } from './index.js';
 import { auditLog, idempotencyKeys, journalLines, transactions } from './schema/index.js';
 import { transactionWithRetry, isTransactionRetryable } from './transaction.js';
 import { runWithIdemContext, type IdemCtx } from '../services/idempotency-context.js';
+import { runWithExpectedStamp, checkExpectedStamp } from '../services/stale-context.js';
 import { claimIdempotency, recordIdempotentEntity } from '../services/idempotency.service.js';
 import * as ledger from '../services/ledger.service.js';
 import { makeCompany, cleanTenant, type Co } from '../services/templates/templates.test-helpers.js';
@@ -32,9 +33,11 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trg} ON audit_log`));
-  await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${fnName}()`));
-  await db.execute(sql.raw(`DROP SEQUENCE IF EXISTS ${seq}`));
+  for (const s of ['', '_stamp']) {
+    await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trg}${s} ON audit_log`));
+    await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${fnName}${s}()`));
+    await db.execute(sql.raw(`DROP SEQUENCE IF EXISTS ${seq}${s}`));
+  }
   await db.delete(idempotencyKeys).where(eq(idempotencyKeys.tenantId, c.tenantId));
   while (tenantIds.length) await cleanTenant(tenantIds.pop()!);
 });
@@ -160,5 +163,83 @@ describe('transactionWithRetry (U-197)', () => {
       .where(and(eq(journalLines.tenantId, c.tenantId), eq(journalLines.transactionId, posted.id)));
     expect(lines).toHaveLength(4);
     expect(lines.filter((l) => l.isVoidReversal)).toHaveLength(2);
+  });
+
+  // U-291 race fix (ClientLedger P33 soak): an attempt compares the request's
+  // expected stamp once; the retry must compare it again, or a save that
+  // committed between the attempts is overwritten (a lost update).
+  it('a retried attempt compares the expected stamp again', async () => {
+    const read = new Date('2026-03-02T10:00:00.000Z');
+    const moved = new Date('2026-03-02T10:00:00.007Z');
+    let calls = 0;
+    await expect(runWithExpectedStamp('transactions', c.bank, read.toISOString(), () => transactionWithRetry(async () => {
+      calls++;
+      // Attempt 1 locks the row as read; before attempt 2 another save moved it.
+      checkExpectedStamp('transactions', c.bank, { updatedAt: calls === 1 ? read : moved });
+      return 'saved';
+    }, { open: failingOpen(1, pgError('40P01')) }))).rejects.toMatchObject({ code: 'STALE' });
+    expect(calls).toBe(2);
+    // Unchanged in between: the retry compares again and saves.
+    calls = 0;
+    const ok = await runWithExpectedStamp('transactions', c.bank, read.toISOString(), () => transactionWithRetry(async () => {
+      calls++;
+      checkExpectedStamp('transactions', c.bank, { updatedAt: read });
+      // A later lock of the same record in the same attempt does not compare again.
+      checkExpectedStamp('transactions', c.bank, { updatedAt: moved });
+      return 'saved';
+    }, { open: failingOpen(1, pgError('40P01')) }));
+    expect(ok).toBe('saved');
+    expect(calls).toBe(2);
+  });
+
+  it('an edit whose first attempt deadlocks while another save commits is 409 STALE; the other save stays', async () => {
+    const lines = (amount: string) => [
+      { accountId: c.bank, debit: amount, credit: '0' },
+      { accountId: c.income, debit: '0', credit: amount },
+    ];
+    const posted = await ledger.postTransaction(c.tenantId, {
+      txnType: 'journal_entry', txnDate: '2026-03-02', memo: 'U-291 race', lines: lines('5.0000'),
+    } as Parameters<typeof ledger.postTransaction>[1], c.userId, c.companyId);
+    const [row] = await db.select({ updatedAt: transactions.updatedAt }).from(transactions).where(eq(transactions.id, posted.id));
+    const read = row!.updatedAt!.toISOString();
+
+    // The edit's first 'update' audit row fails with a deadlock (after its
+    // stamp check passed and its lines and balances were written).
+    await db.execute(sql.raw(`CREATE SEQUENCE ${seq}_stamp`));
+    await db.execute(sql.raw(`
+      CREATE FUNCTION ${fnName}_stamp() RETURNS trigger LANGUAGE plpgsql AS $f$
+      BEGIN
+        IF nextval('${seq}_stamp') = 1 THEN
+          RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01';
+        END IF;
+        RETURN NEW;
+      END $f$`));
+    await db.execute(sql.raw(`
+      CREATE TRIGGER ${trg}_stamp BEFORE INSERT ON audit_log FOR EACH ROW
+      WHEN (NEW.entity_id = '${posted.id}' AND NEW.action = 'update')
+      EXECUTE FUNCTION ${fnName}_stamp()`));
+
+    let attempt = 0;
+    const open = async <T>(fn: (tx: Tx) => Promise<T>): Promise<T> => {
+      attempt++;
+      if (attempt === 2) {
+        // Another workstation's save of the same entry commits in between.
+        await db.update(transactions).set({ memo: 'saved by B', updatedAt: sql`${transactions.updatedAt} + interval '1 second'` })
+          .where(eq(transactions.id, posted.id));
+      }
+      return db.transaction(fn);
+    };
+    await expect(runWithExpectedStamp('transactions', posted.id, read, () => transactionWithRetry(
+      (tx) => ledger.updateTransaction(c.tenantId, posted.id, {
+        txnType: 'journal_entry', txnDate: '2026-03-02', memo: 'saved by A', lines: lines('6.0000'),
+      } as Parameters<typeof ledger.updateTransaction>[2], c.userId, c.companyId, tx),
+      { open },
+    ))).rejects.toMatchObject({ code: 'STALE' });
+    expect(attempt).toBe(2);
+    const [after] = await db.select().from(transactions).where(eq(transactions.id, posted.id));
+    expect(after!.memo).toBe('saved by B');
+    const kept = await db.select().from(journalLines)
+      .where(and(eq(journalLines.tenantId, c.tenantId), eq(journalLines.transactionId, posted.id)));
+    expect(kept.map((l) => l.debit).sort()).toEqual(['0.0000', '5.0000']);
   });
 });

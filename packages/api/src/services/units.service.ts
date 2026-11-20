@@ -32,6 +32,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { Decimal, type Dec } from '../utils/inventory-walk.js';
 import { assertNotStale } from './ledger.service.js';
+import { checkExpectedStamp } from './stale-context.js';
 import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.js';
 
 /** round4 half away from zero (Q-P24v). */
@@ -209,6 +210,8 @@ export async function deleteUnitSet(tenantId: string, id: string, userId?: strin
   return db.transaction(async (tx) => {
     const co = await companyOf(tx, tenantId, companyId);
     const set = await loadSet(tx, tenantId, id, co, true);
+    // The route's stamp (U-291), compared under this row lock (race fix).
+    checkExpectedStamp('unit_sets', id, set, 'This unit set');
     const units = await tx.select({ id: unitSetUnits.id }).from(unitSetUnits)
       .where(and(eq(unitSetUnits.tenantId, tenantId), eq(unitSetUnits.unitSetId, id))).orderBy(asc(unitSetUnits.id)).for('update');
     const named = await tx.select({ id: items.id }).from(items).where(and(eq(items.tenantId, tenantId), eq(items.unitSetId, id))).limit(1);

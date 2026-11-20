@@ -15,6 +15,7 @@ import { claimIdempotency, recordIdempotentEntity } from './idempotency.service.
 import { toCsvRow } from './export.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { assertNotStale } from './ledger.service.js';
+import { checkExpectedStamp } from './stale-context.js';
 
 export async function list(tenantId: string, filters?: ItemFilters, companyId?: string | null) {
   const conditions = [eq(items.tenantId, tenantId)];
@@ -210,6 +211,8 @@ export async function update(tenantId: string, id: string, input: UpdateItemInpu
     const [existing] = await tx.select().from(items).where(and(eq(items.tenantId, tenantId), eq(items.id, id))).for('update').limit(1);
     if (!existing) throw AppError.notFound('Item not found');
     assertNotStale(existing, expectedUpdatedAt, 'This item');
+    // A route's stamp (DELETE /items/:id, U-291), compared under this row lock (race fix).
+    checkExpectedStamp('items', id, existing, 'This item');
     const set: Record<string, unknown> = { ...changes };
     const nextType = changes.itemType ?? existing.itemType;
     const kindMoves = changes.itemType !== undefined && changes.itemType !== existing.itemType

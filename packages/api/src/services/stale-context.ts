@@ -22,8 +22,9 @@ import { sql, type AnyColumn, type SQL } from 'drizzle-orm';
 import { AppError } from '../utils/errors.js';
 import { attachOpenApiMeta } from '../middleware/describe.js';
 import { assertNotStale } from '../utils/record-stamps.js';
+import type { DbOrTx } from '../db/index.js';
 
-interface ExpectedStamp {
+export interface ExpectedStamp {
   table: string;
   id: string;
   expected: string;
@@ -96,6 +97,22 @@ export function checkExpectedStamp(table: string, id: string, row: { updatedAt: 
 }
 
 /**
+ * The request's expected stamps not yet compared (U-291 race fix). A database
+ * transaction that runs again after a deadlock (transactionWithRetry) re-arms
+ * the ones its rolled-back attempt compared, so the new attempt compares them
+ * again under its own row lock: the attempt that compared was rolled back and
+ * another save may have committed since.
+ */
+export function expectedStampsMark(): ReadonlySet<ExpectedStamp> {
+  return new Set((storage.getStore() ?? []).filter((e) => !e.consumed));
+}
+
+/** Re-arms the stamps of `mark` compared since it was taken (see expectedStampsMark). */
+export function rearmExpectedStamps(mark: ReadonlySet<ExpectedStamp>): void {
+  for (const e of mark) e.consumed = false;
+}
+
+/**
  * Takes the request's expected stamp for (table, id), once, for code that
  * compares in its own statement (see staleCondition). Undefined: no check.
  */
@@ -114,6 +131,41 @@ export function takeExpectedStamp(table: string, id: string): string | undefined
 export function staleCondition(column: AnyColumn, expected: string | undefined): SQL | undefined {
   if (expected === undefined) return undefined;
   return sql`date_trunc('milliseconds', ${column}) = ${new Date(expected).toISOString()}::timestamptz`;
+}
+
+/**
+ * Compares the request's expected stamp for (table, id) in the write's own
+ * database transaction (U-291 race fix): the row is locked first (FOR NO KEY
+ * UPDATE, or FOR UPDATE before a delete), so of two saves made from one read
+ * the second waits for the first to commit and then sees its stamp. For
+ * routes whose middleware compared before the handler (precheck), this closes
+ * the window between that read and the write. No expected stamp: no lock,
+ * no check. A missing row is left to the caller (404).
+ */
+export async function lockExpectedStamp(
+  tx: DbOrTx,
+  table: string, id: string, opts: { tenantId?: string; what?: string; forDelete?: boolean } = {},
+): Promise<void> {
+  if (!storage.getStore()?.some((e) => e.table === table && e.id === id && !e.consumed)) return;
+  const scope = opts.tenantId ? sql` AND tenant_id = ${opts.tenantId}` : sql``;
+  const mode = opts.forDelete ? sql`FOR UPDATE` : sql`FOR NO KEY UPDATE`;
+  const r = await tx.execute(sql`SELECT updated_at FROM ${sql.identifier(table)} WHERE id = ${id}${scope} ${mode}`);
+  const row = r.rows[0] as { updated_at: Date | string | null } | undefined;
+  if (!row) return;
+  checkExpectedStamp(table, id, { updatedAt: row.updated_at === null ? null : new Date(row.updated_at) }, opts.what);
+}
+
+/**
+ * The 409 STALE after a compare-and-set (staleCondition) that matched nothing
+ * while a stamp was expected, with the stored stamp (null when the record is
+ * gone).
+ */
+export async function staleConflictOf(table: string, id: string, what = 'This record', tenantId?: string): Promise<AppError> {
+  const { db } = await import('../db/index.js');
+  const scope = tenantId ? sql` AND tenant_id = ${tenantId}` : sql``;
+  const r = await db.execute(sql`SELECT updated_at FROM ${sql.identifier(table)} WHERE id = ${id}${scope}`);
+  const row = r.rows[0] as { updated_at: Date | string | null } | undefined;
+  return staleConflict(row?.updated_at ? new Date(row.updated_at) : null, what);
 }
 
 /** The 409 STALE for a record whose stamp no longer matched. */

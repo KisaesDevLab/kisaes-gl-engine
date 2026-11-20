@@ -15,6 +15,7 @@ import { jeTemplates, jeTemplateLines } from '../db/schema/index.js';
 import { auditLog } from '../middleware/audit.js';
 import { assertTagsInTenant } from './tags.service.js';
 import { AppError } from '../utils/errors.js';
+import { lockExpectedStamp, takeExpectedStamp, staleCondition, staleConflictOf } from './stale-context.js';
 import { assertNoHiddenLines, hiddenAccountIds, isHiddenSql } from './visibility.js';
 
 export async function getTemplate(tenantId: string, id: string) {
@@ -61,8 +62,12 @@ export async function updateTemplate(tenantId: string, id: string, input: Update
   if (input.memo !== undefined) updates['memo'] = input.memo;
   if (input.defaultTagId !== undefined) updates['defaultTagId'] = input.defaultTagId;
   if (input.isActive !== undefined) updates['isActive'] = input.isActive;
-  await db.update(jeTemplates).set(updates)
-    .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.id, id)));
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('je_templates', id);
+  const done = await db.update(jeTemplates).set(updates)
+    .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.id, id), staleCondition(jeTemplates.updatedAt, expected)))
+    .returning({ id: jeTemplates.id });
+  if (done.length === 0 && expected !== undefined) throw await staleConflictOf('je_templates', id, 'This template', tenantId);
   await auditLog(tenantId, 'update', 'je_template', id, before, updates, userId);
   return getTemplate(tenantId, id);
 }
@@ -91,8 +96,12 @@ export async function deleteTemplate(tenantId: string, id: string, userId?: stri
   // Soft-deactivate, matching daily-sales — keeps the audit trail and
   // any saved references intact.
   await getTemplate(tenantId, id); // tenant-scope + existence check
-  await db.update(jeTemplates).set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.id, id)));
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('je_templates', id);
+  const done = await db.update(jeTemplates).set({ isActive: false, updatedAt: new Date() })
+    .where(and(eq(jeTemplates.tenantId, tenantId), eq(jeTemplates.id, id), staleCondition(jeTemplates.updatedAt, expected)))
+    .returning({ id: jeTemplates.id });
+  if (done.length === 0 && expected !== undefined) throw await staleConflictOf('je_templates', id, 'This template', tenantId);
   await auditLog(tenantId, 'delete', 'je_template', id, null, null, userId);
 }
 
@@ -103,30 +112,36 @@ export async function replaceTemplateLines(tenantId: string, templateId: string,
   await getTemplate(tenantId, templateId); // tenant-scope check
   await assertNoHiddenLines(lines.map((l) => l.accountId));
   await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
-  const existing = await db.select({ id: jeTemplateLines.id }).from(jeTemplateLines)
-    .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.templateId, templateId)));
-  const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
+  // One transaction, the template row locked first: the route's stamp (U-291)
+  // is compared under that lock, so two saves from one read can't both write
+  // their lines (race fix).
+  await db.transaction(async (tx) => {
+    await lockExpectedStamp(tx, 'je_templates', templateId, { tenantId, what: 'This template' });
+    const existing = await tx.select({ id: jeTemplateLines.id }).from(jeTemplateLines)
+      .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.templateId, templateId)));
+    const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const l = lines[i]!;
-    const row = {
-      tenantId, templateId, label: l.label,
-      accountId: l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
-      isRequired: l.isRequired ?? false, isActive: l.isActive ?? true,
-    };
-    if (l.id) {
-      await db.update(jeTemplateLines).set(row)
-        .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.id, l.id)));
-    } else {
-      await db.insert(jeTemplateLines).values(row);
+    for (let i = 0; i < lines.length; i += 1) {
+      const l = lines[i]!;
+      const row = {
+        tenantId, templateId, label: l.label,
+        accountId: l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
+        isRequired: l.isRequired ?? false, isActive: l.isActive ?? true,
+      };
+      if (l.id) {
+        await tx.update(jeTemplateLines).set(row)
+          .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.id, l.id)));
+      } else {
+        await tx.insert(jeTemplateLines).values(row);
+      }
     }
-  }
-  for (const e of existing) {
-    if (!incomingIds.has(e.id)) {
-      await db.delete(jeTemplateLines)
-        .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.id, e.id)));
+    for (const e of existing) {
+      if (!incomingIds.has(e.id)) {
+        await tx.delete(jeTemplateLines)
+          .where(and(eq(jeTemplateLines.tenantId, tenantId), eq(jeTemplateLines.id, e.id)));
+      }
     }
-  }
+  });
   await auditLog(tenantId, 'update', 'je_template_lines', templateId, null, { count: lines.length }, userId);
   return getTemplate(tenantId, templateId);
 }
