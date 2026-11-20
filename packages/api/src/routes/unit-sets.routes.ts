@@ -6,6 +6,7 @@
 // and related units with fixed factors. The items resource (units belong to
 // items). Idempotency-Key on create, as items.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createUnitSetSchema, updateUnitSetSchema } from '@kis-books/shared';
@@ -75,7 +76,7 @@ unitSetsRouter.put('/:id', validate(updateUnitSetSchema), describe({
   res.json({ unitSet: await units.updateUnitSet(req.tenantId, idOr404(req.params['id']), req.body, req.userId, req.companyId) });
 });
 
-unitSetsRouter.delete('/:id', describe({
+unitSetsRouter.delete('/:id', expectStamp('unit_sets', 'id', { precheck: true }), describe({
   summary: 'Delete a unit set',
   description: 'Response {id, deleted: true}. Only while no item names the set and no transaction line names its units; otherwise 409 '
     + 'UNIT_IN_USE (make it inactive with PUT isActive false instead). Of another company: 404.',

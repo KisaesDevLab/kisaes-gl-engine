@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { expectStamp } from '../services/stale-context.js';
+import { expectStamp, expectItemStamps } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createContactSchema, updateContactSchema, contactFiltersSchema, mergeContactsSchema, contactsImportSchema, bulkUpdateContactTypeSchema } from '@kis-books/shared';
@@ -74,7 +74,7 @@ const mergeContactsBodyDoc = mergeContactsSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); needed when a moved transaction is in a closed period; never stored or echoed'),
 });
 
-contactsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, validate(mergeContactsSchema), describe({
+contactsRouter.post('/merge', expectItemStamps('contacts', 'refuse'), closingPasswordLimiter, lockContextMiddleware, validate(mergeContactsSchema), describe({
   summary: 'Merge a duplicate contact into another (closing date enforced; merge-closing-date-v1)',
   description: 'report-refs-v1: saved reports (memorized, builder and standard) of every company that can see the kept contact now name it instead of the duplicate (version + 1), in the same transaction; the merge audit row counts them (after.moved.reportDefinitions, reportDefinitionsSkipped).',
   body: mergeContactsBodyDoc,
@@ -85,7 +85,7 @@ contactsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, val
 
 // Bulk-change the customer/vendor/both type on the selected contacts. Placed
 // before /:id so the literal path wins over the param route.
-contactsRouter.post('/bulk-type', validate(bulkUpdateContactTypeSchema), async (req, res) => {
+contactsRouter.post('/bulk-type', expectItemStamps('contacts', 'drop', (req, s) => { req.body.ids = (req.body.ids ?? []).filter((id: string) => !s.has(id)); }), validate(bulkUpdateContactTypeSchema), async (req, res) => {
   const result = await contactsService.bulkUpdateType(req.tenantId, req.body.ids, req.body.contactType, req.userId);
   res.json(result);
 });

@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { expectStamp } from '../services/stale-context.js';
+import { expectStamp, expectItemStamps } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createTagSchema, updateTagSchema, mergeTagsSchema, createTagGroupSchema, updateTagGroupSchema, transactionTagsSchema, bulkTagSchema, createSavedFilterSchema } from '@kis-books/shared';
@@ -139,7 +139,7 @@ const mergeTagsBodyDoc = mergeTagsSchema.extend({
   closingPassword: z.string().optional().describe('closing-date password (closing-password-v1); needed when a re-tagged transaction is in a closed period; never stored or echoed'),
 });
 
-tagsRouter.post('/merge', closingPasswordLimiter, lockContextMiddleware, validate(mergeTagsSchema), describe({
+tagsRouter.post('/merge', expectItemStamps('tags', 'refuse'), closingPasswordLimiter, lockContextMiddleware, validate(mergeTagsSchema), describe({
   summary: 'Merge a tag into another and delete it (closing date enforced; merge-closing-date-v1)',
   description: 'report-refs-v1: saved reports (memorized, builder and standard) of every company that can see the kept tag now name it instead of the merged one (version + 1), in the same transaction; the merge audit row counts them (after.moved.reportDefinitions, reportDefinitionsSkipped).',
   body: mergeTagsBodyDoc,

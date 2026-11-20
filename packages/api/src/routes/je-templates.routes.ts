@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import {
   createJeTemplateSchema,
@@ -35,7 +36,7 @@ jeTemplatesRouter.get('/:id', async (req, res) => {
   res.json({ template: await service.getTemplate(req.tenantId, req.params['id']!) });
 });
 
-jeTemplatesRouter.put('/:id', validate(updateJeTemplateSchema), async (req, res) => {
+jeTemplatesRouter.put('/:id', expectStamp('je_templates', 'id', { precheck: true }), validate(updateJeTemplateSchema), async (req, res) => {
   res.json({ template: await service.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId) });
 });
 
@@ -44,12 +45,12 @@ jeTemplatesRouter.post('/:id/duplicate', validate(duplicateJeTemplateSchema), as
   res.status(201).json({ template });
 });
 
-jeTemplatesRouter.delete('/:id', async (req, res) => {
+jeTemplatesRouter.delete('/:id', expectStamp('je_templates', 'id', { precheck: true }), async (req, res) => {
   await service.deleteTemplate(req.tenantId, req.params['id']!, req.userId);
   res.json({ deleted: true });
 });
 
-jeTemplatesRouter.put('/:id/lines', validate(replaceJeTemplateLinesSchema), async (req, res) => {
+jeTemplatesRouter.put('/:id/lines', expectStamp('je_templates', 'id', { precheck: true }), validate(replaceJeTemplateLinesSchema), async (req, res) => {
   const template = await service.replaceTemplateLines(req.tenantId, req.params['id']!, req.body.lines, req.userId);
   res.json({ template });
 });

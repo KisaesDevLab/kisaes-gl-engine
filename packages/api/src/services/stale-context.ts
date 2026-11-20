@@ -55,14 +55,21 @@ export function takeExpectedUpdatedAt(req: Request): string | undefined {
  * Middleware for a stale-checked route on `table` whose record id is the
  * path parameter `param`. Leaves the request unchanged when no stamp came.
  */
-export function expectStamp(table: string, param = 'id') {
-  return attachOpenApiMeta(function clExpectStamp(req: Request, _res: Response, next: NextFunction): void {
+export function expectStamp(
+  table: string,
+  param: string | ((req: Request) => string | undefined) = 'id',
+  opts: { precheck?: boolean } = {},
+) {
+  return attachOpenApiMeta(async function clExpectStamp(req: Request, _res: Response, next: NextFunction): Promise<void> {
     const expected = takeExpectedUpdatedAt(req);
-    const id = req.params[param];
+    const id = typeof param === 'function' ? param(req) : req.params[param];
     if (expected === undefined || !id) {
       next();
       return;
     }
+    // precheck: compare now, before the handler (services that also compare
+    // in their own write, via takeExpectedStamp, close the remaining window).
+    if (opts.precheck) await assertCurrentStamp(table, id, expected, 'This record', req.tenantId);
     const list = [...(storage.getStore() ?? []), { table, id, expected, consumed: false }];
     storage.run(list, next);
   }, {
@@ -124,11 +131,71 @@ export function staleConflict(updatedAt: Date | null | undefined, what = 'This r
  * slipped in between still makes it match nothing (the caller maps an empty
  * result to staleConflict). A missing row is left to the caller (404).
  */
-export async function assertCurrentStamp(table: string, id: string, expected: string, what = 'This record'): Promise<void> {
+export async function assertCurrentStamp(
+  table: string, id: string, expected: string, what = 'This record', tenantId?: string,
+): Promise<void> {
   const { db } = await import('../db/index.js');
-  const r = await db.execute(sql`SELECT updated_at FROM ${sql.identifier(table)} WHERE id = ${id}`);
+  const scope = tenantId ? sql` AND tenant_id = ${tenantId}` : sql``;
+  const r = await db.execute(sql`SELECT updated_at FROM ${sql.identifier(table)} WHERE id = ${id}${scope}`);
   const row = r.rows[0] as { updated_at: Date | string | null } | undefined;
   if (!row) return;
   const stored = row.updated_at === null ? null : new Date(row.updated_at);
   assertNotStale({ updatedAt: stored }, expected, what);
 }
+
+/**
+ * Per-item stamps for a bulk write (U-291, stale-all-v1): body `stamps`
+ * {recordId: updatedAt as read}, taken out of the body. Every listed record
+ * of `table` whose stored stamp differs is stale.
+ * - `drop`: the stale ids are removed from the request (`drop(req, ids)`)
+ *   and the JSON reply gains `stale: [{id, updatedAt}]`; the rest goes on.
+ * - `refuse` (merges): any stale record refuses the whole call, 409 STALE
+ *   {details.stale}.
+ * No `stamps`: no check, as before.
+ */
+export function expectItemStamps(
+  table: string,
+  mode: 'drop' | 'refuse',
+  drop?: (req: Request, staleIds: ReadonlySet<string>) => void,
+) {
+  return attachOpenApiMeta(async function clExpectItemStamps(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const body = req.body as Record<string, unknown> | undefined;
+    const raw = body && typeof body === 'object' ? body['stamps'] : undefined;
+    if (body && typeof body === 'object') delete body['stamps'];
+    if (raw === undefined || raw === null) {
+      next();
+      return;
+    }
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+      throw AppError.badRequest('stamps must map record ids to their updatedAt', 'VALIDATION_ERROR');
+    }
+    const entries = Object.entries(raw as Record<string, unknown>);
+    if (entries.length > 1000 || entries.some(([k, v]) => !UUID.test(k) || typeof v !== 'string' || !ISO.test(v))) {
+      throw AppError.badRequest('stamps must map record ids to their updatedAt', 'VALIDATION_ERROR');
+    }
+    const { db } = await import('../db/index.js');
+    const ids = entries.map(([k]) => k);
+    const r = await db.execute(sql`SELECT id, updated_at FROM ${sql.identifier(table)}
+      WHERE tenant_id = ${req.tenantId} AND id = ANY(${`{${ids.join(',')}}`}::uuid[])`);
+    const stored = new Map((r.rows as Array<{ id: string; updated_at: Date | string | null }>)
+      .map((x) => [x.id, x.updated_at === null ? null : new Date(x.updated_at)]));
+    const stale: Array<{ id: string; updatedAt: string | null }> = [];
+    for (const [id, v] of entries) {
+      if (!stored.has(id)) continue;
+      const s = stored.get(id) ?? null;
+      if (s === null || s.getTime() !== Date.parse(v as string)) stale.push({ id, updatedAt: s ? s.toISOString() : null });
+    }
+    if (stale.length > 0 && mode === 'refuse') {
+      throw AppError.conflict('A record was changed by someone else since you opened it. Reload and try again.', 'STALE', { stale });
+    }
+    if (stale.length > 0 && drop) {
+      drop(req, new Set(stale.map((s) => s.id)));
+      const json = res.json.bind(res);
+      res.json = ((payload: unknown) => json(res.statusCode < 400 && payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? { ...(payload as Record<string, unknown>), stale } : payload)) as typeof res.json;
+    }
+    next();
+  }, { extensions: { 'x-stamp': 'stamps' } });
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -33,6 +33,24 @@ export const STAMP_HEADERS: Readonly<Record<string, readonly string[]>> = {
   items: [],
   tags: ['usage_count'],
   tag_groups: [],
+  // 0287 (U-291b)
+  companies: ['invoice_next_number', 'remote_backup_last_at', 'remote_backup_last_status', 'remote_backup_last_size'],
+  recurring_schedules: ['next_occurrence', 'last_posted_at', 'remaining_count'],
+  invoice_templates: [],
+  permission_templates: [],
+  conditional_rules: [],
+  document_drafts: [],
+  vendor_layout_templates: ['last_used_at', 'samples'],
+  tenants: [],
+  sales_tax_agencies: [],
+  sales_tax_codes: [],
+  sales_tax_items: [],
+  contact_tax_exemptions: [],
+  daily_sales_entries: [],
+  daily_sales_templates: [],
+  je_templates: [],
+  unit_sets: [],
+  price_levels: [],
 };
 
 export const STAMP_CHILDREN: Readonly<Record<string, ReadonlyArray<readonly [string, string]>>> = {
@@ -42,6 +60,12 @@ export const STAMP_CHILDREN: Readonly<Record<string, ReadonlyArray<readonly [str
   bill_payment_applications: [['transactions', 'payment_id'], ['transactions', 'bill_id']],
   vendor_credit_applications: [['transactions', 'payment_id'], ['transactions', 'credit_id'], ['transactions', 'bill_id']],
   deposit_lines: [['transactions', 'deposit_id'], ['transactions', 'source_transaction_id']],
+  // 0287 (U-291b)
+  daily_sales_entry_values: [['daily_sales_entries', 'entry_id']],
+  daily_sales_template_lines: [['daily_sales_templates', 'template_id']],
+  je_template_lines: [['je_templates', 'template_id']],
+  unit_set_units: [['unit_sets', 'unit_set_id']],
+  price_level_items: [['price_levels', 'price_level_id']],
   // attachments: the link (attachable_type, attachable_id) only; contacts or transactions.
 };
 

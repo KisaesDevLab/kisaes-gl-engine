@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
+import { readFileSync } from 'node:fs';
 import { startLanEngine, DEVICE_A, DEVICE_B, type LanEngine } from '../desktop/lan.test-support.js';
 import { STAMP_HEADERS, STAMP_CHILDREN } from './record-stamps.js';
 
@@ -23,14 +24,11 @@ const B = { device: DEVICE_B };
 // Every column of each stamped table. A new column fails here until it is
 // classified: it bumps the stamp (nothing to do) or the engine maintains it
 // (add it to STAMP_HEADERS, and to the trigger's ignore list in a migration).
-const PINNED: Record<string, string> = {
-  transactions: 'id tenant_id txn_type txn_number txn_date due_date status contact_id memo internal_notes payment_terms subtotal tax_amount total amount_paid balance_due invoice_status sent_at viewed_at paid_at is_recurring recurring_schedule_id source_estimate_id applied_to_invoice_id void_reason voided_at created_at updated_at check_number print_status payee_name_on_check payee_address printed_memo printed_at print_batch_id company_id bill_status terms_days credits_applied vendor_invoice_number source source_id public_token stripe_payment_intent_id basis aje_number print_signature_id payment_method reference_number is_adjusting reverses_transaction_id discount_percent discount_days discount_date due_date_overridden discount_date_overridden bill_received print_later is_check po_number customer_message hide_zero_lines invoice_layout_id source_txn_id source_payment_id holds_deposit from_deposit_id is_finance_charge sales_tax_id sales_tax_ssuta import_batch_id',
-  accounts: 'id tenant_id account_number name account_type detail_type description is_active is_system system_tag parent_id balance created_at updated_at company_id card_last4 is_sensitive import_batch_id',
-  contacts: 'id tenant_id contact_type display_name company_name first_name last_name email phone billing_line1 billing_line2 billing_city billing_state billing_zip billing_country shipping_line1 shipping_line2 shipping_city shipping_state shipping_zip shipping_country default_payment_terms opening_balance opening_balance_date default_expense_account_id tax_id is_1099_eligible notes is_active created_at updated_at company_id default_terms_days default_tag_id form_1099_type exempt_payee_code bill_lines_mode vendor_account_number default_discount_percent default_discount_days price_level_id default_markup_percent default_invoice_layout_id default_sales_tax_id tax_code_id import_batch_id',
-  items: 'id tenant_id name description unit_price income_account_id is_taxable is_active created_at updated_at company_id default_tag_id item_type discount_percent tax_code_id purchase_description purchase_cost expense_account_id asset_account_id cogs_account_id preferred_vendor_id reorder_point reorder_quantity unit_label unit_set_id default_purchase_unit_id default_sale_unit_id import_batch_id',
-  tags: 'id tenant_id name color created_at group_id description is_active usage_count sort_order updated_at company_id tag_number import_batch_id',
-  tag_groups: 'id tenant_id name description is_single_select sort_order created_at updated_at company_id import_batch_id',
-};
+// Pinned in record-stamps.columns.json (regenerate only after classifying the new column).
+const PINNED: Record<string, string> = Object.fromEntries(
+  Object.entries(JSON.parse(readFileSync(new URL('./record-stamps.columns.json', import.meta.url), 'utf8')) as Record<string, string[]>)
+    .map(([t, cols]) => [t, cols.join(' ')]),
+);
 
 async function je(jwt: string, who = A, amount = '10.00') {
   const r = await e.call(who, '/api/v1/transactions', {
@@ -216,6 +214,41 @@ describe('stamps (B3, T5)', () => {
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(r.json.skipped).toEqual([{ id: t1.id, reason: 'stale', updatedAt: await stampOf('transactions', t1.id) }]);
     expect(r.json.updated).toBe(1);
+  });
+
+  it('company settings, layouts and lists compare their stamp (U-291b)', async () => {
+    const [co] = await e.query<{ id: string }>('SELECT id FROM companies LIMIT 1');
+    const s0 = await stampOf('companies', co!.id);
+    const r = await e.call(A, '/api/v1/company', { method: 'PUT', jwt: jwtA, body: { expectedUpdatedAt: s0, phone: '555-0100' } });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    const stale = await e.call(B, '/api/v1/company', { method: 'PUT', jwt: jwtB, body: { expectedUpdatedAt: s0, phone: '555-0199' } });
+    expect(stale.status).toBe(409);
+    expect(stale.json.error.code).toBe('STALE');
+    const pl = await e.call(A, '/api/v1/price-levels', { method: 'POST', jwt: jwtA, body: { name: 'Stamp Level', percent: '-5' } });
+    expect(pl.status, JSON.stringify(pl.json)).toBe(201);
+    const plId = (pl.json.priceLevel ?? pl.json).id as string;
+    const p0 = await stampOf('price_levels', plId);
+    expect((await e.call(A, `/api/v1/price-levels/${plId}`, { method: 'PUT', jwt: jwtA, body: { name: 'Stamp Level 2', expectedUpdatedAt: p0 } })).status).toBe(200);
+    const pStale = await e.call(B, `/api/v1/price-levels/${plId}?expectedUpdatedAt=${encodeURIComponent(p0)}`, { method: 'DELETE', jwt: jwtB });
+    expect(pStale.status).toBe(409);
+  });
+
+  it('bulk type change skips stale contacts; a merge with a stale side is refused (U-291b)', async () => {
+    const mk = async (n: string) => {
+      const c = await e.call(A, '/api/v1/contacts', { method: 'POST', jwt: jwtA, body: { contactType: 'customer', displayName: n } });
+      return (c.json.contact ?? c.json).id as string;
+    };
+    const c1 = await mk('Bulk One');
+    const c2 = await mk('Bulk Two');
+    const s1 = await stampOf('contacts', c1);
+    const s2 = await stampOf('contacts', c2);
+    await e.call(B, `/api/v1/contacts/${c1}`, { method: 'PUT', jwt: jwtB, body: { displayName: 'Bulk One Edited' } });
+    const r = await e.call(A, '/api/v1/contacts/bulk-type', { method: 'POST', jwt: jwtA, body: { ids: [c1, c2], contactType: 'both', stamps: { [c1]: s1, [c2]: s2 } } });
+    expect(r.status, JSON.stringify(r.json)).toBe(200);
+    expect(r.json.stale.map((x: { id: string }) => x.id)).toEqual([c1]);
+    const m = await e.call(A, '/api/v1/contacts/merge', { method: 'POST', jwt: jwtA, body: { sourceId: c1, targetId: c2, stamps: { [c1]: s1, [c2]: await stampOf('contacts', c2) } } });
+    expect(m.status).toBe(409);
+    expect(m.json.error.details.stale[0].id).toBe(c1);
   });
 
   it('a transaction of another company is not found (GET and void)', async () => {

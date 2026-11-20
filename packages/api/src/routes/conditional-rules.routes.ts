@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Request } from 'express';
@@ -494,7 +495,7 @@ conditionalRulesRouter.post('/', validate(createConditionalRuleSchema), async (r
   res.status(201).json(rule);
 });
 
-conditionalRulesRouter.put('/:id', validate(updateConditionalRuleSchema), async (req, res) => {
+conditionalRulesRouter.put('/:id', expectStamp('conditional_rules', 'id', { precheck: true }), validate(updateConditionalRuleSchema), async (req, res) => {
   const ctx = await resolveFirmContext(req);
   const before = await crudService.getById(req.tenantId, req.params['id']!, {
     firmId: ctx.firmId,
@@ -517,7 +518,7 @@ conditionalRulesRouter.put('/:id', validate(updateConditionalRuleSchema), async 
   res.json(after);
 });
 
-conditionalRulesRouter.delete('/:id', async (req, res) => {
+conditionalRulesRouter.delete('/:id', expectStamp('conditional_rules', 'id', { precheck: true }), async (req, res) => {
   // Owner-only for tenant_user; firm_admin for tenant_firm /
   // global_firm. Destructive op cascades per-fire audit history.
   // Bookkeepers should mark inactive instead.

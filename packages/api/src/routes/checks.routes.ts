@@ -334,7 +334,7 @@ checksRouter.get('/settings', describe({
 // back by a stale read. Sent nextCheckNumbers and layouts maps are merged
 // per bank account in the same UPDATE: the accounts they leave out keep
 // their counters and check styles; a layouts entry sent as null is removed.
-checksRouter.put('/settings', validate(checkSettingsSchema), describe({
+checksRouter.put('/settings', expectStamp('companies', (req) => req.companyId, { precheck: true }), validate(checkSettingsSchema), describe({
   summary: 'Update check settings (only the sent keys; nextCheckNumbers and layouts are merged per bank account)',
   description: 'layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)} | null}; '
     + 'keys with an entry must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. '

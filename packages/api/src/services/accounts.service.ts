@@ -124,7 +124,7 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
 
 export async function update(tenantId: string, id: string, input: UpdateAccountInput, userId?: string) {
   const expectedStamp = takeExpectedStamp('accounts', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account', tenantId); // U-291
   const existing = await getById(tenantId, id);
 
   // Scrub fields that are never legitimately set by a caller. Previously
@@ -308,7 +308,7 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
   const expectedStamp = takeExpectedStamp('accounts', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account', tenantId); // U-291
   const existing = await getById(tenantId, id);
   // Inventory accounts (U-156, S12): 409 ACCOUNT_IN_USE.
   await assertAccountNotInventory(db, tenantId, [id]);
@@ -597,7 +597,7 @@ export function sensitiveRefusal(a: { accountType: string; detailType: string | 
  */
 export async function setSensitive(tenantId: string, id: string, isSensitive: boolean, userId?: string) {
   const expectedStamp = takeExpectedStamp('accounts', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account', tenantId); // U-291
   return db.transaction(async (tx) => {
     const [row] = await tx.select().from(accounts)
       .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))

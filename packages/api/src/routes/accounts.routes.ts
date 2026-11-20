@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { expectStamp } from '../services/stale-context.js';
+import { expectStamp, expectItemStamps } from '../services/stale-context.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -83,7 +83,7 @@ const INVENTORY_ACCOUNT_NOTE = 'An account inventory needs (the inventory asset 
   + 'item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: '
   + '409 ACCOUNT_IN_USE (details.accountId or details.itemIds).';
 
-accountsRouter.post('/merge', validate(mergeAccountsSchema), describe({
+accountsRouter.post('/merge', expectItemStamps('accounts', 'refuse'), validate(mergeAccountsSchema), describe({
   summary: 'Merge an account into another',
   description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {
@@ -93,7 +93,7 @@ accountsRouter.post('/merge', validate(mergeAccountsSchema), describe({
 
 // Bulk inline edit (COA Bulk Edit table). Registered before the
 // parameterized routes below so "bulk" is never captured as an :id.
-accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), describe({
+accountsRouter.put('/bulk', expectItemStamps('accounts', 'drop', (req, s) => { req.body.updates = (req.body.updates ?? []).filter((u: { id: string }) => !s.has(u.id)); }), validate(bulkUpdateAccountsSchema), describe({
   summary: 'Edit several accounts',
   description: `Response {updated, accounts}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {

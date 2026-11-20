@@ -115,7 +115,7 @@ export async function update(tenantId: string, id: string, input: UpdateBudgetIn
   });
 }
 
-export async function remove(tenantId: string, id: string, userId?: string, companyId: string | null = null) {
+export async function remove(tenantId: string, id: string, userId?: string, companyId: string | null = null, version?: number) {
   // `budget_lines` has no tenant_id column — it's scoped transitively
   // via `budget_id → budgets.tenant_id`. We verify ownership before
   // deleting the lines so a malformed id can't wipe another tenant's
@@ -124,8 +124,12 @@ export async function remove(tenantId: string, id: string, userId?: string, comp
   let removedBudget: typeof budgets.$inferSelect | undefined;
   await db.transaction(async (tx) => {
     const [budget] = await tx.select().from(budgets)
-      .where(and(exact.budgetScope(tenantId, companyId), eq(budgets.id, id))).limit(1);
+      .where(and(exact.budgetScope(tenantId, companyId), eq(budgets.id, id))).for('update').limit(1);
     if (!budget) throw AppError.notFound('Budget not found');
+    // The version read (U-291, stale-all-v1): another is 409 STALE_VERSION {current}; absent: no check.
+    if (version !== undefined && budget.version !== version) {
+      throw AppError.conflict('This budget was changed since you opened it. Reload it and make your change again.', 'STALE_VERSION', { current: budget.version });
+    }
     removedBudget = budget;
 
     await tx.delete(budgetLines).where(eq(budgetLines.budgetId, id));

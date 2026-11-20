@@ -273,7 +273,8 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['POST /api/v1/je-templates', C], ['POST /api/v1/je-templates/*/duplicate', C],
   ['WRITE /api/v1/je-templates/*', U], ['PUT /api/v1/je-templates/*/lines', U],
   ['POST /api/v1/templates', C], ['POST /api/v1/templates/from-transaction', C], ['POST /api/v1/templates/groups', C],
-  ['WRITE /api/v1/templates/groups/*', U], ['WRITE /api/v1/templates/*', U], ['POST /api/v1/templates/*/enter', C],
+  // Transaction templates carry a version (templates-v1: 409 STALE details.version); a group is a name.
+  ['WRITE /api/v1/templates/groups/*', N], ['WRITE /api/v1/templates/*', V], ['POST /api/v1/templates/*/enter', C],
   ['POST /api/v1/templates/*/occurrences/*/*', G],
   // Payments.
   ['POST /api/v1/payments/preview', N], ['POST /api/v1/payments/receive', C], ['POST /api/v1/payments/unapply', G],
@@ -340,6 +341,8 @@ export const STALE_EXEMPT_RECORD_WRITES: Readonly<Record<string, string>> = {
   'PUT /api/v1/practice/1099/vendors/{contactId}/profile': 'the 1099 profile; the body states the whole value',
   'DELETE /api/v1/tags/saved-filters/{id}': "the caller's own saved filter",
   'DELETE /api/v1/users/me/tfa/devices/{id}': "the caller's own trusted device",
+  'PUT /api/v1/templates/groups/{id}': 'a template group is a name; the body states the whole value',
+  'DELETE /api/v1/templates/groups/{id}': 'a template group is a name; its templates stay',
   'PUT /api/v1/document-numbers/{type}': 'the next number of a kind; the body states the whole value (claims are state-guarded)',
   'PATCH /api/v1/company/users/{userId}': 'team settings an owner or admin edits; the body states the whole value',
   'PUT /api/v1/company/users/{userId}/permissions': 'team permissions an owner or admin edits; the body states the whole value',

@@ -1887,4 +1887,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * lan_host_mode_off, deviceId?, label?} → 201 {recorded: true} (409 NOT_INITIALIZED before first run).
    */
   'lan-sessions-v1',
+  /**
+   * U-291 (ClientLedger P33; migrations 0286_record_stamps and 0287_record_stamps_rest, additive + rollback). Desktop
+   * connections (pool option mybooks.desktop=on) own updated_at by trigger on every stale-checked table: it moves to
+   * greatest(now to the ms, old + 1 ms) when a column outside the table's ignore list changes (a posting never moves an
+   * account's stamp), and child rows (lines, tags, applications, deposit lines, attachment links, template and
+   * daily-sales lines, units, price-level items) move their parent's stamp once per database transaction. Archive
+   * imports keep the archive's stamps. Every `x-stale: stale(updatedAt|schedule)` route takes `expectedUpdatedAt`
+   * (body; query for DELETE; `x-stamp` in openapi.json), `stale(version)` routes take `version`: a mismatch is 409
+   * STALE {updatedAt} / STALE_VERSION {current} / STALE_SCHEDULE. Every save returns the record's new stamp.
+   * `x-stale: bulk` routes take `stamps {id: updatedAt}`: bulk edits skip stale items (reply `stale` [{id,
+   * updatedAt}], bulk-update `skipped` reason 'stale'), merges refuse with 409 STALE {details.stale}. Bulk writers
+   * lock entries in id order. Server mode: unchanged (stamps set in code; all stamp fields optional).
+   */
+  'stale-all-v1',
 ];

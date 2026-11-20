@@ -191,7 +191,7 @@ export async function create(tenantId: string, input: CreateContactInput, userId
 
 export async function update(tenantId: string, id: string, input: UpdateContactInput, userId?: string, companyId?: string) {
   const expectedStamp = takeExpectedStamp('contacts', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('contacts', id, expectedStamp, 'This contact'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('contacts', id, expectedStamp, 'This contact', tenantId); // U-291
   const existing = await getById(tenantId, id);
   if (input.priceLevelId && input.priceLevelId !== existing.priceLevelId) {
     await priceLevels.assertAssignable(db, tenantId, input.priceLevelId, companyId);
@@ -242,13 +242,14 @@ export async function bulkUpdateType(
     .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, ids)))
     .returning({ id: contacts.id });
   // One audit entry for the batch — the individual ids are in the metadata.
-  await auditLog(tenantId, 'update', 'contact', 'bulk', null, { contactType, ids: rows.map((r) => r.id) }, userId);
+  // entity_id is a uuid: a batch row names no single contact (was 'bulk', a 500).
+  await auditLog(tenantId, 'update', 'contact', null, null, { contactType, ids: rows.map((r) => r.id) }, userId);
   return { updated: rows.length };
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
   const expectedStamp = takeExpectedStamp('contacts', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('contacts', id, expectedStamp, 'This contact'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('contacts', id, expectedStamp, 'This contact', tenantId); // U-291
   const existing = await getById(tenantId, id);
 
   const [updated] = await db

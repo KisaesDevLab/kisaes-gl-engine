@@ -139,7 +139,7 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
 
 export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {
   const expectedStamp = takeExpectedStamp('tags', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag', tenantId); // U-291
   if (input.name) {
     const existing = await db.query.tags.findFirst({
       where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
@@ -256,7 +256,7 @@ export async function getUsage(tenantId: string, tagId: string): Promise<TagUsag
 
 export async function remove(tenantId: string, id: string, userId?: string) {
   const expectedStamp = takeExpectedStamp('tags', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag', tenantId); // U-291
   // Surface a structured 409 before the raw FK violation hits, so the UI
   // can show "this tag is used by N transactions / M budgets / …" and
   // offer reassignment / merge instead of failing with an opaque
@@ -382,7 +382,7 @@ export async function createGroup(tenantId: string, input: { name: string; descr
 
 export async function updateGroup(tenantId: string, id: string, input: { name?: string; description?: string | null; isSingleSelect?: boolean }) {
   const expectedStamp = takeExpectedStamp('tag_groups', id); // U-291
-  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group');
+  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group', tenantId);
   const [updated] = await db.update(tagGroups)
     .set({ ...input, updatedAt: new Date() })
     .where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id), staleCondition(tagGroups.updatedAt, expectedStamp)))
@@ -394,7 +394,7 @@ export async function updateGroup(tenantId: string, id: string, input: { name?: 
 
 export async function deleteGroup(tenantId: string, id: string) {
   const expectedStamp = takeExpectedStamp('tag_groups', id);
-  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group'); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group', tenantId); // U-291
   // Ungroup tags (set group_id = null)
   await db.update(tags).set({ groupId: null }).where(and(eq(tags.tenantId, tenantId), eq(tags.groupId, id)));
   const gone = await db.delete(tagGroups).where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id), staleCondition(tagGroups.updatedAt, expectedStamp))).returning({ id: tagGroups.id });
