@@ -1081,6 +1081,15 @@ export const TRIGGERS: Record<string, TriggerClass> = {
   'vendor_credit_applications.trg_rb_stamp_vendor_credit_applications_ins': 'fires-ok',
   'vendor_credit_applications.trg_rb_stamp_vendor_credit_applications_upd': 'fires-ok',
   'vendor_credit_applications.trg_rb_stamp_vendor_credit_applications_del': 'delete-side-effect:gl_version_stamps',
+  // U-291 (migration 0286): record-stamp triggers. They run only on desktop connections
+  // (mybooks.desktop = on) and the archive import turns that off, so restored stamps are the archive's.
+  ...Object.fromEntries([
+    'transactions', 'accounts', 'contacts', 'items', 'tags', 'tag_groups',
+  ].flatMap((t) => [[`${t}.mybooks_stamp`, 'fires-ok'], [`${t}.mybooks_stamp_ins`, 'fires-ok']])) as Record<string, TriggerClass>,
+  ...Object.fromEntries([
+    'journal_lines', 'transaction_tags', 'payment_applications', 'bill_payment_applications',
+    'vendor_credit_applications', 'deposit_lines', 'attachments',
+  ].map((t) => [`${t}.mybooks_stamp_child`, 'fires-ok'])) as Record<string, TriggerClass>,
   'share_session_audit.share_session_audit_append_only': 'delete-guard:mybooks.share_audit_retention',
   'tax_est_snapshots.trg_tax_est_snapshots_immutable': 'insert-safe',
 };
