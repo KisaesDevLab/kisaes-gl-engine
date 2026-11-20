@@ -41,6 +41,8 @@ export interface BuildOptions {
    */
   security: Map<unknown, SecurityScheme[]>;
   skipped?: SkippedRegistration[];
+  /** Extra `x-` extensions per operation (route classes, U-288); applied after the route's own. */
+  extensions?: (method: string, path: string) => Record<`x-${string}`, string | number | boolean>;
 }
 
 // ── Zod → JSON Schema ────────────────────────────────────────────────
@@ -221,6 +223,7 @@ export function buildOpenApiDocument(routes: RecordedRoute[], opts: BuildOptions
     }
     if (params.length > 0) op['parameters'] = params;
     for (const [k, v] of Object.entries(meta.extensions ?? {})) op[k] = v;
+    for (const [k, v] of Object.entries(opts.extensions?.(route.method, route.path) ?? {})) op[k] = v;
 
     if (meta.body && route.method !== 'get' && route.method !== 'head') {
       op['requestBody'] = {
