@@ -204,7 +204,7 @@ CREATE TRIGGER mybooks_stamp_child AFTER INSERT OR UPDATE OR DELETE ON vendor_cr
   WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_child('transactions', 'payment_id', 'transactions', 'credit_id', 'transactions', 'bill_id');
 --> statement-breakpoint
 CREATE TRIGGER mybooks_stamp_child AFTER INSERT OR UPDATE OR DELETE ON deposit_lines FOR EACH ROW
-  WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_child('transactions', 'deposit_id', 'transactions', 'source_transaction_id');
+  WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_child('transactions', 'deposit_id');
 --> statement-breakpoint
 CREATE TRIGGER mybooks_stamp_child AFTER INSERT OR DELETE OR UPDATE OF attachable_type, attachable_id ON attachments FOR EACH ROW
   WHEN (current_setting('mybooks.desktop', true) = 'on') EXECUTE FUNCTION mybooks_stamp_attachment();

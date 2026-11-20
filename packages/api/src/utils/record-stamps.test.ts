@@ -79,7 +79,8 @@ describe('catalogue and gate', () => {
       expect(has(tbl, 'mybooks_stamp_ins'), tbl).toBe(true);
       const cols = await e.query<{ c: string }>(
         "SELECT column_name AS c FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position", [tbl]);
-      expect(cols.map((x) => x.c).join(' '), `${tbl}: classify new columns in STAMP_HEADERS`).toBe(PINNED[tbl]);
+      // Order-insensitive: a test that rolls a migration back and forward moves columns to the end.
+      expect(cols.map((x) => x.c).sort().join(' '), `${tbl}: classify new columns in STAMP_HEADERS`).toBe(PINNED[tbl]!.split(' ').sort().join(' '));
       for (const ign of STAMP_HEADERS[tbl]!) expect(cols.map((x) => x.c), `${tbl}.${ign}`).toContain(ign);
     }
     for (const tbl of [...Object.keys(STAMP_CHILDREN), 'attachments']) expect(has(tbl, 'mybooks_stamp_child'), tbl).toBe(true);

@@ -60,7 +60,8 @@ export const STAMP_CHILDREN: Readonly<Record<string, ReadonlyArray<readonly [str
   payment_applications: [['transactions', 'payment_id'], ['transactions', 'invoice_id']],
   bill_payment_applications: [['transactions', 'payment_id'], ['transactions', 'bill_id']],
   vendor_credit_applications: [['transactions', 'payment_id'], ['transactions', 'credit_id'], ['transactions', 'bill_id']],
-  deposit_lines: [['transactions', 'deposit_id'], ['transactions', 'source_transaction_id']],
+  // The deposit only: a deposited payment is state-guarded (409 ALREADY_DEPOSITED), its stamp does not move.
+  deposit_lines: [['transactions', 'deposit_id']],
   // 0287 (U-291b)
   daily_sales_entry_values: [['daily_sales_entries', 'entry_id']],
   daily_sales_template_lines: [['daily_sales_templates', 'template_id']],
