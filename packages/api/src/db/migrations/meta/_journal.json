@@ -1996,6 +1996,13 @@
       "when": 1788600029380,
       "tag": "0284_transfer_scrub_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 285,
+      "version": "7",
+      "when": 1788700029380,
+      "tag": "0285_session_chains",
+      "breakpoints": true
     }
   ]
 }

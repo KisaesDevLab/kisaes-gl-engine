@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import { eq, and, sql, asc, inArray } from 'drizzle-orm';
 import type { RegisterInput, LoginInput, AuthTokens, JwtPayload } from '@kis-books/shared';
 import { entityTypes } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { apiKeys, tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -24,13 +24,24 @@ import { seedDefaultsForNewTenant as seedFeatureFlags } from './feature-flags.se
 import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-provisioning.service.js';
 import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
 import { isDesktop } from '../desktop/profile.js';
+import { currentLanContext } from '../desktop/lan-context.js';
 import { assertNotWorkspace, auditTenantsForUser, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
-// Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: max 3 concurrent sessions per
-// user. Oldest refresh token is revoked when the limit is exceeded —
-// prevents an attacker who grabs one refresh token from holding it
-// indefinitely after the user logs in elsewhere.
-const MAX_SESSIONS_PER_USER = 3;
+// Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: env.MAX_SESSIONS_PER_USER (default
+// 3) concurrent sessions per user. Oldest refresh token is revoked when the
+// limit is exceeded — prevents an attacker who grabs one refresh token from
+// holding it indefinitely after the user logs in elsewhere. The desktop LAN
+// host sets 6 (U-290).
+
+/**
+ * U-290: a session belongs to the device it was created from (NULL: the host
+ * app, the server, desktop without LAN). Any other caller is refused.
+ */
+function assertSessionDevice(sessionDevice: string | null | undefined): void {
+  if ((sessionDevice ?? null) !== (currentLanContext()?.device ?? null)) {
+    throw AppError.unauthorized('This sign-in belongs to another computer. Sign in again.', 'SESSION_DEVICE_MISMATCH');
+  }
+}
 
 // Email is used as the unique-identifier primary key for a user. Case
 // variations would otherwise create separate accounts (Alice@example and
@@ -92,9 +103,9 @@ function hashToken(token: string): string {
  */
 export async function issueSession(payload: JwtPayload): Promise<AuthTokens> {
   const authTime = payload.auth_time ? new Date(payload.auth_time * 1000) : new Date();
-  const accessToken = generateAccessToken({ ...payload, auth_time: Math.floor(authTime.getTime() / 1000) });
   const refreshToken = generateRefreshToken();
-  await createSession(payload.userId, refreshToken, { tenantId: payload.tenantId, role: payload.role, authTime });
+  const sid = await createSession(payload.userId, refreshToken, { tenantId: payload.tenantId, role: payload.role, authTime });
+  const accessToken = generateAccessToken({ ...payload, auth_time: Math.floor(authTime.getTime() / 1000), sid });
   return { accessToken, refreshToken };
 }
 
@@ -103,18 +114,25 @@ function authTimeClaim(authTime?: Date | null): number {
   return Math.floor((authTime ?? new Date()).getTime() / 1000);
 }
 
+/**
+ * Stores a refresh-token session and returns its chain id (the access
+ * token's `sid`). A refresh passes the chain it continues; a sign-in starts
+ * one. The LAN device of the request, if any, is bound to the row (U-290).
+ */
 async function createSession(
   userId: string,
   refreshToken: string,
-  context?: { tenantId?: string | null; role?: string | null; authTime?: Date | null },
-): Promise<void> {
+  context?: { tenantId?: string | null; role?: string | null; authTime?: Date | null; chainId?: string },
+  exec: DbOrTx = db,
+): Promise<string> {
+  const chainId = context?.chainId ?? crypto.randomUUID();
   // 7 days from now, computed as an exact 7-day offset rather than via
   // `setDate(getDate() + 7)` which is TZ-sensitive during DST transitions.
   // Using millisecond arithmetic gives a true UTC offset regardless of
   // the container's local TZ.
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  await db.insert(sessions).values({
+  await exec.insert(sessions).values({
     userId,
     refreshTokenHash: hashToken(refreshToken),
     expiresAt,
@@ -123,13 +141,16 @@ async function createSession(
     tenantId: context?.tenantId ?? null,
     role: context?.role ?? null,
     authTime: context?.authTime ?? new Date(),
+    chainId,
+    deviceId: currentLanContext()?.device ?? null,
   });
 
   // Running the trim AFTER the insert keeps the new session the most-
   // recent row so a rapid re-login never revokes its own token. Shared
   // with switchTenant's post-transaction path so cap enforcement lives
   // in exactly one place.
-  await trimOldestSessions(userId);
+  await trimOldestSessions(userId, exec);
+  return chainId;
 }
 
 /** Shared tenant provisioning: tenant row + company + COA seed + feature
@@ -453,9 +474,9 @@ export async function register(input: RegisterInput): Promise<{ user: typeof use
   // Generate tokens
   const regAuthTime = new Date();
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: tenant.id, role: user.role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(regAuthTime) };
-  const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken, { tenantId: tenant.id, role: user.role, authTime: regAuthTime });
+  const regSid = await createSession(user.id, refreshToken, { tenantId: tenant.id, role: user.role, authTime: regAuthTime });
+  const accessToken = generateAccessToken({ ...jwtPayload, sid: regSid });
 
   await auditLog(tenant.id, 'create', 'user', user.id, null, { email: user.email }, user.id);
 
@@ -613,9 +634,9 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
 
   const authTime = new Date();
   const jwtPayload: JwtPayload = { userId: user.id, tenantId, role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(authTime) };
-  const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
-  await createSession(user.id, refreshToken, { tenantId, role, authTime });
+  const loginSid = await createSession(user.id, refreshToken, { tenantId, role, authTime });
+  const accessToken = generateAccessToken({ ...jwtPayload, sid: loginSid });
 
   await auditLog(tenantId, 'login', 'user', user.id, null, null, user.id);
 
@@ -672,10 +693,17 @@ export async function switchTenant(
   // prior session row's auth_time and the calling JWT's auth_time claim;
   // "now" is only for a caller that carries neither (pre-0157 chains).
   const candidates: Date[] = [];
+  // The switch continues the prior session's chain (U-290), so revoking that
+  // chain still ends this one; without a prior session it starts a chain.
+  let switchChainId: string = crypto.randomUUID();
   if (priorRefreshToken) {
     const prior = await db.query.sessions.findFirst({ where: eq(sessions.refreshTokenHash, hashToken(priorRefreshToken)) });
     const fromPrior = prior?.authTime ?? prior?.createdAt ?? null;
     if (fromPrior) candidates.push(fromPrior);
+    if (prior) {
+      assertSessionDevice(prior.deviceId);
+      switchChainId = prior.chainId;
+    }
   }
   if (typeof callerAuthTime === 'number' && Number.isFinite(callerAuthTime) && callerAuthTime > 0) {
     candidates.push(new Date(callerAuthTime * 1000));
@@ -683,7 +711,7 @@ export async function switchTenant(
   const switchAuthTime: Date | null = candidates.length
     ? new Date(Math.min(...candidates.map((d) => d.getTime())))
     : null;
-  const jwtPayload: JwtPayload = { userId: user.id, tenantId: targetTenantId, role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(switchAuthTime) };
+  const jwtPayload: JwtPayload = { userId: user.id, tenantId: targetTenantId, role, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(switchAuthTime), sid: switchChainId };
   const accessToken = generateAccessToken(jwtPayload);
   const refreshToken = generateRefreshToken();
 
@@ -706,6 +734,8 @@ export async function switchTenant(
       tenantId: targetTenantId,
       role,
       authTime: switchAuthTime ?? new Date(),
+      chainId: switchChainId,
+      deviceId: currentLanContext()?.device ?? null,
     });
     // Mark this tenant as most-recently-accessed for the switcher's "recent"
     // ordering. No-ops for a super-admin with no explicit access row.
@@ -729,8 +759,8 @@ export async function switchTenant(
  * remain. Called after any flow that might push the user over the cap.
  * Idempotent — a no-op when the user already has ≤ the cap.
  */
-async function trimOldestSessions(userId: string): Promise<void> {
-  const active = await db.select({ id: sessions.id, createdAt: sessions.createdAt })
+async function trimOldestSessions(userId: string, exec: DbOrTx = db): Promise<void> {
+  const active = await exec.select({ id: sessions.id, createdAt: sessions.createdAt })
     .from(sessions)
     .where(and(
       eq(sessions.userId, userId),
@@ -738,13 +768,26 @@ async function trimOldestSessions(userId: string): Promise<void> {
     ))
     .orderBy(asc(sessions.createdAt));
 
-  if (active.length > MAX_SESSIONS_PER_USER) {
-    const toDrop = active.slice(0, active.length - MAX_SESSIONS_PER_USER).map((s) => s.id);
-    await db.delete(sessions).where(inArray(sessions.id, toDrop));
+  const max = env.MAX_SESSIONS_PER_USER;
+  if (active.length > max) {
+    const toDrop = active.slice(0, active.length - max).map((s) => s.id);
+    await exec.delete(sessions).where(inArray(sessions.id, toDrop));
   }
 }
 
+/**
+ * Rotates a refresh token. The old row's delete, the lookups and the new
+ * row's insert are one transaction, so the session chain is never without a
+ * live row (LAN mode checks it on every request, U-290). Refusals commit the
+ * delete (a refused token is spent) and are thrown after it.
+ */
 export async function refresh(refreshToken: string): Promise<AuthTokens> {
+  const out = await db.transaction((tx) => refreshWithin(tx, refreshToken));
+  if (out instanceof AppError) throw out;
+  return out;
+}
+
+async function refreshWithin(exec: DbOrTx, refreshToken: string): Promise<AuthTokens | AppError> {
   const tokenHash = hashToken(refreshToken);
 
   // Atomic delete-and-return: only the caller that wins the race actually
@@ -760,26 +803,35 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // That's fine for usability but breaks replay protection — an attacker
   // who somehow got a copy of the refresh token would be able to use it
   // alongside the legitimate user instead of being detected.
-  const [session] = await db.delete(sessions)
+  const [session] = await exec.delete(sessions)
     .where(eq(sessions.refreshTokenHash, tokenHash))
     .returning();
 
   if (!session) {
-    throw AppError.unauthorized('Invalid refresh token');
+    return AppError.unauthorized('Invalid refresh token');
   }
 
   if (new Date() > session.expiresAt) {
-    throw AppError.unauthorized('Refresh token expired');
+    return AppError.unauthorized('Refresh token expired');
+  }
+
+  // U-290: a session refreshes only from the device it was created on (the
+  // row is already gone, so a stolen token is spent either way).
+  try {
+    assertSessionDevice(session.deviceId);
+  } catch (err) {
+    if (err instanceof AppError) return err;
+    throw err;
   }
 
   // Get user (after we've claimed the session row, so even if user lookup
   // fails the old refresh token is already invalidated)
-  const user = await db.query.users.findFirst({
+  const user = await exec.query.users.findFirst({
     where: eq(users.id, session.userId),
   });
 
   if (!user || !user.isActive) {
-    throw AppError.unauthorized('User not found or deactivated');
+    return AppError.unauthorized('User not found or deactivated');
   }
 
   // Preserve the TENANT the session was operating under, so an expired
@@ -800,7 +852,7 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // has active access before re-issuing — revoked access must not keep
   // refreshing into it. Super-admins retain cross-tenant access.
   if (effectiveTenantId !== user.tenantId) {
-    const access = await db.query.userTenantAccess.findFirst({
+    const access = await exec.query.userTenantAccess.findFirst({
       where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, effectiveTenantId)),
     });
     if (access?.isActive) {
@@ -819,7 +871,7 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // the workspace access row's (readonly for everyone but the owner), as
   // login reports it; without an active row, readonly.
   if (isDesktop() && effectiveTenantId === user.tenantId) {
-    const wsAccess = await db.query.userTenantAccess.findFirst({
+    const wsAccess = await exec.query.userTenantAccess.findFirst({
       where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, user.tenantId)),
     });
     effectiveRole = wsAccess?.isActive ? (wsAccess.role || 'readonly') : 'readonly';
@@ -829,9 +881,9 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // back to the row's createdAt) so auth_time never resets on refresh.
   const chainAuthTime = session.authTime ?? session.createdAt ?? new Date();
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: effectiveTenantId, role: effectiveRole, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(chainAuthTime) };
-  const newAccessToken = generateAccessToken(jwtPayload);
   const newRefreshToken = generateRefreshToken();
-  await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole, authTime: chainAuthTime });
+  const sid = await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole, authTime: chainAuthTime, chainId: session.chainId }, exec);
+  const newAccessToken = generateAccessToken({ ...jwtPayload, sid });
 
   return { accessToken: newAccessToken, refreshToken: newRefreshToken };
 }

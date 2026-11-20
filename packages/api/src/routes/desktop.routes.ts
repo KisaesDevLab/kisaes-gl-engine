@@ -48,6 +48,7 @@ import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { describe } from '../middleware/describe.js';
 import * as sessionSecrets from '../desktop/session-secrets.js';
 import * as recoveryKeys from '../services/desktop-recovery-key.service.js';
+import * as desktopSessions from '../services/desktop-sessions.service.js';
 
 export const desktopRouter = Router();
 
@@ -331,5 +332,103 @@ desktopRouter.delete(
     }
     sessionSecrets.deleteSessionSecret(name);
     res.json(sessionSecrets.sessionSecretStatus());
+  },
+);
+
+
+// ─── Sessions and LAN events (U-290, lan-sessions-v1) ───────────
+//
+// Host-only (route-classes.ts: no /desktop route but /info and the
+// session-secrets read is open to workstations). Super admin.
+
+const deviceIdSchema = z.string().regex(/^[0-9a-fA-F]{64}$/, 'a 64-character hex fingerprint').transform((s) => s.toLowerCase());
+
+const sessionShape = z.object({
+  id: z.string().uuid(),
+  userId: z.string().uuid(),
+  email: z.string(),
+  displayName: z.string().nullable(),
+  deviceId: z.string().nullable(),
+  signedInAt: z.string(),
+  lastRefreshAt: z.string(),
+  expiresAt: z.string(),
+  current: z.boolean(),
+});
+
+desktopRouter.get(
+  '/sessions',
+  authenticate,
+  requireSuperAdmin,
+  describe({
+    summary: 'Every live sign-in of this install (lan-sessions-v1)',
+    description: 'Response `{sessions: [{id (the session chain, the access token sid), userId, email, displayName, deviceId '
+      + '(LAN device fingerprint; null for the host app), signedInAt, lastRefreshAt, expiresAt, current}]}`, newest first. Super admin.',
+    response: z.object({ sessions: z.array(sessionShape) }),
+  }),
+  async (req, res) => {
+    res.json({ sessions: await desktopSessions.listSessions(req.sessionChainId) });
+  },
+);
+
+const revokeQuery = z.object({ device: deviceIdSchema });
+
+desktopRouter.delete(
+  '/sessions',
+  authenticate,
+  requireSuperAdmin,
+  describe({
+    summary: 'End every sign-in of one LAN device (lan-sessions-v1)',
+    description: 'Query `device` (64 hex). Response `{revoked}` (rows ended; 0 is fine). Audited. In LAN mode the access tokens of '
+      + 'those sessions stop working at their next request.',
+    query: revokeQuery,
+    response: z.object({ revoked: z.number().int() }),
+  }),
+  async (req, res) => {
+    const q = revokeQuery.parse(req.query);
+    const revoked = await desktopSessions.revokeDeviceSessions(q.device, { tenantId: req.tenantId, userId: req.userId });
+    res.json({ revoked });
+  },
+);
+
+desktopRouter.delete(
+  '/sessions/:id',
+  authenticate,
+  requireSuperAdmin,
+  describe({
+    summary: 'End one sign-in (lan-sessions-v1)',
+    description: 'Response `{revoked}`; 404 when the session is not live. Audited. In LAN mode its access tokens stop working at '
+      + 'their next request. Ending your own session signs you out.',
+    params: z.object({ id: z.string().uuid() }),
+    response: z.object({ revoked: z.number().int() }),
+  }),
+  async (req, res) => {
+    const id = z.string().uuid().safeParse(req.params['id']);
+    if (!id.success) throw AppError.notFound('Session not found');
+    const revoked = await desktopSessions.revokeSession(id.data, { tenantId: req.tenantId, userId: req.userId });
+    res.json({ revoked });
+  },
+);
+
+const lanEventSchema = z.object({
+  event: z.enum(desktopSessions.LAN_AUDIT_EVENTS),
+  deviceId: deviceIdSchema.optional(),
+  label: z.string().trim().min(1).max(100).optional(),
+}).strict();
+
+desktopRouter.post(
+  '/audit-events',
+  validate(lanEventSchema),
+  describe({
+    summary: 'Record a LAN event of the host app in the audit trail (lan-sessions-v1)',
+    description: 'Launch token only (the host app; workstations get 403 HOST_ONLY). Body `{event: lan_device_paired | '
+      + 'lan_device_removed | lan_host_key_regenerated | lan_host_mode_on | lan_host_mode_off, deviceId? (64 hex), label? (at most '
+      + '100 characters; no names of people)}`. One audit row in the workspace (entity_type lan_event). Response 201 '
+      + '`{recorded: true}`; 409 NOT_INITIALIZED before first run.',
+    body: lanEventSchema,
+    response: z.object({ recorded: z.literal(true) }),
+  }),
+  async (req, res) => {
+    await desktopSessions.recordLanEvent(req.body as z.infer<typeof lanEventSchema>);
+    res.status(201).json({ recorded: true });
   },
 );
