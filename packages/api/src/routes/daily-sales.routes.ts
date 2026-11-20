@@ -75,7 +75,13 @@ dailySalesRouter.put('/templates/:id/lines', expectStamp('daily_sales_templates'
 });
 
 // ── Entries ──
-dailySalesRouter.get('/entries', async (req, res) => {
+dailySalesRouter.get('/entries', describe({
+  summary: 'List daily-sales entries',
+  description: 'Response `{entries, total}`. Each row: id, templateId, templateName, businessDate, status, transactionId, ' +
+    'overShortAmount, totalSales, totalTax, totalPayments, postedAt, createdAt, updatedAt, attachmentCount. `updatedAt` ' +
+    'is the stamp for PUT and DELETE /entries/:id (`expectedUpdatedAt`), the same value GET /entries/:id returns.',
+  query: dailySalesEntriesFilterSchema,
+}), async (req, res) => {
   const filters = dailySalesEntriesFilterSchema.parse(req.query);
   const { entries, total } = await service.listEntries(req.tenantId, filters, req.companyId);
   res.json({ entries, total });
