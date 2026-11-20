@@ -55,7 +55,7 @@ async function companyRow(executor: DbOrTx, tenantId: string, companyId: string 
     .where(companyId ? and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)) : eq(companies.tenantId, tenantId))
     .orderBy(companies.createdAt)
     .limit(1);
-  const [row] = lock ? await q.for('update') : await q;
+  const [row] = lock ? await q.for('no key update') : await q;
   if (!row) throw AppError.notFound('Company not found');
   return row;
 }

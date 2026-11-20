@@ -224,8 +224,8 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
 async function lock(tx: Tx, tenantId: string, companyId: string | null | undefined, itemIds: readonly string[], dates: ReadonlyArray<string | null | undefined>): Promise<CostingLock> {
   await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
   const r = await tx.execute(companyId
-    ? sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR UPDATE`
-    : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id FOR UPDATE`);
+    ? sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR NO KEY UPDATE`
+    : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id FOR NO KEY UPDATE`);
   const rows = r.rows as Array<{ id: string; lock_date: string | null }>;
   const row = rows[0];
   if (!row) throw AppError.notFound('Company not found');
