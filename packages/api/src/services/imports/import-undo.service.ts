@@ -4,7 +4,9 @@
 
 /**
  * Undo of a committed Bulk Import batch (U-261; review B2). A HARD delete:
- * no row the batch created survives, and nothing is left pointing at one.
+ * no row the batch created survives, and nothing is left pointing at one
+ * (outside the audit trail and the trigger-written bookkeeping tables, see
+ * TRIGGER_WRITTEN_TABLES: the desktop change feed keeps naming deleted ids).
  *
  * Inside the undo transaction:
  *   1. the batch's transactions are locked FOR UPDATE;
@@ -114,8 +116,20 @@ const OWNED_ARTIFACTS: Record<string, string> = {
   tax_est_transaction_flags: 'transaction_id',
 };
 
-/** Tables never searched: they record history about ids, or are the import's own bookkeeping. */
-const SWEEP_SKIP_TABLES = new Set(['audit_log', 'idempotency_keys', 'import_batches', 'import_sessions', 'import_rows']);
+/**
+ * Tables only database triggers write (bookkeeping, not activity): the desktop
+ * change feed (U-294, 0289) and the ledger version counters (0144, 0277). A
+ * row there records that a record was written, never that someone used it, so
+ * it never blocks an undo and is never a pointer left behind: the undo's own
+ * deletes add feed rows naming the deleted ids, as they should. Pinned against
+ * the live trigger functions by imports-undo-feed.routes.test.ts: a new table a
+ * trigger writes fails there until it is listed here (or classified as real
+ * activity).
+ */
+export const TRIGGER_WRITTEN_TABLES: ReadonlySet<string> = new Set(['change_feed', 'change_feed_state', 'gl_version_stamps']);
+
+/** Tables never searched: they record history about ids, are the import's own bookkeeping, or only triggers write them. */
+const SWEEP_SKIP_TABLES = new Set(['audit_log', 'idempotency_keys', 'import_batches', 'import_sessions', 'import_rows', ...TRIGGER_WRITTEN_TABLES]);
 /** Columns that never hold a batch-created id (tenant, company, user and actor columns). */
 const SWEEP_SKIP_COLUMN = /^(tenant_id|company_id|user_id|.*_user_id|created_by|updated_by|.*_by)$/;
 
@@ -400,7 +414,7 @@ export async function findUndoBlockers(
 }
 
 /**
- * Every row (outside the audit and import tables) that points at one of
+ * Every row (outside the audit, import and trigger-written tables) that points at one of
  * ids, by the same column sweep undo uses. After an undo this must find
  * nothing for the ids it deleted (tests).
  */
