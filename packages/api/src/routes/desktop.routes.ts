@@ -49,6 +49,7 @@ import { describe } from '../middleware/describe.js';
 import * as sessionSecrets from '../desktop/session-secrets.js';
 import * as recoveryKeys from '../services/desktop-recovery-key.service.js';
 import * as desktopSessions from '../services/desktop-sessions.service.js';
+import * as maintenance from '../desktop/maintenance.js';
 
 export const desktopRouter = Router();
 
@@ -432,3 +433,46 @@ desktopRouter.post(
     res.status(201).json({ recorded: true });
   },
 );
+
+// ─── Maintenance mode (U-293, maintenance-v1) ───────────────────
+//
+// Host-only (route-classes.ts). Start and end: a super admin's session (the
+// holder). Reset: the launch token only (cl-host after a file-level restore).
+
+const holdShape = z.object({ active: z.boolean(), holderSession: z.string().nullable(), holderUser: z.string().nullable(), startedAt: z.string().nullable() });
+const holdView = (h: Awaited<ReturnType<typeof maintenance.currentHold>>) => ({
+  active: !!h, holderSession: h?.holderSession ?? null, holderUser: h?.holderUser ?? null, startedAt: h?.startedAt ?? null,
+});
+
+desktopRouter.get('/maintenance', describe({
+  summary: 'Maintenance mode state (maintenance-v1)',
+  response: holdShape,
+}), async (_req, res) => {
+  res.json(holdView(await maintenance.currentHold()));
+});
+
+desktopRouter.post('/maintenance', authenticate, requireSuperAdmin, describe({
+  summary: 'Start maintenance mode for this session (maintenance-v1)',
+  description: 'Super admin. Writes the hold, waits up to 30 s for other writes in flight (else the hold is dropped: 409 '
+    + 'MAINTENANCE_BUSY), then ends every other session. While on, every other request is 503 MAINTENANCE; only this '
+    + 'user signs in and only this session refreshes. 409 MAINTENANCE_HELD when another session holds it. Audited.',
+  response: holdShape,
+}), async (req, res) => {
+  res.json(holdView(await maintenance.startMaintenance({ sessionChainId: req.sessionChainId, userId: req.userId })));
+});
+
+desktopRouter.delete('/maintenance', authenticate, describe({
+  summary: 'End maintenance mode (the holder only; maintenance-v1)',
+  description: 'Ends every other session and removes the hold in one transaction. 403 NOT_MAINTENANCE_HOLDER for another session. Audited.',
+  response: holdShape,
+}), async (req, res) => {
+  await maintenance.endMaintenance({ sessionChainId: req.sessionChainId, userId: req.userId });
+  res.json(holdView(null));
+});
+
+desktopRouter.post('/maintenance/reset', describe({
+  summary: 'Clear maintenance mode after a file-level restore (launch token; maintenance-v1)',
+  response: z.object({ cleared: z.boolean() }),
+}), async (_req, res) => {
+  res.json({ cleared: await maintenance.resetMaintenance() });
+});

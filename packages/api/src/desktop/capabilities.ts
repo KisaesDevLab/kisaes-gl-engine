@@ -1908,4 +1908,17 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * callers (the automatic reversal void, jobs) are not affected. Server mode and desktop without LAN: unchanged.
    */
   'stale-required-v1',
+  /**
+   * U-293 (ClientLedger P33; migration 0288_desktop_maintenance, additive + rollback). Maintenance mode, stored in the
+   * database. Host-only routes: GET /desktop/maintenance {active, holderSession, holderUser, startedAt}; POST
+   * /desktop/maintenance (super admin; the caller's session holds it; waits up to 30 s for writes in flight, else 409
+   * MAINTENANCE_BUSY and nothing held; then ends every other session; 409 MAINTENANCE_HELD when another session holds
+   * it); DELETE /desktop/maintenance (the holder: other sessions end and the hold goes in one transaction; 403
+   * NOT_MAINTENANCE_HOLDER); POST /desktop/maintenance/reset (launch token; {cleared}; cl-host calls it after any
+   * file-level restore). While held, every request but the holder's is 503 MAINTENANCE (probes, GET /desktop/info,
+   * GET /desktop/maintenance, the reset, sign-in, refresh and sign-out pass the gate; sign-in only for the holder's user, refresh only for the
+   * holder's session). In LAN mode, archive import, import commit/undo and payroll post/reverse are 409
+   * MAINTENANCE_REQUIRED unless the caller holds maintenance. All audited (entity desktop_maintenance).
+   */
+  'maintenance-v1',
 ];
