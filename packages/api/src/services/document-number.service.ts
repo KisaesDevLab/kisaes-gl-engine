@@ -12,9 +12,9 @@
  * Every counter moves only the request's company row: the invoice counter
  * used to advance every company of the tenant.
  *
- * A claim row-locks the company until its transaction ends, so concurrent
- * creates get distinct numbers, and skips numbers a live document of the
- * type already holds. Creates claim inside their posting transaction, so a
+ * A claim row-locks the company (FOR NO KEY UPDATE, company-row-lock.ts)
+ * until its transaction ends, so concurrent creates get distinct numbers,
+ * and skips numbers a live document of the type already holds. Creates claim inside their posting transaction, so a
  * failed post takes no number. A number typed by the user leaves the
  * counter alone.
  */
@@ -23,6 +23,7 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 import { db, type DbOrTx } from '../db/index.js';
 import { companies, transactions } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { COMPANY_ROW_LOCK } from './company-row-lock.js';
 
 export const DOCUMENT_NUMBER_TYPES = ['invoice', 'cash_sale', 'credit_memo', 'statement'] as const;
 export type DocumentNumberType = (typeof DOCUMENT_NUMBER_TYPES)[number];
@@ -44,7 +45,9 @@ export function isDocumentNumberType(t: unknown): t is DocumentNumberType {
 
 // The companies row holding the counters: the request's company when known,
 // else the tenant's first company (legacy callers without a company context).
-// `lock` row-locks it until the end of the transaction (counter writes).
+// `lock` row-locks it until the end of the transaction (counter writes), FOR
+// NO KEY UPDATE: the posting's own Idempotency-Key row already holds FOR KEY
+// SHARE on it (company-row-lock.ts).
 async function companyRow(executor: DbOrTx, tenantId: string, companyId: string | undefined, lock = false) {
   const q = executor.select({
     id: companies.id,
@@ -55,7 +58,7 @@ async function companyRow(executor: DbOrTx, tenantId: string, companyId: string 
     .where(companyId ? and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)) : eq(companies.tenantId, tenantId))
     .orderBy(companies.createdAt)
     .limit(1);
-  const [row] = lock ? await q.for('update') : await q;
+  const [row] = lock ? await q.for(COMPANY_ROW_LOCK) : await q;
   if (!row) throw AppError.notFound('Company not found');
   return row;
 }
@@ -148,8 +151,8 @@ async function numberTaken(
  * Take the next number of a type for the company. Returns the full document
  * number (prefix + number) and the integer that was taken.
  *
- * The company row is locked until the end of the transaction, so concurrent
- * claims get distinct numbers. A number a live document of the type already
+ * The company row is locked (FOR NO KEY UPDATE) until the end of the
+ * transaction, so concurrent claims get distinct numbers. A number a live document of the type already
  * holds (typed by hand, or left behind when PUT moved the counter back) is
  * skipped. Pass the posting transaction as `executor` so a failed post does
  * not use up the number; with the pool, the claim commits on its own.

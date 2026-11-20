@@ -177,8 +177,9 @@ export async function startLanEngine(opts: { env?: Record<string, string>; initi
 
   const close = async () => {
     await new Promise<void>((r) => server.close(() => r()));
-    const { pool: appPool } = await import('../db/index.js');
+    const { pool: appPool, healthPool } = await import('../db/index.js');
     await appPool.end().catch(() => undefined);
+    await healthPool.end().catch(() => undefined);
     profile._resetDesktopProfileForTests();
     resetProcessEnv(savedEnv);
     rmSync(dataDir, { recursive: true, force: true });

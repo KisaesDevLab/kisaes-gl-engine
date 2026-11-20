@@ -18,8 +18,9 @@
  * one balance delta per account. Derived lines are never in a reader's
  * `lines` (they come back as `inventoryLines`) and clients can't send them.
  *
- * Lock order (P24 §5, with the counter slot first): document row ->
- * companies row (FOR UPDATE; its lock_date drives the frozen rule) -> items
+ * Lock order (P24 §5, with the counter slot first; the whole posting order is
+ * in company-row-lock.ts): document row -> companies row (FOR NO KEY UPDATE;
+ * its lock_date drives the frozen rule) -> items
  * (id order) -> accounts (id order). Invoices and vendor credits take the
  * companies row for their number before postTransaction, so the companies
  * row comes before the items here. lock_timeout is 5 s for the rest of the
@@ -56,6 +57,7 @@ import { INVENTORY_ASSET_TAG, inventoryEnabled } from './inventory.service.js';
 import { noteInventoryWarnings } from './inventory-warnings-context.js';
 import { resolveLineUnits, UNIT_LINE_NOTE } from './unit-lines.service.js';
 import { positionAsc, positionDesc } from './inventory-position.js';
+import { COMPANY_ROW_LOCK_SQL } from './company-row-lock.js';
 
 /** Line roles only the costing walk writes (U-157). */
 export const DERIVED_LINE_ROLES = ['cogs', 'inventory_relief', 'cost_correction', 'cost_residual'] as const;
@@ -210,8 +212,10 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
 }
 
 /**
- * The costing lock (P24 §5): lock_timeout 5 s, the companies row FOR UPDATE
- * (its lock_date read there), then the items in id order (FOR NO KEY
+ * The costing lock (P24 §5): lock_timeout 5 s, the companies row FOR NO KEY
+ * UPDATE (its lock_date read there; not FOR UPDATE, which would wait for the
+ * posting's own Idempotency-Key row and deadlock with a concurrent posting
+ * holding one, company-row-lock.ts), then the items in id order (FOR NO KEY
  * UPDATE: the costing never changes an item row; it conflicts with every
  * other costing lock and with an item edit, not with the KEY SHARE of
  * lineParts). A document date on or before the closing date is 409
@@ -224,8 +228,8 @@ async function assertLines(tx: Tx, tenantId: string, txnType: string, lines: rea
 async function lock(tx: Tx, tenantId: string, companyId: string | null | undefined, itemIds: readonly string[], dates: ReadonlyArray<string | null | undefined>): Promise<CostingLock> {
   await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
   const r = await tx.execute(companyId
-    ? sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR UPDATE`
-    : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id FOR UPDATE`);
+    ? sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} ${COMPANY_ROW_LOCK_SQL}`
+    : sql`SELECT id, lock_date::text AS lock_date FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id ${COMPANY_ROW_LOCK_SQL}`);
   const rows = r.rows as Array<{ id: string; lock_date: string | null }>;
   const row = rows[0];
   if (!row) throw AppError.notFound('Company not found');

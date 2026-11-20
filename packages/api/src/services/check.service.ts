@@ -26,6 +26,7 @@ import { itemLineDetails } from '../utils/line-amount.js';
 import { assertItemsInScope } from './bill.service.js';
 import { splitDerived } from './inventory-costing.service.js';
 import { BANK_DETAIL_TYPES } from './bank-account-types.js';
+import { COMPANY_ROW_LOCK_SQL } from './company-row-lock.js';
 
 // Check numbers are tracked PER BANK ACCOUNT in
 // check_settings.nextCheckNumbers keyed by the bank GL account id. This SQL
@@ -118,10 +119,12 @@ function counterScope(tenantId: string, companyId: string | undefined) {
  * Row-lock the counter's companies row(s) until the end of the
  * transaction. Taken BEFORE assertCheckNumberFree on the manual paths, so
  * two concurrent saves of the same number serialize: the second one sees
- * the first one's check once it commits and is refused (409).
+ * the first one's check once it commits and is refused (409). FOR NO KEY
+ * UPDATE, in (created_at, id) order, as every posting path takes the row
+ * (company-row-lock.ts).
  */
 export async function lockCheckCounter(executor: DbOrTx, tenantId: string, companyId: string | undefined) {
-  await executor.execute(sql`SELECT 1 FROM companies WHERE ${counterScope(tenantId, companyId)} FOR UPDATE`);
+  await executor.execute(sql`SELECT 1 FROM companies WHERE ${counterScope(tenantId, companyId)} ORDER BY created_at, id ${COMPANY_ROW_LOCK_SQL}`);
 }
 
 // Advance the bank account's auto counter past a manually entered number

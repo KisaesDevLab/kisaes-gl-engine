@@ -452,8 +452,7 @@ app.use('/api/v1/', (_req, res, next) => {
 // worker container every 15s with a 30s TTL — see
 // utils/worker-heartbeat.ts. EXPECT_WORKER=false skips the check so
 // api-only deployments don't degrade.
-import { sql } from 'drizzle-orm';
-import { db as _dbForHealth } from './db/index.js';
+import { healthPool } from './db/index.js';
 import { redisPing } from './utils/health-redis.js';
 import { readHeartbeats } from './utils/worker-heartbeat.js';
 import { computeHealth } from './utils/health.js';
@@ -475,7 +474,8 @@ const healthHandler = async (_req: express.Request, res: express.Response) => {
   const dbProbe = (async () => {
     try {
       await Promise.race([
-        _dbForHealth.execute(sql`SELECT 1`),
+        // Its own connection (db/index.ts): never queued behind postings.
+        healthPool.query('SELECT 1'),
         new Promise((_, rej) => setTimeout(() => rej(new Error('db probe timeout')), 2000)),
       ]);
       return { ok: true, latencyMs: Date.now() - t0 };
