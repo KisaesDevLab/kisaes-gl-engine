@@ -165,8 +165,15 @@ budgetsRouter.put('/:id', describe({
   res.json({ budget });
 });
 
-budgetsRouter.delete('/:id', async (req, res) => {
-  await budgetService.remove(req.tenantId, budgetIdOf(req), req.userId, req.companyId);
+const budgetDeleteQuery = z.object({ version: z.coerce.number().int().min(1).optional() });
+
+budgetsRouter.delete('/:id', describe({
+  summary: 'Delete a budget',
+  description: 'Optional query `version` (the version read, budgets-exact-v1): another current version is 409 STALE_VERSION {details.current}.',
+  query: budgetDeleteQuery,
+}), async (req, res) => {
+  const { version } = budgetDeleteQuery.parse(req.query);
+  await budgetService.remove(req.tenantId, budgetIdOf(req), req.userId, req.companyId, version);
   res.json({ message: 'Budget deleted' });
 });
 

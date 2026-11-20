@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { writeCheckSchema, updateCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, updateCheckMemoSchema, STEP_UP_REQUIRED, CHECK_LAYOUT_VALUES, CHECK_ACCOUNT_FORMAT_VALUES } from '@kis-books/shared';
@@ -138,7 +139,7 @@ const closedPeriodNote = 'A check dated on or before the closing date needs clos
 
 // Edit the memo that will print on a queued check — including the checks
 // created by paying bills, which POST /transactions/:id refuses to touch.
-checksRouter.patch('/:id/memo', closingPasswordLimiter, lockContextMiddleware, validate(updateCheckMemoSchema), describe({
+checksRouter.patch('/:id/memo', closingPasswordLimiter, lockContextMiddleware, expectStamp('transactions'), validate(updateCheckMemoSchema), describe({
   summary: 'Set the memo printed on a queued check',
   description: closedPeriodNote,
   body: updateCheckMemoSchema.extend({ closingPassword: closingPasswordDoc }),
@@ -333,7 +334,7 @@ checksRouter.get('/settings', describe({
 // back by a stale read. Sent nextCheckNumbers and layouts maps are merged
 // per bank account in the same UPDATE: the accounts they leave out keep
 // their counters and check styles; a layouts entry sent as null is removed.
-checksRouter.put('/settings', validate(checkSettingsSchema), describe({
+checksRouter.put('/settings', expectStamp('companies', (req) => req.companyId, { precheck: true }), validate(checkSettingsSchema), describe({
   summary: 'Update check settings (only the sent keys; nextCheckNumbers and layouts are merged per bank account)',
   description: 'layouts (U-109): {bankAccountId: {format (voucher | check_middle | z_fold | standard), printCompanyBlock (default false)} | null}; '
     + 'keys with an entry must be asset (bank) accounts of this company, else 400 VALIDATION_ERROR. '
@@ -408,7 +409,7 @@ const updateCheckBodyDoc = updateCheckSchema.extend({
 checksRouter.put('/:id', idempotent({
   successStatus: 200,
   replay: async (req) => ({ check: await readCheck(req, req.params['id']!) }),
-}), closingPasswordLimiter, lockContextMiddleware, validate(updateCheckSchema), describe({
+}), closingPasswordLimiter, lockContextMiddleware, expectStamp('transactions'), validate(updateCheckSchema), describe({
   summary: 'Edit a check: lines, amount, payee, date, number and print status (check-edit-v1)',
   description: INVENTORY_ROUTE_NOTE + ' The reply\'s check has inventoryLines; its lines never carry derived costing lines.',
   body: updateCheckBodyDoc,

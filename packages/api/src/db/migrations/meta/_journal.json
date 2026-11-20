@@ -2003,6 +2003,20 @@
       "when": 1788700029380,
       "tag": "0285_session_chains",
       "breakpoints": true
+    },
+    {
+      "idx": 286,
+      "version": "7",
+      "when": 1788800029380,
+      "tag": "0286_record_stamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 287,
+      "version": "7",
+      "when": 1788900029380,
+      "tag": "0287_record_stamps_rest",
+      "breakpoints": true
     }
   ]
 }

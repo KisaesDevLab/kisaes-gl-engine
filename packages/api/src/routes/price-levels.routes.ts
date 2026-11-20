@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createPriceLevelSchema, updatePriceLevelSchema, priceLevelFiltersSchema } from '@kis-books/shared';
@@ -54,7 +55,7 @@ priceLevelsRouter.get('/:id', describe({
   res.json({ priceLevel: await priceLevelsService.getById(req.tenantId, req.params['id']!, req.companyId) });
 });
 
-priceLevelsRouter.put('/:id', validate(updatePriceLevelSchema), describe({
+priceLevelsRouter.put('/:id', expectStamp('price_levels', 'id', { precheck: true }), validate(updatePriceLevelSchema), describe({
   summary: 'Edit a price level',
   description: `price-levels-v1: omitted fields keep their values; itemPrices sent replaces the whole list. Response {priceLevel}. Errors as create; 404 for another company's. ${rules}`,
   body: updatePriceLevelSchema,
@@ -63,7 +64,7 @@ priceLevelsRouter.put('/:id', validate(updatePriceLevelSchema), describe({
   res.json({ priceLevel: await priceLevelsService.update(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId) });
 });
 
-priceLevelsRouter.delete('/:id', describe({
+priceLevelsRouter.delete('/:id', expectStamp('price_levels', 'id', { precheck: true }), describe({
   summary: 'Delete a price level',
   description: 'price-levels-v1: deletes the level and its item prices; 409 PRICE_LEVEL_IN_USE (details.clients) while a client has it (make it inactive instead). Response {message}.',
   params: idParams,

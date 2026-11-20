@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp } from './stale-context.js';
 import { eq, and, ilike, sql, count, inArray, asc, desc, type SQL } from 'drizzle-orm';
 import type { CreateAccountInput, UpdateAccountInput, AccountFilters, BulkUpdateAccountsInput, ImportAccountRow } from '@kis-books/shared';
 import { COA_TEMPLATES } from '@kis-books/shared';
@@ -122,6 +123,8 @@ export async function create(tenantId: string, input: CreateAccountInput, userId
 }
 
 export async function update(tenantId: string, id: string, input: UpdateAccountInput, userId?: string) {
+  const expectedStamp = takeExpectedStamp('accounts', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account', tenantId); // U-291
   const existing = await getById(tenantId, id);
 
   // Scrub fields that are never legitimately set by a caller. Previously
@@ -184,9 +187,10 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
   const [updated] = await db
     .update(accounts)
     .set({ ...sanitized, updatedAt: new Date() })
-    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id), staleCondition(accounts.updatedAt, expectedStamp)))
     .returning();
 
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This account');
   if (!updated) {
     throw AppError.internal('Failed to update account');
   }
@@ -303,6 +307,8 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
+  const expectedStamp = takeExpectedStamp('accounts', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account', tenantId); // U-291
   const existing = await getById(tenantId, id);
   // Inventory accounts (U-156, S12): 409 ACCOUNT_IN_USE.
   await assertAccountNotInventory(db, tenantId, [id]);
@@ -318,8 +324,9 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
   const [updated] = await db
     .update(accounts)
     .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id), staleCondition(accounts.updatedAt, expectedStamp)))
     .returning();
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This account');
 
   await auditLog(tenantId, 'update', 'account', id, existing, updated, userId);
   return updated;
@@ -589,6 +596,8 @@ export function sensitiveRefusal(a: { accountType: string; detailType: string | 
  * named built-in account is 422 SENSITIVE_NOT_ALLOWED.
  */
 export async function setSensitive(tenantId: string, id: string, isSensitive: boolean, userId?: string) {
+  const expectedStamp = takeExpectedStamp('accounts', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('accounts', id, expectedStamp, 'This account', tenantId); // U-291
   return db.transaction(async (tx) => {
     const [row] = await tx.select().from(accounts)
       .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
@@ -614,8 +623,9 @@ export async function setSensitive(tenantId: string, id: string, isSensitive: bo
     }
     const [updated] = await tx.update(accounts)
       .set({ isSensitive, updatedAt: new Date() })
-      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id)))
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id), staleCondition(accounts.updatedAt, expectedStamp)))
       .returning();
+    if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This account');
     if (!updated) throw AppError.internal('Failed to update account');
     await auditLog(tenantId, 'update', 'account', id, { isSensitive: row.isSensitive }, { isSensitive }, userId, tx);
     return updated;

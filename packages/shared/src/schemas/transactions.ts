@@ -511,6 +511,9 @@ export const transactionRangeReportSchema = z.object({
 export const bulkUpdateTransactionsSchema = z
   .object({
     txnIds: z.array(z.string().uuid()).min(1).max(500),
+    // Per-item stamps (U-291, stale-all-v1): transaction id -> updatedAt as read;
+    // a stale transaction is skipped with reason 'stale' (and its updatedAt).
+    stamps: z.record(z.string().uuid(), z.string().datetime({ offset: true })).optional(),
     setPayeeContactId: z.string().uuid().nullable().optional(),
     setCategoryAccountId: z.string().uuid().optional(),
     setTagId: z.string().uuid().nullable().optional(),

@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
@@ -78,7 +79,7 @@ recurringRouter.put('/:id', validate(updateScheduleSchema), async (req, res) => 
   res.json({ schedule: sched });
 });
 
-recurringRouter.delete('/:id', async (req, res) => {
+recurringRouter.delete('/:id', expectStamp('recurring_schedules', 'id', { precheck: true }), async (req, res) => {
   await recurringService.deactivate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Deactivated' });
 });

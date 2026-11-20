@@ -460,7 +460,8 @@ describe('reversing entries (U-61)', () => {
     const a = await request('POST', '/api/v1/transactions', c.token, je(accrual(c), { reverseOn: '2026-08-01' }));
     const id = a.json.transaction.id;
     const [rev] = await reversalsOf(c.tenantId, id);
-    await db.update(transactions).set({ updatedAt: new Date(Date.now() + 60_000) }).where(eq(transactions.id, rev!.id));
+    // A hand edit of the reversal (its internal notes; on desktop the stamp is the database's, so a bare stamp write is no edit).
+    await db.update(transactions).set({ internalNotes: 'edited by hand', updatedAt: new Date(Date.now() + 60_000) }).where(eq(transactions.id, rev!.id));
     // Nothing about the reversal changes: allowed, reversal kept.
     expect((await request('PUT', `/api/v1/transactions/${id}`, c.token, je(accrual(c), { memo: 'x' }))).status).toBe(200);
     expect((await live(id))[0]!.id).toBe(rev!.id);

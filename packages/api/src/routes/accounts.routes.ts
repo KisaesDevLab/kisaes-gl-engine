@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp, expectItemStamps } from '../services/stale-context.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
@@ -82,7 +83,7 @@ const INVENTORY_ACCOUNT_NOTE = 'An account inventory needs (the inventory asset 
   + 'item names: an active item, or an inactive one with stock movements) can not be made inactive, deleted, merged away or change its type: '
   + '409 ACCOUNT_IN_USE (details.accountId or details.itemIds).';
 
-accountsRouter.post('/merge', validate(mergeAccountsSchema), describe({
+accountsRouter.post('/merge', expectItemStamps('accounts', 'refuse'), validate(mergeAccountsSchema), describe({
   summary: 'Merge an account into another',
   description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {
@@ -92,7 +93,7 @@ accountsRouter.post('/merge', validate(mergeAccountsSchema), describe({
 
 // Bulk inline edit (COA Bulk Edit table). Registered before the
 // parameterized routes below so "bulk" is never captured as an :id.
-accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), describe({
+accountsRouter.put('/bulk', expectItemStamps('accounts', 'drop', (req, s) => { req.body.updates = (req.body.updates ?? []).filter((u: { id: string }) => !s.has(u.id)); }), validate(bulkUpdateAccountsSchema), describe({
   summary: 'Edit several accounts',
   description: `Response {updated, accounts}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {
@@ -103,7 +104,7 @@ accountsRouter.put('/bulk', validate(bulkUpdateAccountsSchema), describe({
 // Sensitive accounts (U-33, sensitive-accounts-v1): only the company Admin
 // (owner or super admin, team_management) marks or unmarks one.
 const setSensitiveSchema = z.object({ isSensitive: z.boolean() }).strict();
-accountsRouter.put('/:id/sensitive', requireTenantCapability('team_management', 'Only the Admin can mark accounts sensitive'),
+accountsRouter.put('/:id/sensitive', expectStamp('accounts'), requireTenantCapability('team_management', 'Only the Admin can mark accounts sensitive'),
   validate(setSensitiveSchema), describe({
     summary: 'Mark or unmark an account sensitive',
     description: 'Body {isSensitive}. Response {account}. Admin only (owner or super admin): 403 OWNER_REQUIRED otherwise. '
@@ -123,7 +124,7 @@ accountsRouter.get('/:id', async (req, res) => {
   res.json({ account });
 });
 
-accountsRouter.put('/:id', validate(updateAccountSchema), describe({
+accountsRouter.put('/:id', expectStamp('accounts'), validate(updateAccountSchema), describe({
   summary: 'Edit an account',
   description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {
@@ -131,7 +132,7 @@ accountsRouter.put('/:id', validate(updateAccountSchema), describe({
   res.json({ account });
 });
 
-accountsRouter.delete('/:id', describe({
+accountsRouter.delete('/:id', expectStamp('accounts'), describe({
   summary: 'Make an account inactive',
   description: `Response {account}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {

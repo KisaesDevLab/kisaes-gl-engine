@@ -9,7 +9,7 @@
 // so the rest of the suite sees the schema.
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,10 +44,31 @@ async function columnExists(table: string, column: string): Promise<boolean> {
 const tenantIds: string[] = [];
 const sha = () => crypto.randomBytes(32).toString('hex');
 
+/**
+ * Triggers that later migrations put on the two tables (U-291 record stamps,
+ * U-294 change feed): the rollback dropped them with the tables, so they come
+ * back too and the rest of the suite sees the schema at head.
+ */
+async function recreateLaterTriggers(): Promise<void> {
+  const files = readdirSync(MIGRATIONS).filter((f) => /^\d{4}_.*\.sql$/.test(f) && !f.endsWith('.rollback.sql') && f > '0235')
+    .sort();
+  for (const file of files) {
+    const text = readFileSync(path.join(MIGRATIONS, file), 'utf8');
+    for (const stmt of text.split('--> statement-breakpoint')) {
+      const body = stmt.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').trim();
+      if (/^CREATE TRIGGER\b/i.test(body) && /\bON (document_drafts|vendor_layout_templates)\b/.test(body)) {
+        await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${/^CREATE TRIGGER (\w+)/i.exec(body)![1]} ON ${/\bON (\w+)/.exec(body)![1]}`));
+        await db.execute(sql.raw(body));
+      }
+    }
+  }
+}
+
 afterAll(async () => {
   if (!(await tableExists('document_drafts'))) {
     await run('0233_document_drafts.sql');
     await run('0235_document_drafts_statement_kind.sql');
+    await recreateLaterTriggers();
   }
   for (const id of tenantIds) {
     await db.delete(documentDrafts).where(eq(documentDrafts.tenantId, id));
@@ -75,6 +96,7 @@ describe('migration 0233 document drafts', () => {
     await run('0233_document_drafts.sql');
     // Later migrations on the table (0235 statement kind, U-94) bring it back to head for the rest of the suite.
     await run('0235_document_drafts_statement_kind.sql');
+    await recreateLaterTriggers();
     expect(await tableExists('document_drafts')).toBe(true);
     expect(await columnExists('accounts', 'card_last4')).toBe(true);
     const idx = await db.execute(sql`SELECT indexname FROM pg_indexes WHERE tablename IN ('document_drafts', 'vendor_layout_templates') ORDER BY indexname`);

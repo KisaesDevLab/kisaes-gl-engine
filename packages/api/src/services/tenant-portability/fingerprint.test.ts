@@ -143,7 +143,10 @@ describe('fingerprint fp1', () => {
     const line = (await db.select().from(journalLines).where(eq(journalLines.tenantId, tenantId)).limit(1))[0]!;
     await db.update(journalLines).set({ companyId: co2!.id }).where(eq(journalLines.id, line.id));
     const after = await fp();
-    expect(fingerprintDiff(before, after)).toEqual(['companies', 'journal_lines', 'trialBalance']);
+    // On a desktop connection (record stamps, U-291) the line's entry moves its stamp too.
+    const desktop = ((await db.execute(sql`SELECT current_setting('mybooks.desktop', true) AS v`)).rows[0] as { v: string | null }).v === 'on';
+    expect(fingerprintDiff(before, after)).toEqual(desktop
+      ? ['companies', 'journal_lines', 'transactions', 'trialBalance'] : ['companies', 'journal_lines', 'trialBalance']);
     await db.update(journalLines).set({ companyId }).where(eq(journalLines.id, line.id));
     await db.delete(companies).where(eq(companies.id, co2!.id));
   });

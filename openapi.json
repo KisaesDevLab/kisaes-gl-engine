@@ -2884,7 +2884,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "bulk",
+        "x-stamp": "stamps"
       }
     },
     "/api/v1/accounts/export": {
@@ -3054,7 +3055,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "bulk",
+        "x-stamp": "stamps"
       }
     },
     "/api/v1/accounts/{id}": {
@@ -3089,7 +3091,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_accounts_by_id",
@@ -3236,7 +3239,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/accounts/{id}/ledger": {
@@ -3881,7 +3885,8 @@
           "accounts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/admin/backup-verify": {
@@ -15351,7 +15356,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-assign": {
@@ -15437,7 +15442,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-categorize": {
@@ -15511,7 +15516,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-exclude": {
@@ -15559,7 +15564,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-post-to-suspense": {
@@ -15609,7 +15614,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-recleanse": {
@@ -15657,7 +15662,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-reprocess-rules": {
@@ -15709,7 +15714,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-set-contact": {
@@ -15769,7 +15774,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-set-name": {
@@ -15792,7 +15797,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-set-tag": {
@@ -15815,7 +15820,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/bulk-unexclude": {
@@ -15863,7 +15868,7 @@
           "banking"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/banking/feed/counts": {
@@ -22489,6 +22494,7 @@
     },
     "/api/v1/budgets/{id}": {
       "delete": {
+        "description": "Optional query `version` (the version read, budgets-exact-v1): another current version is 409 STALE_VERSION {details.current}.",
         "operationId": "delete_api_v1_budgets_by_id",
         "parameters": [
           {
@@ -22497,6 +22503,15 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],
@@ -22513,6 +22528,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "Delete a budget",
         "tags": [
           "budgets"
         ],
@@ -25160,7 +25176,8 @@
           "checks"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/checks/spoiled": {
@@ -25518,7 +25535,8 @@
         ],
         "x-idempotency": true,
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/checks/{id}/memo": {
@@ -25578,7 +25596,8 @@
           "checks"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/coa-templates/options": {
@@ -25849,7 +25868,8 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/company/1099-thresholds": {
@@ -26153,7 +26173,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/closing-password": {
@@ -26289,7 +26309,8 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/company/closing-password/reset": {
@@ -27403,7 +27424,8 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "description": "Response {layout}. 404 INVOICE_LAYOUT_NOT_FOUND (not a layout of this company).",
@@ -28338,7 +28360,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/list": {
@@ -28553,7 +28575,8 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "put": {
         "operationId": "put_api_v1_company_permission_templates_by_id",
@@ -28653,7 +28676,8 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/company/settings": {
@@ -28933,7 +28957,8 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/company/setup-complete": {
@@ -29277,7 +29302,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/users/{userId}/deactivate": {
@@ -29444,7 +29469,7 @@
           "company"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/company/users/{userId}/reactivate": {
@@ -30211,7 +30236,8 @@
           "contacts"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "bulk",
+        "x-stamp": "stamps"
       }
     },
     "/api/v1/contacts/export": {
@@ -30417,7 +30443,8 @@
           "contacts"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "bulk",
+        "x-stamp": "stamps"
       }
     },
     "/api/v1/contacts/{id}": {
@@ -30450,7 +30477,8 @@
           "contacts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "description": "Each contact carries its open balances (contact-balance-v1): openBalance (A/R: posted lines on the receivable account named for the contact, invoices less payments and credits) and oldestOpenDate (oldest posted invoice with a balance due), payableBalance and oldestOpenBillDate (A/P, bills). Money as 4-place decimal strings; void and deleted transactions are out; the request company (X-Company-Id) and rows without a company.",
@@ -30886,7 +30914,8 @@
           "contacts"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/contacts/{id}/envelope": {
@@ -33220,7 +33249,8 @@
           "daily-sales"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_daily_sales_entries_by_id",
@@ -33354,7 +33384,8 @@
           "daily-sales"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/daily-sales/entries/{id}/post": {
@@ -33594,7 +33625,8 @@
           "daily-sales"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_daily_sales_templates_by_id",
@@ -33687,7 +33719,8 @@
           "daily-sales"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/daily-sales/templates/{id}/duplicate": {
@@ -33891,7 +33924,8 @@
           "daily-sales"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/dashboard/account-balances": {
@@ -36449,7 +36483,7 @@
           "document-numbers"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/document-reading/assist": {
@@ -36946,7 +36980,8 @@
           "duplicates"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "bulk",
+        "x-stamp": "stamps"
       }
     },
     "/api/v1/duplicates/scan": {
@@ -46950,7 +46985,8 @@
           "items"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "description": "Response {item} with the read-only stock figures of a part (item-types-v1). Purchase side on every kind (item-types-v1): purchaseDescription, purchaseCost (a string, 0 or more, at most 4 places), expenseAccountId, preferredVendorId (a vendor of the company). An inventory_part needs inventory on for the company (400 INVENTORY_OFF), assetAccountId (an active asset account, not bank or receivables) and cogsAccountId (an active cost of goods sold account), and may take reorderPoint (0 or more) and reorderQuantity (above 0), strings with at most 4 places; unitLabel (at most 10 characters) on any kind. Only parts take the asset / COGS accounts and reorder fields. A bad account or vendor is 400 VALIDATION_ERROR with details.field. Read-only on parts (null on other kinds): quantityOnHand (4 places), averageCost (6 places), assetValue (2 places), all strings. Units of measure (units-of-measure-v1): unitSetId (an active unit set of the company, GET /unit-sets), defaultPurchaseUnitId and defaultSaleUnitId (units of that set; null = the base unit), else 400 VALIDATION_ERROR; changing unitSetId while any transaction line names the item is 409 UNIT_IN_USE. Read-only unitPrices: null without a set, else [{unitId (null = base), name, abbreviation, factor, unitPrice = round4(unitPrice x factor)}], the default price of a line in each unit. Stock figures are in the base unit; unitLabel stays the display unit of an item without a set.",
@@ -47345,7 +47381,8 @@
           "je-templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_je_templates_by_id",
@@ -47449,7 +47486,8 @@
           "je-templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/je-templates/{id}/duplicate": {
@@ -47614,7 +47652,8 @@
           "je-templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/journal-entries/next-number": {
@@ -55976,7 +56015,7 @@
           "practice"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/practice/conditional-rules/export.csv": {
@@ -56091,7 +56130,7 @@
           "practice"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/practice/conditional-rules/sandbox/recent-samples": {
@@ -56263,7 +56302,8 @@
           "practice"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_practice_conditional_rules_by_id",
@@ -56842,7 +56882,8 @@
           "practice"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/practice/conditional-rules/{id}/audit": {
@@ -63015,7 +63056,8 @@
           "price-levels"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "description": "price-levels-v1: {priceLevel: {id, name, percent (signed, 4 places: \"-7.5000\" = 7.5 % down), isActive, companyId, createdAt, updatedAt, itemPrices: [{itemId, unitPrice}]}}; another company's is 404.",
@@ -63129,7 +63171,8 @@
           "price-levels"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/public/invoices/{token}": {
@@ -63457,7 +63500,8 @@
           "recurring"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(schedule)"
+        "x-stale": "stale(schedule)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "put": {
         "operationId": "put_api_v1_recurring_by_id",
@@ -63589,7 +63633,7 @@
           "recurring"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(schedule)"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/recurring/{id}/post-now": {
@@ -63655,7 +63699,7 @@
           "recurring"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(schedule)"
+        "x-stale": "state-guarded"
       }
     },
     "/api/v1/remote-backup/config": {
@@ -64722,7 +64766,7 @@
           "report-builder"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(version)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/report-builder/definitions/import/preview": {
@@ -76915,6 +76959,16 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "stamps": {
+                    "additionalProperties": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "format": "uuid"
+                    },
+                    "type": "object"
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -76969,6 +77023,16 @@
               "schema": {
                 "additionalProperties": true,
                 "properties": {
+                  "stamps": {
+                    "additionalProperties": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "format": "uuid"
+                    },
+                    "type": "object"
+                  },
                   "tagIds": {
                     "items": {
                       "format": "uuid",
@@ -77110,7 +77174,7 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/tags/groups/{id}": {
@@ -77143,7 +77207,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "put": {
         "operationId": "put_api_v1_tags_groups_by_id",
@@ -77201,7 +77266,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/merge": {
@@ -77255,7 +77321,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "bulk"
+        "x-stale": "bulk",
+        "x-stamp": "stamps"
       }
     },
     "/api/v1/tags/saved-filters": {
@@ -77423,7 +77490,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/transactions/{id}/add": {
@@ -77479,7 +77547,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "n-a"
+        "x-stale": "n-a",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/transactions/{id}/remove": {
@@ -77535,7 +77604,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "n-a"
+        "x-stale": "n-a",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/usage-summary": {
@@ -77590,7 +77660,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "operationId": "get_api_v1_tags_by_id",
@@ -77971,7 +78042,8 @@
           "tags"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/tags/{id}/usage": {
@@ -97129,7 +97201,7 @@
           "templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       },
       "put": {
         "operationId": "put_api_v1_templates_groups_by_id",
@@ -97183,7 +97255,7 @@
           "templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "n-a"
       }
     },
     "/api/v1/templates/{id}": {
@@ -97227,7 +97299,7 @@
           "templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(version)"
       },
       "get": {
         "operationId": "get_api_v1_templates_by_id",
@@ -97415,7 +97487,7 @@
           "templates"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(version)"
       }
     },
     "/api/v1/templates/{id}/draft": {
@@ -99829,6 +99901,16 @@
                       }
                     ]
                   },
+                  "stamps": {
+                    "additionalProperties": {
+                      "format": "date-time",
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "format": "uuid"
+                    },
+                    "type": "object"
+                  },
                   "tagAccountId": {
                     "format": "uuid",
                     "type": "string"
@@ -100551,7 +100633,8 @@
         ],
         "x-idempotency": true,
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       }
     },
     "/api/v1/transactions/{id}/activity": {
@@ -100955,7 +101038,8 @@
           "unit-sets"
         ],
         "x-lan": "workstation",
-        "x-stale": "stale(updatedAt)"
+        "x-stale": "stale(updatedAt)",
+        "x-stamp": "expectedUpdatedAt"
       },
       "get": {
         "description": "Response {unitSet}. Of another company: 404. units-of-measure-v1 (Q-P24i): a set has a base unit and other units, each factor = base units per unit, a decimal string above 0 with at most 6 places, at most 1,000,000 (400 VALIDATION_ERROR otherwise); unit names are unique in the set, the base unit included (400 VALIDATION_ERROR); set names unique in the company (409 DUPLICATE_NAME). Lines in a unit store baseQuantity = round4(quantity x factor), half away from zero. Record: {id, name, baseUnitName, baseUnitAbbreviation, isActive, units: [{id, name, abbreviation, factor (6-place string, base units per unit)}], inUse (an item names the set or a line names one of its units), updatedAt}.",

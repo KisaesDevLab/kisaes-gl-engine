@@ -46,6 +46,13 @@ export interface LanEngine {
   /** Signs the owner in from `who`; returns the tokens. */
   login: (who: Who, cred?: { email: string; password: string }) => Promise<{ accessToken: string; refreshToken: string }>;
   query: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>;
+  /** The company tenant made by first run (empty when initialize is false). */
+  company: string;
+  /** A request with a ready body (multipart FormData); headers as call(). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  callRaw: (who: Who, p: string, init: { method: string; jwt?: string; body: FormData }) => Promise<{ status: number; json: any }>;
+  /** Signs the owner in from `who` and switches into the company; returns the access token. */
+  signIn: (who: Who) => Promise<string>;
 }
 
 function urlFor(base: string, db: string): string {
@@ -122,6 +129,24 @@ export async function startLanEngine(opts: { env?: Record<string, string>; initi
     return { status: r.status, json, cookies: r.headers.getSetCookie() };
   };
 
+  const callRaw: LanEngine['callRaw'] = async (who, p, init) => {
+    const headers: Record<string, string> = {};
+    if (who === 'host') headers['x-cl-token'] = HOST_TOKEN;
+    else {
+      headers['x-cl-token'] = LAN_TOKEN;
+      headers['x-forwarded-for'] = who.peer ?? '192.168.1.50';
+      headers['x-cl-device'] = who.device;
+    }
+    if (init.jwt) headers['authorization'] = `Bearer ${init.jwt}`;
+    const r = await fetch(`http://127.0.0.1:${port}${p}`, { method: init.method, headers, body: init.body });
+    const text = await r.text();
+    let json: unknown = text;
+    try {
+      json = JSON.parse(text);
+    } catch { /* not JSON */ }
+    return { status: r.status, json };
+  };
+
   const login: LanEngine['login'] = async (who, cred = OWNER) => {
     const r = await call(who, '/api/v1/auth/login', { method: 'POST', body: { email: cred.email, password: cred.password } });
     if (r.status !== 200) throw new Error(`login ${r.status}: ${JSON.stringify(r.json)}`);
@@ -133,13 +158,22 @@ export async function startLanEngine(opts: { env?: Record<string, string>; initi
   const query: LanEngine['query'] = async (text, params = []) =>
     onDb(dbUrl, async (c) => (await c.query(text, params as unknown[])).rows);
 
+  let company = '';
   if (opts.initialize !== false) {
     const r = await call('host', '/api/v1/desktop/initialize', {
       method: 'POST',
       body: { admin: OWNER, company: { name: 'Lan Test Co', entityType: 'llc_single', industry: 'Retail' } },
     });
     if (r.status !== 201) throw new Error(`initialize ${r.status}: ${JSON.stringify(r.json)}`);
+    company = r.json.companyTenantId;
   }
+
+  const signIn: LanEngine['signIn'] = async (who) => {
+    const t0 = await login(who);
+    const r = await call(who, '/api/v1/auth/switch-tenant', { method: 'POST', jwt: t0.accessToken, body: { tenantId: company } });
+    if (r.status !== 200) throw new Error(`switch ${r.status}: ${JSON.stringify(r.json)}`);
+    return r.json.tokens.accessToken as string;
+  };
 
   const close = async () => {
     await new Promise<void>((r) => server.close(() => r()));
@@ -154,5 +188,5 @@ export async function startLanEngine(opts: { env?: Record<string, string>; initi
     }).catch(() => undefined);
   };
 
-  return { dbUrl, close, call, login, query };
+  return { dbUrl, close, call, callRaw, login, query, company, signIn };
 }

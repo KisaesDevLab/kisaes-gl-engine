@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { parentStamp } from '../utils/record-stamps.js';
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
@@ -274,7 +275,8 @@ attachmentsRouter.post('/', describe({
     });
   }
 
-  res.status(201).json({ attachment });
+  // The record's new stamp (U-291): the open form saves on it.
+  res.status(201).json({ attachment, parentUpdatedAt: await parentStamp(db, req.tenantId, attachableType, attachableId) });
 });
 
 attachmentsRouter.get('/', async (req, res) => {
@@ -318,7 +320,7 @@ attachmentsRouter.post('/:id/link', async (req, res) => {
     { attachableType, attachableId },
     req.userId,
   );
-  res.json({ linked: true });
+  res.json({ linked: true, parentUpdatedAt: await parentStamp(db, req.tenantId, attachableType, attachableId) });
 });
 
 // Enriched library endpoint — joins attachments with transactions + contacts.
@@ -379,9 +381,12 @@ attachmentsRouter.get('/:id', async (req, res) => {
 
 attachmentsRouter.delete('/:id', async (req, res) => {
   const attachmentId = req.params['id']!;
+  const before = await attachmentService.getById(req.tenantId, attachmentId, req.companyId).catch(() => null) as { attachableType?: string | null; attachableId?: string | null } | null;
   // U-186: the audit row (before-image: the locked row) is written in the delete's transaction.
   await attachmentService.remove(req.tenantId, attachmentId, req.companyId, { userId: req.userId });
-  res.json({ message: 'Attachment deleted' });
+  const parentUpdatedAt = before?.attachableId && before.attachableType
+    ? await parentStamp(db, req.tenantId, before.attachableType, before.attachableId) : null;
+  res.json({ message: 'Attachment deleted', parentUpdatedAt });
 });
 
 const OCR_GATE_MESSAGES: Record<BillOcrUnavailableReason, string> = {

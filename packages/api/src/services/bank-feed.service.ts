@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { lockTransactionHeaders } from '../utils/record-stamps.js';
 import { resolveCompanyForConnection } from './feed-item-company.service.js';
 import { eq, and, sql, count, inArray, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
@@ -1649,6 +1650,8 @@ export async function bulkSetTag(tenantId: string, feedItemIds: string[], tagId:
       // partial-progress visibility — the failures[] result still
       // identifies which item didn't apply.
       await db.transaction(async (tx) => {
+        // The entry first, then its lines (U-291: the editor's lock order).
+        await lockTransactionHeaders(tx, tenantId, [item.matchedTransactionId!]);
         await tx.update(journalLines).set({ tagId })
           .where(and(
             eq(journalLines.tenantId, tenantId),

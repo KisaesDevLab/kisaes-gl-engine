@@ -2,9 +2,11 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp, checkExpectedStamp } from './stale-context.js';
 import { eq, and, or, sql, ilike, count, inArray, asc, type SQL } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
+import { assertNotStale, lockTransactionHeaders } from '../utils/record-stamps.js';
 import { tags, tagGroups, transactionTags, savedReportFilters, transactions, journalLines, items, contacts, budgets, bankRules } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
@@ -136,6 +138,8 @@ export async function create(tenantId: string, input: CreateTagInput, userId?: s
 }
 
 export async function update(tenantId: string, id: string, input: UpdateTagInput, userId?: string) {
+  const expectedStamp = takeExpectedStamp('tags', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag', tenantId); // U-291
   if (input.name) {
     const existing = await db.query.tags.findFirst({
       where: and(eq(tags.tenantId, tenantId), eq(tags.name, input.name)),
@@ -156,12 +160,13 @@ export async function update(tenantId: string, id: string, input: UpdateTagInput
   try {
     [updated] = await db.update(tags)
       .set({ ...changes, updatedAt: new Date() })
-      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)))
+      .where(and(eq(tags.tenantId, tenantId), eq(tags.id, id), staleCondition(tags.updatedAt, expectedStamp)))
       .returning();
   } catch (err) {
     if (changes.tagNumber && isTagNumberViolation(err)) throw tagNumberTaken(changes.tagNumber);
     throw err;
   }
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This tag');
   if (!updated) throw AppError.notFound('Tag not found');
   await auditLog(tenantId, 'update', 'tag', updated.id, before ?? null, updated, userId);
   return updated;
@@ -250,6 +255,8 @@ export async function getUsage(tenantId: string, tagId: string): Promise<TagUsag
 }
 
 export async function remove(tenantId: string, id: string, userId?: string) {
+  const expectedStamp = takeExpectedStamp('tags', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('tags', id, expectedStamp, 'This tag', tenantId); // U-291
   // Surface a structured 409 before the raw FK violation hits, so the UI
   // can show "this tag is used by N transactions / M budgets / …" and
   // offer reassignment / merge instead of failing with an opaque
@@ -267,7 +274,8 @@ export async function remove(tenantId: string, id: string, userId?: string) {
   // still sweep it defensively to handle any race between the usage count
   // and the delete.
   await db.delete(transactionTags).where(and(eq(transactionTags.tenantId, tenantId), eq(transactionTags.tagId, id)));
-  await db.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, id)));
+  const gone = await db.delete(tags).where(and(eq(tags.tenantId, tenantId), eq(tags.id, id), staleCondition(tags.updatedAt, expectedStamp))).returning({ id: tags.id });
+  if (gone.length === 0 && expectedStamp !== undefined) throw staleConflict(null, 'This tag');
   await auditLog(tenantId, 'delete', 'tag', id, tag, null, userId);
 }
 
@@ -373,18 +381,24 @@ export async function createGroup(tenantId: string, input: { name: string; descr
 }
 
 export async function updateGroup(tenantId: string, id: string, input: { name?: string; description?: string | null; isSingleSelect?: boolean }) {
+  const expectedStamp = takeExpectedStamp('tag_groups', id); // U-291
+  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group', tenantId);
   const [updated] = await db.update(tagGroups)
     .set({ ...input, updatedAt: new Date() })
-    .where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id)))
+    .where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id), staleCondition(tagGroups.updatedAt, expectedStamp)))
     .returning();
+  if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This tag group');
   if (!updated) throw AppError.notFound('Tag group not found');
   return updated;
 }
 
 export async function deleteGroup(tenantId: string, id: string) {
+  const expectedStamp = takeExpectedStamp('tag_groups', id);
+  if (expectedStamp !== undefined) await assertCurrentStamp('tag_groups', id, expectedStamp, 'This tag group', tenantId); // U-291
   // Ungroup tags (set group_id = null)
   await db.update(tags).set({ groupId: null }).where(and(eq(tags.tenantId, tenantId), eq(tags.groupId, id)));
-  await db.delete(tagGroups).where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id)));
+  const gone = await db.delete(tagGroups).where(and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, id), staleCondition(tagGroups.updatedAt, expectedStamp))).returning({ id: tagGroups.id });
+  if (gone.length === 0 && expectedStamp !== undefined) throw staleConflict(null, 'This tag group');
 }
 
 export async function reorderGroups(tenantId: string, orderedIds: string[]) {
@@ -395,25 +409,24 @@ export async function reorderGroups(tenantId: string, orderedIds: string[]) {
 
 // ─── Transaction Tagging ─────────────────────────────────────────
 
-export async function addTags(tenantId: string, transactionId: string, tagIds: string[]) {
+async function addTagsIn(exec: DbOrTx, tenantId: string, transactionId: string, tagIds: string[]) {
   if (tagIds.length === 0) return;
-  await assertTransactionInTenant(tenantId, transactionId);
   await assertTagsInTenant(tenantId, tagIds);
 
   // Enforce single-select group rules
-  const tagsToAdd = await db.select().from(tags).where(and(eq(tags.tenantId, tenantId)));
+  const tagsToAdd = await exec.select().from(tags).where(and(eq(tags.tenantId, tenantId)));
   for (const tagId of tagIds) {
     const tag = tagsToAdd.find((t) => t.id === tagId);
     if (!tag || !tag.groupId) continue;
 
-    const group = await db.query.tagGroups.findFirst({
+    const group = await exec.query.tagGroups.findFirst({
       where: and(eq(tagGroups.tenantId, tenantId), eq(tagGroups.id, tag.groupId)),
     });
     if (group?.isSingleSelect) {
       // Remove other tags from this group on this transaction
       const groupTagIds = tagsToAdd.filter((t) => t.groupId === tag.groupId).map((t) => t.id);
       if (groupTagIds.length > 0) {
-        await db.execute(sql`
+        await exec.execute(sql`
           DELETE FROM transaction_tags
           WHERE transaction_id = ${transactionId} AND tenant_id = ${tenantId}
             AND tag_id IN (${sql.join(groupTagIds.map((id) => sql`${id}`), sql`,`)})
@@ -424,29 +437,61 @@ export async function addTags(tenantId: string, transactionId: string, tagIds: s
 
   for (const tagId of tagIds) {
     // Upsert (skip if already exists)
-    await db.execute(sql`
+    await exec.execute(sql`
       INSERT INTO transaction_tags (transaction_id, tag_id, tenant_id)
       VALUES (${transactionId}, ${tagId}, ${tenantId})
       ON CONFLICT (transaction_id, tag_id) DO NOTHING
     `);
     // Increment usage count (tenant-scoped per CLAUDE.md #17)
-    await db.update(tags).set({ usageCount: sql`${tags.usageCount} + 1` })
+    await exec.update(tags).set({ usageCount: sql`${tags.usageCount} + 1` })
       .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId)));
   }
 }
 
-export async function removeTags(tenantId: string, transactionId: string, tagIds: string[]) {
+async function removeTagsIn(exec: DbOrTx, tenantId: string, transactionId: string, tagIds: string[]) {
   if (tagIds.length === 0) return;
-  await assertTransactionInTenant(tenantId, transactionId);
   for (const tagId of tagIds) {
-    await db.delete(transactionTags).where(and(
+    await exec.delete(transactionTags).where(and(
       eq(transactionTags.tenantId, tenantId),
       eq(transactionTags.transactionId, transactionId),
       eq(transactionTags.tagId, tagId),
     ));
-    await db.update(tags).set({ usageCount: sql`GREATEST(${tags.usageCount} - 1, 0)` })
+    await exec.update(tags).set({ usageCount: sql`GREATEST(${tags.usageCount} - 1, 0)` })
       .where(and(eq(tags.tenantId, tenantId), eq(tags.id, tagId)));
   }
+}
+
+/**
+ * Runs a tag change on one transaction in its own database transaction,
+ * with the transaction row locked first (U-291: the same lock order as an
+ * editor, so the stamp bump of the tag rows cannot deadlock with a save).
+ * `expectedUpdatedAt`: the transaction's stamp as last read (409 STALE).
+ */
+async function onLockedTransaction(
+  tenantId: string, transactionId: string, expectedUpdatedAt: string | undefined,
+  fn: (tx: Tx) => Promise<void>,
+): Promise<void> {
+  await assertTransactionInTenant(tenantId, transactionId);
+  await db.transaction(async (tx) => {
+    await lockTransactionHeaders(tx, tenantId, [transactionId]);
+    const [row] = await tx.select({ updatedAt: transactions.updatedAt }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId))).limit(1);
+    if (row) {
+      if (expectedUpdatedAt !== undefined) assertNotStale(row, expectedUpdatedAt);
+      else checkExpectedStamp('transactions', transactionId, row);
+    }
+    await fn(tx);
+  });
+}
+
+export async function addTags(tenantId: string, transactionId: string, tagIds: string[], expectedUpdatedAt?: string) {
+  if (tagIds.length === 0) return;
+  await onLockedTransaction(tenantId, transactionId, expectedUpdatedAt, (tx) => addTagsIn(tx, tenantId, transactionId, tagIds));
+}
+
+export async function removeTags(tenantId: string, transactionId: string, tagIds: string[], expectedUpdatedAt?: string) {
+  if (tagIds.length === 0) return;
+  await onLockedTransaction(tenantId, transactionId, expectedUpdatedAt, (tx) => removeTagsIn(tx, tenantId, transactionId, tagIds));
 }
 
 export async function replaceTags(tenantId: string, transactionId: string, tagIds: string[]) {
@@ -495,6 +540,10 @@ export async function setTransactionLineTag(
   if (tagId) await assertTagsInTenant(tenantId, [tagId]);
 
   await db.transaction(async (tx) => {
+    await lockTransactionHeaders(tx, tenantId, [transactionId]);
+    const [stampRow] = await tx.select({ updatedAt: transactions.updatedAt }).from(transactions)
+      .where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, transactionId))).limit(1);
+    if (stampRow) checkExpectedStamp('transactions', transactionId, stampRow);
     await tx.update(journalLines).set({ tagId })
       .where(and(
         eq(journalLines.tenantId, tenantId),
@@ -527,16 +576,35 @@ export async function setTransactionLineTag(
   });
 }
 
-export async function bulkAddTags(tenantId: string, transactionIds: string[], tagIds: string[]) {
-  for (const txnId of transactionIds) {
-    await addTags(tenantId, txnId, tagIds);
-  }
+/**
+ * Bulk tag (U-291): each transaction in its own locked database transaction.
+ * With `stamps` (transaction id → updatedAt as read), a stale transaction is
+ * skipped and reported; the others are tagged.
+ */
+export async function bulkAddTags(tenantId: string, transactionIds: string[], tagIds: string[], stamps?: Record<string, string>) {
+  return bulkOnTransactions(transactionIds, stamps, (id, stamp) => addTags(tenantId, id, tagIds, stamp));
 }
 
-export async function bulkRemoveTags(tenantId: string, transactionIds: string[], tagIds: string[]) {
-  for (const txnId of transactionIds) {
-    await removeTags(tenantId, txnId, tagIds);
+export async function bulkRemoveTags(tenantId: string, transactionIds: string[], tagIds: string[], stamps?: Record<string, string>) {
+  return bulkOnTransactions(transactionIds, stamps, (id, stamp) => removeTags(tenantId, id, tagIds, stamp));
+}
+
+async function bulkOnTransactions(
+  ids: string[], stamps: Record<string, string> | undefined, one: (id: string, stamp: string | undefined) => Promise<void>,
+): Promise<{ stale: Array<{ id: string; updatedAt: string | null }> }> {
+  const stale: Array<{ id: string; updatedAt: string | null }> = [];
+  for (const id of ids) {
+    try {
+      await one(id, stamps?.[id]);
+    } catch (err) {
+      if (err instanceof AppError && err.code === 'STALE') {
+        stale.push({ id, updatedAt: (err.details as { updatedAt?: string | null } | undefined)?.updatedAt ?? null });
+        continue;
+      }
+      throw err;
+    }
   }
+  return { stale };
 }
 
 export async function getTagsForTransactions(tenantId: string, transactionIds: string[]) {

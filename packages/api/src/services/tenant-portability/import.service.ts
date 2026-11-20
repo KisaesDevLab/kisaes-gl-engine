@@ -391,6 +391,9 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
     try {
       await client.query('BEGIN');
       await applyArchiveSession(client);
+      // Desktop (U-291): the record-stamp triggers stay off for the import, so
+      // restored records keep the stamps they had in the archive.
+      await client.query("SET LOCAL mybooks.desktop = 'off'");
       await client.query("SET LOCAL lock_timeout = '5s'");
       await xactLockTenantExclusive(client, newTenantId);
       const unresolved = await mapGlobalRows(client, plan, manifest, idMap, warnings);

@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { createItemSchema, updateItemSchema, itemsImportSchema, itemFiltersSchema } from '@kis-books/shared';
@@ -105,7 +106,7 @@ itemsRouter.put('/:id', validate(updateItemSchema), describe({
   res.json({ item });
 });
 
-itemsRouter.delete('/:id', describe({
+itemsRouter.delete('/:id', expectStamp('items', 'id', { precheck: true }), describe({
   summary: 'Make an item inactive',
   description: 'Response {message}. Items are never deleted (an item with stock movements keeps its history); the item becomes inactive.',
   params: idParams,

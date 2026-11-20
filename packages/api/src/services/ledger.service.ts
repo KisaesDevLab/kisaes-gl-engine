@@ -1109,29 +1109,10 @@ export async function voidTransactionInTx(tx: Tx, tenantId: string, txnId: strin
   }
 }
 
-/**
- * Optimistic concurrency on a locked row (U-84, ap-edit-v1): `expected` is
- * the record's updatedAt as the caller last read it (ISO 8601). Compared to
- * the millisecond, as JSON carries it, after the row is read FOR UPDATE, so
- * two writers can't both pass. Mismatch: 409 STALE, details.updatedAt = the
- * stored value; nothing changes. Omitted: no check (old behaviour).
- */
-export function assertNotStale(
-  row: { updatedAt: Date | null },
-  expected: string | undefined,
-  what = 'This transaction',
-): void {
-  if (expected === undefined) return;
-  const stored = row.updatedAt ? row.updatedAt.getTime() : null;
-  const wanted = Date.parse(expected);
-  if (stored === null || Number.isNaN(wanted) || stored !== wanted) {
-    throw AppError.conflict(
-      `${what} was changed by someone else since you opened it. Reload it and make your change again.`,
-      'STALE',
-      { updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null },
-    );
-  }
-}
+// assertNotStale moved to utils/record-stamps.ts (U-291); re-exported for existing callers.
+import { assertNotStale } from '../utils/record-stamps.js';
+import { checkExpectedStamp } from './stale-context.js';
+export { assertNotStale };
 
 /**
  * An invoice may be voided only while no live payment or credit is applied
@@ -1620,6 +1601,8 @@ export async function updateTransaction(
       throw AppError.notFound('Transaction not found');
     }
     if (existing.status === 'void') throw AppError.badRequest('Cannot update a void transaction');
+    // The caller's stamp (U-291, stale-all-v1), compared under the row lock.
+    checkExpectedStamp('transactions', txnId, existing);
     // Sensitive accounts (U-33): old and new lines, before the closed-period check.
     await assertTxnVisible(tx, tenantId, txnId);
     await assertNoHiddenLines(input.lines.map((l) => l.accountId));
@@ -2728,7 +2711,7 @@ export async function bulkUpdateTransactions(
   companyId?: string,
 ): Promise<BulkUpdateTransactionsResult> {
   const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId, tagAccountId, moveFromAccountId, moveToAccountId } = input;
-  const skipped: Array<{ id: string; reason: string }> = [];
+  const skipped: Array<{ id: string; reason: string; updatedAt?: string | null }> = [];
   let updated = 0;
 
   return await db.transaction(async (tx) => {
@@ -2776,12 +2759,18 @@ export async function bulkUpdateTransactions(
       if (row.lock_date && (!maxLock || row.lock_date > maxLock)) maxLock = row.lock_date;
     }
 
-    for (const txnId of txnIds) {
+    // Id order (U-291): two batches over the same entries lock them in the same order.
+    for (const txnId of [...new Set(txnIds)].sort()) {
       const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)];
       if (companyId) conds.push(eq(transactions.companyId, companyId));
       const [txn] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
 
       if (!txn || txn.status === 'deleted') { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
+      const expected = input.stamps?.[txnId];
+      if (expected !== undefined && (txn.updatedAt?.getTime() ?? null) !== Date.parse(expected)) {
+        skipped.push({ id: txnId, reason: 'stale', updatedAt: txn.updatedAt ? txn.updatedAt.toISOString() : null });
+        continue;
+      }
       if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
       // TB3: AJE lifecycle is firm-only and runs through the tb router —
       // bulk recategorize/retag must never rewrite an adjusting entry.

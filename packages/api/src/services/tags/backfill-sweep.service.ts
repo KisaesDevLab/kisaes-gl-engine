@@ -30,6 +30,7 @@
 // BullMQ"). This sweep follows the same pattern so it can migrate to
 // BullMQ later without changing the correctness contract.
 
+import { quietStamps } from '../../utils/record-stamps.js';
 import { sql } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { withSchedulerLock } from '../../utils/scheduler-lock.js';
@@ -71,7 +72,8 @@ async function runChunk(): Promise<number> {
   // earliest-created junction row per transaction. We re-derive it
   // per chunk so concurrent writes to transaction_tags are picked up
   // in later chunks rather than relying on a snapshot.
-  const rs = await db.execute(sql`
+  // Filling empty line tags from the entry's own tags is maintenance: quiet (U-291), it moves no stamp.
+  const rs = await db.transaction((tx) => quietStamps(tx, () => tx.execute(sql`
     WITH candidate AS (
       SELECT jl.id, jl.transaction_id
       FROM journal_lines jl
@@ -98,7 +100,7 @@ async function runChunk(): Promise<number> {
       AND jl.transaction_id = primary_tag.transaction_id
       AND jl.tag_id IS NULL
     RETURNING jl.id
-  `);
+  `)));
   return rs.rows.length;
 }
 

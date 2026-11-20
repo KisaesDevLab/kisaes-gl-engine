@@ -314,6 +314,8 @@ export interface CreateDepositInput {
 }
 
 export interface BulkUpdateTransactionsInput {
+  /** Per-item stamps (U-291): transaction id -> updatedAt as read; stale ones are skipped. */
+  stamps?: Record<string, string>;
   txnIds: string[];
   /** Null clears the payee; a contact id assigns it. */
   setPayeeContactId?: string | null;
@@ -344,7 +346,7 @@ export interface BulkUpdateTransactionsInput {
 export interface BulkUpdateTransactionsResult {
   updated: number;
   /** Transactions left untouched, with the reason (split, void, locked…). */
-  skipped: Array<{ id: string; reason: string }>;
+  skipped: Array<{ id: string; reason: string; updatedAt?: string | null }>;
 }
 
 export interface CreateCashSaleInput {

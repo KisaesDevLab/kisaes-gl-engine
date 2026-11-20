@@ -188,6 +188,38 @@ describe('x-stale', () => {
   });
 });
 
+describe('stamp declarations (U-291, stale-all-v1)', () => {
+  type Schema = { properties?: Record<string, unknown> };
+  type FullOp = Operation & {
+    'x-stamp'?: string;
+    parameters?: Array<{ name: string; in: string }>;
+    requestBody?: { content?: { 'application/json'?: { schema?: Schema } } };
+  };
+  const declares = (op: FullOp, field: string) =>
+    op['x-stamp'] === field
+    || !!op.requestBody?.content?.['application/json']?.schema?.properties?.[field]
+    || !!op.parameters?.some((p) => p.name === field && p.in === 'query');
+
+  it('every stale-classed write declares its stamp field', () => {
+    const FIELD: Record<string, string> = {
+      'stale(updatedAt)': 'expectedUpdatedAt', 'stale(schedule)': 'expectedUpdatedAt', 'stale(version)': 'version',
+    };
+    const missing = ops
+      .filter((o) => o.op['x-stale']?.startsWith('stale('))
+      .filter((o) => !declares(o.op as FullOp, FIELD[o.op['x-stale']!]!))
+      .map((o) => `${key(o)} ${o.op['x-stale']}`);
+    expect(missing).toEqual([]);
+  });
+
+  it('every bulk write takes per-item stamps', () => {
+    const missing = ops
+      .filter((o) => o.op['x-lan'] === 'workstation' && o.op['x-stale'] === 'bulk')
+      .filter((o) => !declares(o.op as FullOp, 'stamps'))
+      .map(key);
+    expect(missing).toEqual([]);
+  });
+});
+
 describe('the rule table', () => {
   it('has no rule that matches nothing', () => {
     expect(unusedRules([...ops, ...desktopOps])).toEqual([]);

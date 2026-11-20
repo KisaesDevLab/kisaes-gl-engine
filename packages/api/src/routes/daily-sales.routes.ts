@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectStamp } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import {
@@ -54,7 +55,7 @@ dailySalesRouter.get('/templates/:id', async (req, res) => {
   res.json({ template: await service.getTemplate(req.tenantId, req.params['id']!, req.companyId) });
 });
 
-dailySalesRouter.put('/templates/:id', validate(updateDailySalesTemplateSchema), async (req, res) => {
+dailySalesRouter.put('/templates/:id', expectStamp('daily_sales_templates', 'id', { precheck: true }), validate(updateDailySalesTemplateSchema), async (req, res) => {
   res.json({ template: await service.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId) });
 });
 
@@ -63,12 +64,12 @@ dailySalesRouter.post('/templates/:id/duplicate', validate(duplicateDailySalesTe
   res.status(201).json({ template });
 });
 
-dailySalesRouter.delete('/templates/:id', async (req, res) => {
+dailySalesRouter.delete('/templates/:id', expectStamp('daily_sales_templates', 'id', { precheck: true }), async (req, res) => {
   await service.deleteTemplate(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ deleted: true });
 });
 
-dailySalesRouter.put('/templates/:id/lines', validate(replaceDailySalesTemplateLinesSchema), async (req, res) => {
+dailySalesRouter.put('/templates/:id/lines', expectStamp('daily_sales_templates', 'id', { precheck: true }), validate(replaceDailySalesTemplateLinesSchema), async (req, res) => {
   const template = await service.replaceTemplateLines(req.tenantId, req.params['id']!, req.body.lines, req.userId, req.companyId);
   res.json({ template });
 });
@@ -93,7 +94,7 @@ dailySalesRouter.get('/entries/:id', async (req, res) => {
   res.json({ entry: await service.getEntry(req.tenantId, req.params['id']!, req.companyId) });
 });
 
-dailySalesRouter.put('/entries/:id', validate(updateDailySalesEntrySchema), async (req, res) => {
+dailySalesRouter.put('/entries/:id', expectStamp('daily_sales_entries', 'id', { precheck: true }), validate(updateDailySalesEntrySchema), async (req, res) => {
   res.json({ entry: await service.updateDraft(req.tenantId, req.params['id']!, req.body, req.userId, req.companyId) });
 });
 
@@ -119,7 +120,7 @@ dailySalesRouter.post('/entries/:id/void', keyedEntryById, closingPasswordLimite
   res.json({ entry: await service.voidEntry(req.tenantId, req.params['id']!, req.userId, req.companyId) });
 });
 
-dailySalesRouter.delete('/entries/:id', async (req, res) => {
+dailySalesRouter.delete('/entries/:id', expectStamp('daily_sales_entries', 'id', { precheck: true }), async (req, res) => {
   await service.deleteEntry(req.tenantId, req.params['id']!, req.userId, req.companyId);
   res.json({ deleted: true });
 });

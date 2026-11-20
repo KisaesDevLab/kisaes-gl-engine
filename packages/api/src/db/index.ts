@@ -6,10 +6,15 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import { env } from '../config/env.js';
 import * as schema from './schema/index.js';
+import { isDesktop } from '../desktop/profile.js';
 
 const pool = new pg.Pool({
   connectionString: env.DATABASE_URL,
   max: 20,
+  // Desktop only (U-291, stale-all-v1): every connection starts with
+  // mybooks.desktop = on, which turns on the record-stamp triggers (and,
+  // from U-294, the change feed). The server appliance never sets it.
+  ...(isDesktop() ? { options: '-c mybooks.desktop=on' } : {}),
 });
 
 export const db = drizzle(pool, { schema });

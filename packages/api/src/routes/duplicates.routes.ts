@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { expectItemStamps } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.js';
@@ -61,7 +62,7 @@ duplicatesRouter.post('/:idA/dismiss/:idB', async (req, res) => {
 const mergeSchema = z.object({ keepId: z.string().uuid(), voidId: z.string().uuid() })
   .refine((b) => b.keepId !== b.voidId, { message: 'keepId and voidId must differ' });
 
-duplicatesRouter.post('/merge', validate(mergeSchema), async (req, res) => {
+duplicatesRouter.post('/merge', expectItemStamps('transactions', 'refuse'), validate(mergeSchema), async (req, res) => {
   await duplicateService.mergeDuplicate(req.tenantId, req.body.keepId, req.body.voidId, req.userId, req.companyId);
   res.json({ message: 'Merged' });
 });

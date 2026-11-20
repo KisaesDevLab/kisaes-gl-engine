@@ -12,6 +12,7 @@
 // daily-sales.service.ts. It is shared now because `suspense` needs the same
 // behaviour from the banking, imports, and Practice surfaces.
 
+import { quietStamps } from '../utils/record-stamps.js';
 import { and, eq, isNull, or, sql, inArray } from 'drizzle-orm';
 import { DAILY_SALES_SYSTEM_ACCOUNTS, type AccountType } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
@@ -343,9 +344,10 @@ export async function moveAllLinesBetweenAccounts(
   const debit = row?.d ?? '0';
   const credit = row?.c ?? '0';
 
-  await tx.update(journalLines)
+  // A host-only repair over every entry: quiet, so it locks no entry headers (U-291).
+  await quietStamps(tx, () => tx.update(journalLines)
     .set({ accountId: toAccountId })
-    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.accountId, fromAccountId)));
+    .where(and(eq(journalLines.tenantId, tenantId), eq(journalLines.accountId, fromAccountId))));
 
   // Debit-positive convention, matching updateAccountBalances in the ledger
   // service: balance moves by (debit - credit). The subtraction happens in
