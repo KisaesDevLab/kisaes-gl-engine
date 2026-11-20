@@ -7,6 +7,8 @@ import { db } from '../db/index.js';
 import { transactions, duplicateDismissals } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import * as ledger from './ledger.service.js';
+import { itemStampOf, lockItemStamps } from './stale-context.js';
+import { transactionWithRetry } from '../db/transaction.js';
 
 export async function findDuplicates(tenantId: string, transactionId: string) {
   const txn = await db.query.transactions.findFirst({
@@ -145,7 +147,23 @@ export async function mergeDuplicate(tenantId: string, keepTxnId: string, voidTx
       txnType: apRow.txnType,
     });
   }
-  await ledger.voidTransaction(tenantId, voidTxnId, 'Merged as duplicate', userId, { companyId });
+  // Bulk stamps (stale-all-v1) are compared under the locks, in the void's
+  // transaction (P33 review S4): the voided entry's by the void itself (its
+  // own lock order, deposit first), then the kept entry, locked last. Either
+  // stale: 409 STALE {details.stale} and nothing changes.
+  const voidStamp = itemStampOf('transactions', voidTxnId);
+  await transactionWithRetry(async (tx) => {
+    try {
+      await ledger.voidTransactionInTx(tx, tenantId, voidTxnId, 'Merged as duplicate', userId, { companyId, expectedUpdatedAt: voidStamp });
+    } catch (err) {
+      if (err instanceof AppError && err.code === 'STALE' && voidStamp !== undefined) {
+        const updatedAt = (err.details as { updatedAt?: string | null } | undefined)?.updatedAt ?? null;
+        throw AppError.conflict('A record was changed by someone else since you opened it. Reload and try again.', 'STALE', { stale: [{ id: voidTxnId, updatedAt }] });
+      }
+      throw err;
+    }
+    await lockItemStamps(tx, 'transactions', [keepTxnId], { tenantId });
+  }, { label: 'duplicate merge' });
   // Dismiss the pair so it doesn't show again
   await dismissDuplicate(tenantId, keepTxnId, voidTxnId, userId);
 }

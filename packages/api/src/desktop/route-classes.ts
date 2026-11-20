@@ -411,6 +411,19 @@ export function lanClassOf(method: string, path: string): LanClass {
   return 'host';
 }
 
+/**
+ * A matcher for a list of rules in the pattern language above (first used
+ * by the maintenance drain, U-293). `path` may be a request path or a template.
+ */
+export function routeMatcher(rules: readonly string[]): (method: string, path: string) => boolean {
+  const compiled = rules.map(compile);
+  return (method, path) => {
+    const m = method.toUpperCase();
+    const segs = splitPath(path);
+    return compiled.some((r) => matches(r, m, segs));
+  };
+}
+
 /** The stale class of a mutating operation; null for reads and for unclassified workstation writes. */
 export function staleClassOf(method: string, path: string): StaleClass | null {
   const m = method.toUpperCase();

@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp } from './stale-context.js';
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp, lockItemStamps } from './stale-context.js';
 import { eq, and, sql, count, or, inArray, getTableColumns, asc, desc, type SQL } from 'drizzle-orm';
 import type { CreateContactInput, UpdateContactInput, ContactFilters } from '@kis-books/shared';
 import { db } from '../db/index.js';
@@ -236,15 +236,22 @@ export async function bulkUpdateType(
   userId?: string,
 ): Promise<{ updated: number }> {
   if (ids.length === 0) return { updated: 0 };
-  const rows = await db
-    .update(contacts)
-    .set({ contactType, updatedAt: new Date() })
-    .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, ids)))
-    .returning({ id: contacts.id });
-  // One audit entry for the batch — the individual ids are in the metadata.
-  // entity_id is a uuid: a batch row names no single contact (was 'bulk', a 500).
-  await auditLog(tenantId, 'update', 'contact', null, null, { contactType, ids: rows.map((r) => r.id) }, userId);
-  return { updated: rows.length };
+  return db.transaction(async (tx) => {
+    // Bulk stamps (stale-all-v1): compared under the row locks; stale contacts
+    // are skipped and listed in the reply (P33 review S4).
+    const stale = await lockItemStamps(tx, 'contacts', ids, { tenantId });
+    const live = ids.filter((id) => !stale.has(id.toLowerCase()));
+    if (live.length === 0) return { updated: 0 };
+    const rows = await tx
+      .update(contacts)
+      .set({ contactType, updatedAt: new Date() })
+      .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, live)))
+      .returning({ id: contacts.id });
+    // One audit entry for the batch — the individual ids are in the metadata.
+    // entity_id is a uuid: a batch row names no single contact (was 'bulk', a 500).
+    await auditLog(tenantId, 'update', 'contact', null, null, { contactType, ids: rows.map((r) => r.id) }, userId, tx);
+    return { updated: rows.length };
+  });
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
@@ -337,6 +344,8 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
   // The audit row is written in the same transaction and lists the ids.
   const moved: Record<string, number> = {};
   await db.transaction(async (tx) => {
+    // Bulk stamps (stale-all-v1): both contacts are locked and compared first (P33 review S4).
+    await lockItemStamps(tx, 'contacts', [sourceId, targetId], { tenantId });
     const affected = await guardMergeTransactions(tx, tenantId, sql`
       SELECT id FROM transactions WHERE tenant_id = ${tenantId} AND contact_id = ${sourceId}
       UNION

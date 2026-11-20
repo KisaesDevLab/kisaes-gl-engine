@@ -38,11 +38,14 @@ const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}:\d{2})
 /** Takes `expectedUpdatedAt` out of the body (or, for DELETE, the query). 400 when malformed. */
 export function takeExpectedUpdatedAt(req: Request): string | undefined {
   const body = req.body as Record<string, unknown> | undefined;
+  // Same precedence as the 428 check (stampOf): the body's unless absent or
+  // null, else the query's (P33 review S3).
   let raw: unknown;
   if (body && typeof body === 'object' && 'expectedUpdatedAt' in body) {
     raw = body['expectedUpdatedAt'];
     delete body['expectedUpdatedAt'];
-  } else if (typeof req.query['expectedUpdatedAt'] === 'string') {
+  }
+  if ((raw === undefined || raw === null) && typeof req.query['expectedUpdatedAt'] === 'string' && req.query['expectedUpdatedAt'].length > 0) {
     raw = req.query['expectedUpdatedAt'];
   }
   if (raw === undefined || raw === null) return undefined;
@@ -197,19 +200,17 @@ export async function assertCurrentStamp(
 
 /**
  * Per-item stamps for a bulk write (U-291, stale-all-v1): body `stamps`
- * {recordId: updatedAt as read}, taken out of the body. Every listed record
- * of `table` whose stored stamp differs is stale.
- * - `drop`: the stale ids are removed from the request (`drop(req, ids)`)
- *   and the JSON reply gains `stale: [{id, updatedAt}]`; the rest goes on.
+ * {recordId: updatedAt as read}, taken out of the body and kept for the
+ * request. The write compares them under its own row locks
+ * (lockItemStamps, P33 review S4), so an edit that commits between the read
+ * and the write is never overwritten or merged away:
+ * - `drop`: the write skips the stale records and the JSON reply gains
+ *   `stale: [{id, updatedAt}]`; the rest goes on.
  * - `refuse` (merges): any stale record refuses the whole call, 409 STALE
  *   {details.stale}.
- * No `stamps`: no check, as before.
+ * No `stamps`: no lock and no check, as before.
  */
-export function expectItemStamps(
-  table: string,
-  mode: 'drop' | 'refuse',
-  drop?: (req: Request, staleIds: ReadonlySet<string>) => void,
-) {
+export function expectItemStamps(table: string, mode: 'drop' | 'refuse') {
   return attachOpenApiMeta(async function clExpectItemStamps(req: Request, res: Response, next: NextFunction): Promise<void> {
     const body = req.body as Record<string, unknown> | undefined;
     const raw = body && typeof body === 'object' ? body['stamps'] : undefined;
@@ -225,29 +226,72 @@ export function expectItemStamps(
     if (entries.length > 1000 || entries.some(([k, v]) => !UUID.test(k) || typeof v !== 'string' || !ISO.test(v))) {
       throw AppError.badRequest('stamps must map record ids to their updatedAt', 'VALIDATION_ERROR');
     }
-    const { db } = await import('../db/index.js');
-    const ids = entries.map(([k]) => k);
-    const r = await db.execute(sql`SELECT id, updated_at FROM ${sql.identifier(table)}
-      WHERE tenant_id = ${req.tenantId} AND id = ANY(${`{${ids.join(',')}}`}::uuid[])`);
-    const stored = new Map((r.rows as Array<{ id: string; updated_at: Date | string | null }>)
-      .map((x) => [x.id, x.updated_at === null ? null : new Date(x.updated_at)]));
-    const stale: Array<{ id: string; updatedAt: string | null }> = [];
-    for (const [id, v] of entries) {
-      if (!stored.has(id)) continue;
-      const s = stored.get(id) ?? null;
-      if (s === null || s.getTime() !== Date.parse(v as string)) stale.push({ id, updatedAt: s ? s.toISOString() : null });
-    }
-    if (stale.length > 0 && mode === 'refuse') {
-      throw AppError.conflict('A record was changed by someone else since you opened it. Reload and try again.', 'STALE', { stale });
-    }
-    if (stale.length > 0 && drop) {
-      drop(req, new Set(stale.map((s) => s.id)));
+    const ctx: ItemStamps = { table, mode, stamps: new Map(entries.map(([k, v]) => [k.toLowerCase(), v as string])), stale: [] };
+    if (mode === 'drop') {
       const json = res.json.bind(res);
-      res.json = ((payload: unknown) => json(res.statusCode < 400 && payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? { ...(payload as Record<string, unknown>), stale } : payload)) as typeof res.json;
+      res.json = ((payload: unknown) => json(ctx.stale.length > 0 && res.statusCode < 400 && payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? { ...(payload as Record<string, unknown>), stale: ctx.stale } : payload)) as typeof res.json;
     }
-    next();
+    itemStorage.run(ctx, next);
   }, { extensions: { 'x-stamp': 'stamps' } });
 }
 
+interface ItemStamps {
+  table: string;
+  mode: 'drop' | 'refuse';
+  stamps: Map<string, string>;
+  /** The stale records of the last compare (the reply's `stale`, drop mode). */
+  stale: Array<{ id: string; updatedAt: string | null }>;
+}
+
+const itemStorage = new AsyncLocalStorage<ItemStamps>();
+
+/** Runs `fn` with bulk item stamps (service callers and tests). */
+export function runWithItemStamps<T>(table: string, mode: 'drop' | 'refuse', stamps: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  return itemStorage.run({ table, mode, stamps: new Map(Object.entries(stamps).map(([k, v]) => [k.toLowerCase(), v])), stale: [] }, fn);
+}
+
+/** The expected stamp of one record of a bulk write, if the request sent one (`table` must match). */
+export function itemStampOf(table: string, id: string): string | undefined {
+  const ctx = itemStorage.getStore();
+  return ctx && ctx.table === table ? ctx.stamps.get(id.toLowerCase()) : undefined;
+}
+
+/**
+ * Locks the records of a bulk write that carry a stamp, in id order (FOR NO
+ * KEY UPDATE; FOR UPDATE before a delete), and compares their stamps in the
+ * write's own database transaction (P33 review S4). Call it after the
+ * service's own not-found and visibility checks and before its first write;
+ * it runs again on every retry of the transaction. Returns the stale ids:
+ * in `refuse` mode any stale record throws 409 STALE {details.stale}; in
+ * `drop` mode the caller skips them and the reply lists them. Without
+ * stamps for `table`: no lock, no check, an empty set.
+ */
+export async function lockItemStamps(
+  tx: DbOrTx, table: string, ids: readonly string[], opts: { tenantId: string; forDelete?: boolean },
+): Promise<ReadonlySet<string>> {
+  const ctx = itemStorage.getStore();
+  if (!ctx || ctx.table !== table) return new Set();
+  const listed = [...new Set(ids.map((i) => i.toLowerCase()).filter((i) => ctx.stamps.has(i)))].sort();
+  if (listed.length === 0) {
+    ctx.stale = [];
+    return new Set();
+  }
+  const mode = opts.forDelete ? sql`FOR UPDATE` : sql`FOR NO KEY UPDATE`;
+  const r = await tx.execute(sql`SELECT id, updated_at FROM ${sql.identifier(table)}
+    WHERE tenant_id = ${opts.tenantId} AND id = ANY(${`{${listed.join(',')}}`}::uuid[]) ORDER BY id ${mode}`);
+  const stored = new Map((r.rows as Array<{ id: string; updated_at: Date | string | null }>)
+    .map((x) => [x.id.toLowerCase(), x.updated_at === null ? null : new Date(x.updated_at)]));
+  const stale: Array<{ id: string; updatedAt: string | null }> = [];
+  for (const id of listed) {
+    if (!stored.has(id)) continue;
+    const s = stored.get(id) ?? null;
+    if (s === null || s.getTime() !== Date.parse(ctx.stamps.get(id)!)) stale.push({ id, updatedAt: s ? s.toISOString() : null });
+  }
+  ctx.stale = stale;
+  if (stale.length > 0 && ctx.mode === 'refuse') {
+    throw AppError.conflict('A record was changed by someone else since you opened it. Reload and try again.', 'STALE', { stale });
+  }
+  return new Set(stale.map((s) => s.id));
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

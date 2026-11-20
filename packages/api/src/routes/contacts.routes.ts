@@ -85,7 +85,7 @@ contactsRouter.post('/merge', expectItemStamps('contacts', 'refuse'), closingPas
 
 // Bulk-change the customer/vendor/both type on the selected contacts. Placed
 // before /:id so the literal path wins over the param route.
-contactsRouter.post('/bulk-type', expectItemStamps('contacts', 'drop', (req, s) => { req.body.ids = (req.body.ids ?? []).filter((id: string) => !s.has(id)); }), validate(bulkUpdateContactTypeSchema), async (req, res) => {
+contactsRouter.post('/bulk-type', expectItemStamps('contacts', 'drop'), validate(bulkUpdateContactTypeSchema), async (req, res) => {
   const result = await contactsService.bulkUpdateType(req.tenantId, req.body.ids, req.body.contactType, req.userId);
   res.json(result);
 });

@@ -93,7 +93,7 @@ accountsRouter.post('/merge', expectItemStamps('accounts', 'refuse'), validate(m
 
 // Bulk inline edit (COA Bulk Edit table). Registered before the
 // parameterized routes below so "bulk" is never captured as an :id.
-accountsRouter.put('/bulk', expectItemStamps('accounts', 'drop', (req, s) => { req.body.updates = (req.body.updates ?? []).filter((u: { id: string }) => !s.has(u.id)); }), validate(bulkUpdateAccountsSchema), describe({
+accountsRouter.put('/bulk', expectItemStamps('accounts', 'drop'), validate(bulkUpdateAccountsSchema), describe({
   summary: 'Edit several accounts',
   description: `Response {updated, accounts}. ${INVENTORY_ACCOUNT_NOTE}`,
 }), async (req, res) => {

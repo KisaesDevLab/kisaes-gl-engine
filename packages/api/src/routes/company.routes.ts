@@ -135,7 +135,7 @@ companyRouter.get('/', async (req, res) => {
   res.json({ company });
 });
 
-companyRouter.put('/', expectStamp('companies', (req) => req.companyId, { precheck: true }), requireCompanySettingsWrite, validate(updateCompanySchema), async (req, res) => {
+companyRouter.put('/', requireCompanySettingsWrite, expectStamp('companies', (req) => req.companyId, { precheck: true }), validate(updateCompanySchema), async (req, res) => {
   const company = await companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId);
   res.json({ company });
 });
@@ -217,7 +217,7 @@ function captureClosingPassword(req: import('express').Request, res: import('exp
   next();
 }
 
-companyRouter.put('/settings', expectStamp('companies', (req) => req.companyId, { precheck: true }), requireCompanySettingsWrite, closingPasswordLimiter, captureClosingPassword, validate(updateCompanySettingsSchema), describe({
+companyRouter.put('/settings', requireCompanySettingsWrite, expectStamp('companies', (req) => req.companyId, { precheck: true }), closingPasswordLimiter, captureClosingPassword, validate(updateCompanySettingsSchema), describe({
   summary: 'Update company settings',
   description: 'Response {settings}. inventoryEnabled (company-inventory-flag-v1, NULL stored = off): true adopts the active other-current-asset '
     + 'account named "Inventory Asset" or creates it, tags it inventory_asset (inventory-account-v1) and makes sure a cost of goods sold account '
@@ -371,7 +371,7 @@ const closingPasswordBody = z.object({
   newPassword: z.string().max(200).nullable(),
 });
 
-companyRouter.put('/closing-password', expectStamp('companies', (req) => req.companyId, { precheck: true }), requireCompanySettingsWrite, closingPasswordLimiter, validate(closingPasswordBody), describe({
+companyRouter.put('/closing-password', requireCompanySettingsWrite, expectStamp('companies', (req) => req.companyId, { precheck: true }), closingPasswordLimiter, validate(closingPasswordBody), describe({
   summary: 'Set, change or clear the closing-date password',
   description: 'Owner or super admin only (closing-date-admin-v1): 403 CLOSING_DATE_ADMIN_ONLY when a password is set, '
     + '403 CLOSING_PASSWORD_OWNER_REQUIRED when none is; 403 CLOSING_PASSWORD_INVALID for a wrong currentPassword.',
@@ -567,7 +567,7 @@ companyRouter.post('/invoice-layouts/:id/default', requireCompanySettingsWrite, 
 
 // Layouts are archived, never deleted (owner 2026-10-31): invoices keep
 // printing with the layout they were made with.
-companyRouter.delete('/invoice-layouts/:id', expectStamp('invoice_templates', 'id', { precheck: true }), requireCompanySettingsWrite, describe({
+companyRouter.delete('/invoice-layouts/:id', requireCompanySettingsWrite, expectStamp('invoice_templates', 'id', { precheck: true }), describe({
   summary: 'Invoice layouts are not deleted (invoice-layouts-v1)',
   description: 'Always 405 INVOICE_LAYOUT_DELETE_NOT_ALLOWED: archive the layout instead (PUT {isArchived: true}).',
   params: layoutIdParams,
@@ -723,12 +723,12 @@ companyRouter.post('/permission-templates', requirePermissionAdmin, validate(cre
   res.status(201).json({ template });
 });
 
-companyRouter.put('/permission-templates/:id', expectStamp('permission_templates', 'id', { precheck: true }), requirePermissionAdmin, validate(updatePermissionTemplateSchema), async (req, res) => {
+companyRouter.put('/permission-templates/:id', requirePermissionAdmin, expectStamp('permission_templates', 'id', { precheck: true }), validate(updatePermissionTemplateSchema), async (req, res) => {
   const template = await permissionService.updateTemplate(req.tenantId, req.params['id']!, req.body, req.userId);
   res.json({ template });
 });
 
-companyRouter.delete('/permission-templates/:id', expectStamp('permission_templates', 'id', { precheck: true }), requirePermissionAdmin, async (req, res) => {
+companyRouter.delete('/permission-templates/:id', requirePermissionAdmin, expectStamp('permission_templates', 'id', { precheck: true }), async (req, res) => {
   await permissionService.deleteTemplate(req.tenantId, req.params['id']!, req.userId);
   res.json({ message: 'Template deleted' });
 });

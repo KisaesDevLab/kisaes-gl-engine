@@ -1902,6 +1902,10 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * Race fix (P33 soak): every stamp is compared in the write's own transaction (under its row lock, or in the
    * UPDATE/DELETE itself), again after a deadlock retry inside the engine, so of any number of saves from one read
    * at most one is accepted; ledger edits write lines before balances, as postings do (no lock-order deadlock).
+   * P33 review: bulk and merge `stamps` are compared under the write's row locks (id order) in its transaction, not
+   * before it (S4); routes with a precheck check the caller's permission first, so an unpermitted caller gets 403,
+   * never 409 with the stored stamp (M6); desktop pool connections are recycled after 1000 uses so the triggers'
+   * per-record settings never build up (M7).
    */
   'stale-all-v1',
   /**
@@ -1909,6 +1913,8 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * `stale(schedule)` without `expectedUpdatedAt` (body, or query), `stale(version)` without `version`, or `bulk` without
    * `stamps` is 428 STALE_REQUIRED {details.field} before any handler runs, for host and workstation requests. Internal
    * callers (the automatic reversal void, jobs) are not affected. Server mode and desktop without LAN: unchanged.
+   * P33 review S3: in desktop mode a stamp sent in either place (body or query) is put in both before this check, so
+   * every route compares exactly the stamp the check accepted; `stamps` count only as a body map.
    */
   'stale-required-v1',
   /**
@@ -1922,6 +1928,11 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * GET /desktop/maintenance, the reset, sign-in, refresh and sign-out pass the gate; sign-in only for the holder's user, refresh only for the
    * holder's session). In LAN mode, archive import, import commit/undo and payroll post/reverse are 409
    * MAINTENANCE_REQUIRED unless the caller holds maintenance. All audited (entity desktop_maintenance).
+   * P33 review: a hold whose holder session chain has no live session is void and cleared on first sight (audited
+   * maintenance_void; the feed epoch rotates); session trimming never ends the holder's chain; a switch-tenant that
+   * starts a new chain moves the hold to it; reset with no hold answers {cleared: false} (cl-host calls it at every
+   * host start too). The drain waits only for other sessions' book writes: sign-in, the caller's own settings, AI and
+   * chat (but not categorize/accept or statement import), document reading, report runs and previews are not counted.
    */
   'maintenance-v1',
   /**
@@ -1932,7 +1943,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * are never skipped and writers never wait. reset: true (reload everything) for no cursor, another epoch (maintenance
    * reset after a file-level restore, an archive import, an engine upgrade), a cursor older than the 7-day retention, or
    * more than 1000 changes. The cursor moves past other companies' rows; a record moved out of the viewer's view (a
-   * hidden account or an entry on one) comes as `left`.
+   * hidden account or an entry on one) comes as `left`. P33 review M5: for a viewer with hidden accounts a hard-deleted
+   * entry or account also comes as `left`; marking or unmarking an account sensitive, or re-parenting an account in a
+   * company with sensitive accounts, rotates the epoch (every client reloads).
    */
   'changes-v1',
 ];

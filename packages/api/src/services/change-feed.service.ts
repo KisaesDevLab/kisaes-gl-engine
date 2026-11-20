@@ -20,7 +20,8 @@
  */
 
 import { sql } from 'drizzle-orm';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
+import { isDesktop } from '../desktop/profile.js';
 
 export interface FeedChange {
   kind: string;
@@ -52,6 +53,23 @@ async function feedEpoch(): Promise<{ epoch: string; prunedBelow: string }> {
 /** New epoch: every client reloads (after a file-level restore or an archive import). */
 export async function rotateFeedEpoch(): Promise<void> {
   await db.execute(sql`UPDATE change_feed_state SET epoch = gen_random_uuid() WHERE id = 1`);
+}
+
+/**
+ * New epoch inside the caller's transaction, desktop only, when the set of
+ * hidden accounts may have changed (an account marked or unmarked sensitive,
+ * or re-parented in a company that has sensitive accounts): every client
+ * reloads, so entries that left a viewer's sight go and entries that came
+ * back return (P33 review M5). With `tenantId`, only when that tenant has a
+ * sensitive account. Rotated in the same transaction, so no client reloads
+ * before the change is visible.
+ */
+export async function rotateFeedEpochInTx(tx: DbOrTx, tenantId?: string): Promise<void> {
+  if (!isDesktop()) return;
+  const onlyIf = tenantId
+    ? sql` AND EXISTS (SELECT 1 FROM accounts WHERE tenant_id = ${tenantId} AND is_sensitive = true)`
+    : sql``;
+  await tx.execute(sql`UPDATE change_feed_state SET epoch = gen_random_uuid() WHERE id = 1${onlyIf}`);
 }
 
 async function pruneMaybe(): Promise<void> {
@@ -112,6 +130,12 @@ export async function readChanges(tenantId: string, cursor: string | undefined, 
     }
     for (const c of changes) {
       if ((c.kind === 'accounts' && hiddenSet.has(c.id)) || (c.kind === 'transactions' && onHidden.has(c.id))) c.op = 'left';
+      // A hard delete (import undo, a range delete) leaves no row or lines to
+      // tell whether the viewer could see it, so for a viewer with hidden
+      // accounts every entry or account delete is `left`: the client drops it
+      // either way, and the feed never reports a delete the viewer may not
+      // see as one (P33 review M5). Soft deletes are updates, filtered above.
+      if ((c.kind === 'transactions' || c.kind === 'accounts') && c.op === 'delete') c.op = 'left';
     }
   }
   return page(false, changes);
