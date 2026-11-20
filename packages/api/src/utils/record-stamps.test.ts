@@ -136,8 +136,10 @@ describe('stamps (B3, T5)', () => {
     const old = await e.call(B, `/api/v1/transactions/${t.id}`, { method: 'PUT', jwt: jwtB, body: jeBody(s0, '13.00') });
     expect(old.status).toBe(409);
     expect(old.json.error.code).toBe('STALE');
-    // Without a stamp: last write wins, as before (U-292 makes it required in LAN mode).
-    expect((await e.call(B, `/api/v1/transactions/${t.id}`, { method: 'PUT', jwt: jwtB, body: jeBody(undefined, '14.00') })).status).toBe(200);
+    // Without a stamp: 428 in LAN mode (U-292, stale-required-v1).
+    const bare = await e.call(B, `/api/v1/transactions/${t.id}`, { method: 'PUT', jwt: jwtB, body: jeBody(undefined, '14.00') });
+    expect(bare.status).toBe(428);
+    expect(bare.json.error.code).toBe('STALE_REQUIRED');
   });
 
   it('two saves on the same stamp: one wins, the other is 409 (50 runs)', async () => {
@@ -192,10 +194,12 @@ describe('stamps (B3, T5)', () => {
     const tagId = (g.json.tag ?? g.json).id as string;
     const ids = [(await je(jwtA)).id, (await je(jwtA)).id, (await je(jwtA)).id];
     for (let i = 0; i < 20; i++) {
+      // Stamps as read (LAN mode requires them, U-292); racers then lose with 409, never 5xx.
+      const stamps = Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await stampOf('transactions', id)] as const)));
       const results = await Promise.all([
-        e.call(A, '/api/v1/tags/bulk-tag', { method: 'POST', jwt: jwtA, body: { transactionIds: [...ids].reverse(), tagIds: [tagId] } }),
-        ...ids.map((id) => e.call(B, `/api/v1/transactions/${id}`, { method: 'PUT', jwt: jwtB, body: jeBody(undefined, `${30 + i}.00`) })),
-        e.call(A, '/api/v1/tags/bulk-untag', { method: 'POST', jwt: jwtA, body: { transactionIds: ids, tagIds: [tagId] } }),
+        e.call(A, '/api/v1/tags/bulk-tag', { method: 'POST', jwt: jwtA, body: { transactionIds: [...ids].reverse(), tagIds: [tagId], stamps } }),
+        ...ids.map((id) => e.call(B, `/api/v1/transactions/${id}`, { method: 'PUT', jwt: jwtB, body: jeBody(stamps[id], `${30 + i}.00`) })),
+        e.call(A, '/api/v1/tags/bulk-untag', { method: 'POST', jwt: jwtA, body: { transactionIds: ids, tagIds: [tagId], stamps } }),
       ]);
       for (const r of results) expect(r.status, JSON.stringify(r.json)).toBeLessThan(500);
     }
@@ -206,7 +210,7 @@ describe('stamps (B3, T5)', () => {
     const t2 = await je(jwtA);
     const s1 = await stampOf('transactions', t1.id);
     const s2 = await stampOf('transactions', t2.id);
-    await e.call(B, `/api/v1/transactions/${t1.id}`, { method: 'PUT', jwt: jwtB, body: jeBody(undefined, '15.00', 'moved') });
+    await e.call(B, `/api/v1/transactions/${t1.id}`, { method: 'PUT', jwt: jwtB, body: jeBody(s1, '15.00', 'moved') });
     const g = await e.call(A, '/api/v1/tags', { method: 'POST', jwt: jwtA, body: { name: 'Bulk Update Tag' } });
     const tagId = (g.json.tag ?? g.json).id as string;
     const r = await e.call(A, '/api/v1/transactions/bulk-update', {
@@ -243,7 +247,7 @@ describe('stamps (B3, T5)', () => {
     const c2 = await mk('Bulk Two');
     const s1 = await stampOf('contacts', c1);
     const s2 = await stampOf('contacts', c2);
-    await e.call(B, `/api/v1/contacts/${c1}`, { method: 'PUT', jwt: jwtB, body: { displayName: 'Bulk One Edited' } });
+    await e.call(B, `/api/v1/contacts/${c1}`, { method: 'PUT', jwt: jwtB, body: { displayName: 'Bulk One Edited', expectedUpdatedAt: s1 } });
     const r = await e.call(A, '/api/v1/contacts/bulk-type', { method: 'POST', jwt: jwtA, body: { ids: [c1, c2], contactType: 'both', stamps: { [c1]: s1, [c2]: s2 } } });
     expect(r.status, JSON.stringify(r.json)).toBe(200);
     expect(r.json.stale.map((x: { id: string }) => x.id)).toEqual([c1]);
