@@ -76,6 +76,9 @@ let current: DesktopProfile | null = null;
 // closure except through the secret scrubber registration in bootstrap.
 let tokenDigest: Buffer | null = null;
 let rawTokenForScrubber: string | null = null;
+// SHA-256 of the workstation token (CL_LAN_TOKEN, LAN mode only).
+let lanTokenDigest: Buffer | null = null;
+let rawLanTokenForScrubber: string | null = null;
 
 function parseQueueBackend(raw: string | undefined, fallback: QueueBackend): QueueBackend {
   const v = (raw ?? '').trim().toLowerCase();
@@ -156,6 +159,8 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
     current = serverProfile(env);
     tokenDigest = null;
     rawTokenForScrubber = null;
+    lanTokenDigest = null;
+    rawLanTokenForScrubber = null;
     return current;
   }
   if (modeRaw !== 'desktop') {
@@ -181,17 +186,33 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
     throw new DesktopConfigError('CL_BIND_REQUIRED', 'CL_BIND is required in desktop mode (e.g. 127.0.0.1:0).');
   }
   const bind = parseBind(bindRaw);
-  // LAN mode is refused until P33 adds TLS: the engine speaks plain HTTP,
-  // so a LAN bind would put the launch token, passwords and books on the
-  // wire in clear text. When P33 lands, CL_LAN=1 will accept only private
-  // literals (RFC 1918 10/8, 172.16/12, 192.168/16; IPv6 ULA fc00::/7;
-  // link-local 169.254/16 and fe80::/10) — never 0.0.0.0, :: or a public
-  // address — and only with TLS configured.
-  if (env['CL_LAN'] === '1') {
-    throw new DesktopConfigError(
-      'CL_LAN_UNSUPPORTED',
-      'CL_LAN=1 is not supported yet: LAN mode needs TLS. Bind to a loopback address.',
-    );
+  // LAN mode (U-289, lan-profile-v1): the engine itself never faces the LAN.
+  // The desktop app's host proxy terminates mutually pinned TLS on the
+  // private interface and forwards each request to this loopback engine
+  // with the second launch token, CL_LAN_TOKEN, which marks the request as
+  // coming from a workstation. So the bind stays loopback in every mode.
+  const lanRaw = (env['CL_LAN'] ?? '').trim();
+  if (lanRaw !== '' && lanRaw !== '0' && lanRaw !== '1') {
+    throw new DesktopConfigError('CL_ENV_INVALID', `CL_LAN must be 1 or unset (got "${env['CL_LAN']}").`);
+  }
+  const lan = lanRaw === '1';
+  const lanToken = env['CL_LAN_TOKEN'];
+  delete env['CL_LAN_TOKEN'];
+  if (lan) {
+    if (!lanToken) {
+      throw new DesktopConfigError('CL_LAN_TOKEN_REQUIRED', 'CL_LAN_TOKEN is required with CL_LAN=1.');
+    }
+    if (!TOKEN_RE.test(lanToken)) {
+      throw new DesktopConfigError(
+        'CL_LAN_TOKEN_INVALID',
+        'CL_LAN_TOKEN must be at least 43 base64url characters or 64 hex characters (256 bits).',
+      );
+    }
+    if (lanToken === token) {
+      throw new DesktopConfigError('CL_LAN_TOKEN_INVALID', 'CL_LAN_TOKEN must differ from CL_TOKEN.');
+    }
+  } else if (lanToken) {
+    throw new DesktopConfigError('CL_ENV_CONFLICT', 'CL_LAN_TOKEN is only accepted with CL_LAN=1.');
   }
   if (!isLoopback(bind.host)) {
     throw new DesktopConfigError(
@@ -265,6 +286,8 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
 
   tokenDigest = crypto.createHash('sha256').update(token, 'utf8').digest();
   rawTokenForScrubber = token;
+  lanTokenDigest = lan && lanToken ? crypto.createHash('sha256').update(lanToken, 'utf8').digest() : null;
+  rawLanTokenForScrubber = lan && lanToken ? lanToken : null;
   current = {
     mode: 'desktop',
     queueBackend,
@@ -274,8 +297,7 @@ export function loadDesktopProfile(env: NodeJS.ProcessEnv = process.env): Deskto
     logMaxBytes,
     logKeep,
     offline: offlineRaw,
-    // Always false until P33 (CL_LAN=1 is refused above).
-    lan: false,
+    lan,
     requireNonSuperuser: env['CL_REQUIRE_NON_SUPERUSER'] === '1',
   };
   return current;
@@ -315,14 +337,28 @@ export function redisEnabled(): boolean {
  * hashed first so the comparison length never depends on the input.
  */
 export function verifyDesktopToken(header: string | string[] | undefined): boolean {
-  if (!tokenDigest) return false;
-  if (typeof header !== 'string' || header.length === 0) {
-    // Still burn one comparison so a missing header is not measurably faster.
-    crypto.timingSafeEqual(tokenDigest, tokenDigest);
-    return false;
-  }
-  const candidate = crypto.createHash('sha256').update(header, 'utf8').digest();
-  return crypto.timingSafeEqual(candidate, tokenDigest);
+  return matchDesktopToken(header) === 'host';
+}
+
+/**
+ * Which launch token an `X-CL-Token` header carries: `host` (CL_TOKEN),
+ * `workstation` (CL_LAN_TOKEN, LAN mode only) or null. Both digests are
+ * always compared, in constant time, so the answer's timing does not tell
+ * which token (if any) matched.
+ */
+export function matchDesktopToken(header: string | string[] | undefined): 'host' | 'workstation' | null {
+  if (!tokenDigest) return null;
+  const candidate = typeof header === 'string' && header.length > 0
+    ? crypto.createHash('sha256').update(header, 'utf8').digest()
+    : null;
+  // A missing header still burns both comparisons.
+  const probe = candidate ?? tokenDigest;
+  const host = crypto.timingSafeEqual(probe, tokenDigest);
+  const ws = crypto.timingSafeEqual(probe, lanTokenDigest ?? tokenDigest);
+  if (!candidate) return null;
+  if (host) return 'host';
+  if (lanTokenDigest && ws) return 'workstation';
+  return null;
 }
 
 /**
@@ -342,9 +378,16 @@ export function desktopTokenForScrubber(): string | null {
   return rawTokenForScrubber;
 }
 
+/** The raw workstation token (LAN mode), for registration with the secret scrubber only. */
+export function desktopLanTokenForScrubber(): string | null {
+  return rawLanTokenForScrubber;
+}
+
 /** Test hook: forget the cached profile and token. */
 export function _resetDesktopProfileForTests(): void {
   current = null;
   tokenDigest = null;
   rawTokenForScrubber = null;
+  lanTokenDigest = null;
+  rawLanTokenForScrubber = null;
 }

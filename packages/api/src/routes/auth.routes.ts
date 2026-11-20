@@ -17,6 +17,7 @@ import { requireTurnstile } from '../utils/turnstile.js';
 import { isRegistrationEnabled } from '../services/auth-availability.service.js';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { desktopOnly, notInDesktop } from '../desktop/features.js';
+import { limiterClientKey, limiterDefaultKey } from '../desktop/lan-context.js';
 import * as recoveryKeys from '../services/desktop-recovery-key.service.js';
 
 // Per-IP limiter — the existing loose bound (10 requests / minute from
@@ -27,6 +28,7 @@ const authLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 10,
   store: getRateLimitStore('auth'),
+  keyGenerator: limiterDefaultKey,
   message: { error: { message: 'Too many requests, please try again later', code: 'RATE_LIMIT' } },
 });
 
@@ -51,7 +53,7 @@ const loginAccountLimiter = rateLimit({
     ).trim().toLowerCase();
     // Prefix so the email namespace can't collide with the IP-keyed
     // limiters sharing the same in-memory store.
-    return email ? `account:${email}` : `ip:${req.ip || 'unknown'}`;
+    return email ? `account:${email}` : limiterClientKey(req);
   },
   message: {
     error: {
@@ -77,7 +79,7 @@ const forgotPasswordEmailLimiter = rateLimit({
       ? String((req.body as { email?: string }).email || '')
       : ''
     ).trim().toLowerCase();
-    return email ? `email:${email}` : `ip:${req.ip || 'unknown'}`;
+    return email ? `email:${email}` : limiterClientKey(req);
   },
   message: {
     error: {
@@ -98,7 +100,7 @@ const changePasswordLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   store: getRateLimitStore('change-password'),
-  keyGenerator: (req) => (req.userId ? `user:${req.userId}` : `ip:${req.ip || 'unknown'}`),
+  keyGenerator: (req) => (req.userId ? `user:${req.userId}` : limiterClientKey(req)),
   message: {
     error: {
       message: 'Too many password change attempts. Try again in 15 minutes.',

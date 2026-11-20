@@ -361,9 +361,9 @@ app.use('/api/v1/', staffIpAllowlist());
 // default; enable with RATE_LIMIT_REDIS=1 when running multi-instance
 // or when counters must survive container restart.
 import { getRateLimitStore } from './utils/rate-limit-store.js';
+const LAN_DEVICE_REQUESTS_PER_MINUTE = 1200;
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   store: getRateLimitStore('global'),
@@ -373,11 +373,16 @@ const globalLimiter = rateLimit({
   // Docker HEALTHCHECK every 30s). Counting those toward the 300/min
   // budget would crowd out real client traffic without adding any
   // security value (the endpoints reveal nothing tenant-specific).
+  // LAN workstations (U-289) are counted per device, with a ceiling sized
+  // for a desktop app's reads (live refresh); everyone else per address.
+  keyGenerator: (req) => (req.lanDevice ? `device:${req.lanDevice}` : (req.ip ?? 'unknown')),
+  max: (req) => (req.lanDevice ? LAN_DEVICE_REQUESTS_PER_MINUTE : 300),
   skip: (req) => {
     // Desktop: every request comes from 127.0.0.1 and already carried the
     // launch token (desktop gate), so a per-IP ceiling would only throttle
-    // the desktop app itself. Per-route auth limiters still apply.
-    if (req.desktopTrusted) return true;
+    // the desktop app itself. Per-route auth limiters still apply. A LAN
+    // workstation request is counted (per device).
+    if (req.desktopTrusted && req.lanClass !== 'workstation') return true;
     const p = req.path;
     // /api/peer/* is server-to-server from one PM IP for every client; it
     // carries its own per-IP and per-client limiters (routes/peer-pm.routes.ts).

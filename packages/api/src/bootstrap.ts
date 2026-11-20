@@ -170,6 +170,8 @@ async function startDesktop(token: string | null): Promise<void> {
   const { desktopFatal } = await import('./desktop/fatal.js');
   const { registerSecret, registerUrlPassword, registerEnvSecrets } = await import('./utils/secret-scrubber.js');
   registerSecret(token);
+  // The workstation token (CL_LAN=1, U-289).
+  registerSecret((await import('./desktop/profile.js')).desktopLanTokenForScrubber());
   registerSecret(process.env['JWT_SECRET']);
   registerSecret(process.env['ENCRYPTION_KEY']);
   registerSecret(process.env['PLAID_ENCRYPTION_KEY']);

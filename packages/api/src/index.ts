@@ -177,8 +177,8 @@ function logBootSummary(): void {
 }
 
 /**
- * Desktop listen: bind exactly CL_BIND (loopback unless CL_LAN=1, checked
- * by the profile loader), tell the desktop gate the resolved address, and
+ * Desktop listen: bind exactly CL_BIND (always loopback, also with CL_LAN=1:
+ * the desktop app's host proxy faces the LAN; checked by the profile loader), tell the desktop gate the resolved address, and
  * print ONE ready line on stdout, {"event":"listening","host":...,"port":N},
  * so the supervisor can use port 0 without a pick-then-bind race.
  */

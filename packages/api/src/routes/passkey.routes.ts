@@ -8,9 +8,11 @@ import { getRateLimitStore } from '../utils/rate-limit-store.js';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import * as passkeyService from '../services/passkey.service.js';
 import { setRefreshCookie } from '../utils/refresh-cookie.js';
+import { limiterDefaultKey } from '../desktop/lan-context.js';
 
 const authLimiter = rateLimit({
   store: getRateLimitStore('passkey:auth'),
+  keyGenerator: limiterDefaultKey,
   windowMs: 60 * 1000,
   max: 10,
   message: { error: { message: 'Too many requests, please try again later', code: 'RATE_LIMIT' } },

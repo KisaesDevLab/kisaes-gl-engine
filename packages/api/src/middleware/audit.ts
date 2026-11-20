@@ -5,6 +5,17 @@
 import { db, type DbOrTx } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
 import { stripSecretKeys } from '../utils/secret-keys.js';
+import { currentLanContext } from '../desktop/lan-context.js';
+
+/**
+ * LAN workstation requests (U-289) record the workstation: its address in
+ * ip_address and its device fingerprint in user_agent (`lan-device:<hex>`).
+ * Every other row leaves both empty, as before.
+ */
+function lanOrigin(): { ipAddress?: string; userAgent?: string } {
+  const ctx = currentLanContext();
+  return ctx ? { ipAddress: ctx.peerIp, userAgent: `lan-device:${ctx.device}` } : {};
+}
 
 /**
  * Writes one audit row. `before` / `after` are usually whole rows; any
@@ -38,6 +49,7 @@ export async function auditLog(
     beforeData: before ? JSON.stringify(stripSecretKeys(before)) : null,
     afterData: after ? JSON.stringify(stripSecretKeys(after)) : null,
     userId,
+    ...lanOrigin(),
   });
 }
 
@@ -54,6 +66,7 @@ export async function auditLogMany(
   executor?: DbOrTx,
 ): Promise<void> {
   const exec = executor ?? db;
+  const origin = lanOrigin();
   for (let i = 0; i < rows.length; i += 500) {
     await exec.insert(auditLogTable).values(rows.slice(i, i + 500).map((r) => ({
       tenantId,
@@ -63,6 +76,7 @@ export async function auditLogMany(
       beforeData: r.before ? JSON.stringify(stripSecretKeys(r.before)) : null,
       afterData: r.after ? JSON.stringify(stripSecretKeys(r.after)) : null,
       userId,
+      ...origin,
     })));
   }
 }
