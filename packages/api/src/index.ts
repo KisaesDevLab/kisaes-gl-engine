@@ -8,7 +8,7 @@ import { flushAllSuggestionNotices } from './services/suggestion-notice-coalesce
 import { registerMybooksTaskClasses } from './services/ai-providers/index.js';
 import { app } from './app.js';
 import { env } from './config/env.js';
-import { pool } from './db/index.js';
+import { pool, healthPool } from './db/index.js';
 import { applyMigrations, MIGRATIONS_FOLDER } from './startup/migrations.js';
 import { startBackupScheduler } from './services/backup-scheduler.service.js';
 import { startRecurringScheduler, startSessionPruneScheduler } from './services/recurring.service.js';
@@ -115,6 +115,7 @@ function installShutdownHandlers(server: Server): void {
     }
     try {
       await pool.end();
+      await healthPool.end().catch(() => undefined);
       console.log('[shutdown] DB pool closed, exiting cleanly');
     } catch (err) {
       console.error('[shutdown] pool.end error:', err);

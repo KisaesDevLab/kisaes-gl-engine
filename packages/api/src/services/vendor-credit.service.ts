@@ -11,6 +11,7 @@ import * as ledger from './ledger.service.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { buildApLines, assertApLineRefs, keepUnchangedLineDetails, recomputeVendorCreditBalance } from './bill.service.js';
 import { relinkDraftAttachments } from './attachment.service.js';
+import { COMPANY_ROW_LOCK_SQL } from './company-row-lock.js';
 
 async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<string> {
   const [account] = await executor.select({ id: accounts.id }).from(accounts)
@@ -22,7 +23,8 @@ async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<strin
 
 /**
  * The next VC-nnnnn number for the company (U-117 N1), on the posting
- * transaction: the company row is locked first, so concurrent saves take
+ * transaction: the company row is locked first (FOR NO KEY UPDATE, as on
+ * every posting path, company-row-lock.ts), so concurrent saves take
  * distinct numbers and a refused post takes none. The highest VC- number
  * of the company's vendor credits (rows without a company included; any
  * status, so a void credit's number is not handed out again) plus one; a
@@ -30,8 +32,8 @@ async function getApAccountId(executor: DbOrTx, tenantId: string): Promise<strin
  */
 async function getNextVendorCreditNumber(tx: Tx, tenantId: string, companyId?: string): Promise<string> {
   await tx.execute(companyId
-    ? sql`SELECT 1 FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} FOR UPDATE`
-    : sql`SELECT 1 FROM companies WHERE tenant_id = ${tenantId} FOR UPDATE`);
+    ? sql`SELECT 1 FROM companies WHERE tenant_id = ${tenantId} AND id = ${companyId} ${COMPANY_ROW_LOCK_SQL}`
+    : sql`SELECT 1 FROM companies WHERE tenant_id = ${tenantId} ORDER BY created_at, id ${COMPANY_ROW_LOCK_SQL}`);
   const res = await tx.execute(sql`
     SELECT COALESCE(MAX(substring(txn_number FROM '^VC-([0-9]{1,9})$')::bigint), 0) AS hi
     FROM transactions

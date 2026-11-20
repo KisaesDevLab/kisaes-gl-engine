@@ -28,8 +28,33 @@ const pool = new pg.Pool({
   ...(isDesktop() ? { options: '-c mybooks.desktop=on', maxUses: DESKTOP_POOL_MAX_USES } : {}),
 });
 
+// An idle connection that fails (the server restarted or ended it) is
+// dropped by the pool; without a listener node-postgres re-throws the
+// 'error' event and the process exits (an uncaught exception).
+pool.on('error', (err) => {
+  console.error('[db] idle connection error:', err.message);
+});
+
+/**
+ * /health's own connection (ClientLedger P33 soak): its `SELECT 1` never
+ * waits for a connection of the main pool, which requests waiting on row
+ * locks can hold for seconds, so a busy engine still answers its
+ * supervisor's health check at once. One connection, kept while probes
+ * come; it never keeps the process alive. Takes no locks and sets nothing.
+ */
+const healthPool = new pg.Pool({
+  connectionString: env.DATABASE_URL,
+  max: 1,
+  connectionTimeoutMillis: 2000,
+  idleTimeoutMillis: 30_000,
+  allowExitOnIdle: true,
+});
+healthPool.on('error', (err) => {
+  console.error('[db] health connection error:', err.message);
+});
+
 export const db = drizzle(pool, { schema });
-export { pool };
+export { pool, healthPool };
 
 // Drizzle's transaction handle (the parameter passed to db.transaction's
 // callback) exposes the same query interface as `db`, but TypeScript treats
