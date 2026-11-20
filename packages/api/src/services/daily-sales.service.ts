@@ -31,6 +31,7 @@ import {
   attachments,
 } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { lockExpectedStamp, takeExpectedStamp, staleCondition, staleConflictOf } from './stale-context.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 // Get-or-create for role accounts now lives in system-accounts.service.ts so
@@ -131,16 +132,24 @@ export async function updateTemplate(tenantId: string, id: string, input: Update
   if (input.name !== undefined) updates['name'] = input.name;
   if (input.defaultTagId !== undefined) updates['defaultTagId'] = input.defaultTagId;
   if (input.isActive !== undefined) updates['isActive'] = input.isActive;
-  await db.update(dailySalesTemplates).set(updates)
-    .where(and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.id, id)));
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('daily_sales_templates', id);
+  const done = await db.update(dailySalesTemplates).set(updates)
+    .where(and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.id, id), staleCondition(dailySalesTemplates.updatedAt, expected)))
+    .returning({ id: dailySalesTemplates.id });
+  if (done.length === 0 && expected !== undefined) throw await staleConflictOf('daily_sales_templates', id, 'This template', tenantId);
   await auditLog(tenantId, 'update', 'daily_sales_template', id, before, updates, userId);
   return getTemplate(tenantId, id);
 }
 
 export async function deleteTemplate(tenantId: string, id: string, userId?: string, companyId?: string) {
   await getTemplate(tenantId, id, companyId); // tenant + company scope
-  await db.update(dailySalesTemplates).set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.id, id)));
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('daily_sales_templates', id);
+  const done = await db.update(dailySalesTemplates).set({ isActive: false, updatedAt: new Date() })
+    .where(and(eq(dailySalesTemplates.tenantId, tenantId), eq(dailySalesTemplates.id, id), staleCondition(dailySalesTemplates.updatedAt, expected)))
+    .returning({ id: dailySalesTemplates.id });
+  if (done.length === 0 && expected !== undefined) throw await staleConflictOf('daily_sales_templates', id, 'This template', tenantId);
   await auditLog(tenantId, 'delete', 'daily_sales_template', id, null, null, userId);
 }
 
@@ -173,32 +182,38 @@ export async function replaceTemplateLines(tenantId: string, templateId: string,
   const tpl = await getTemplate(tenantId, templateId, companyId); // tenant/company scope check
   await assertTagsInTenant(tenantId, lines.flatMap((l) => (l.tagId ? [l.tagId] : [])));
   const stpAccountId = await assertTemplateTax(tenantId, tpl.companyId ?? companyId ?? null, lines);
-  const existing = await db.select({ id: dailySalesTemplateLines.id }).from(dailySalesTemplateLines)
-    .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.templateId, templateId)));
-  const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
+  // One transaction, the template row locked first: the route's stamp (U-291)
+  // is compared under that lock, so two saves from one read can't both write
+  // their lines (race fix).
+  await db.transaction(async (tx) => {
+    await lockExpectedStamp(tx, 'daily_sales_templates', templateId, { tenantId, what: 'This template' });
+    const existing = await tx.select({ id: dailySalesTemplateLines.id }).from(dailySalesTemplateLines)
+      .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.templateId, templateId)));
+    const incomingIds = new Set(lines.filter((l) => l.id).map((l) => l.id as string));
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const l = lines[i]!;
-    const row = {
-      tenantId, templateId, section: l.section, label: l.label,
-      // U-149: a tax line linked to a sales tax always posts to Sales Tax Payable.
-      accountId: l.salesTaxId ? stpAccountId : l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
-      isRequired: l.isRequired ?? false, allowTag: l.allowTag ?? false, isActive: l.isActive ?? true,
-      salesTaxId: l.salesTaxId ?? null, taxCodeId: l.taxCodeId ?? null,
-    };
-    if (l.id) {
-      await db.update(dailySalesTemplateLines).set(row)
-        .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.id, l.id)));
-    } else {
-      await db.insert(dailySalesTemplateLines).values(row);
+    for (let i = 0; i < lines.length; i += 1) {
+      const l = lines[i]!;
+      const row = {
+        tenantId, templateId, section: l.section, label: l.label,
+        // U-149: a tax line linked to a sales tax always posts to Sales Tax Payable.
+        accountId: l.salesTaxId ? stpAccountId : l.accountId ?? null, tagId: l.tagId ?? null, normalSide: l.normalSide, sortOrder: l.sortOrder ?? i,
+        isRequired: l.isRequired ?? false, allowTag: l.allowTag ?? false, isActive: l.isActive ?? true,
+        salesTaxId: l.salesTaxId ?? null, taxCodeId: l.taxCodeId ?? null,
+      };
+      if (l.id) {
+        await tx.update(dailySalesTemplateLines).set(row)
+          .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.id, l.id)));
+      } else {
+        await tx.insert(dailySalesTemplateLines).values(row);
+      }
     }
-  }
-  for (const e of existing) {
-    if (!incomingIds.has(e.id)) {
-      await db.update(dailySalesTemplateLines).set({ isActive: false })
-        .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.id, e.id)));
+    for (const e of existing) {
+      if (!incomingIds.has(e.id)) {
+        await tx.update(dailySalesTemplateLines).set({ isActive: false })
+          .where(and(eq(dailySalesTemplateLines.tenantId, tenantId), eq(dailySalesTemplateLines.id, e.id)));
+      }
     }
-  }
+  });
   await auditLog(tenantId, 'update', 'daily_sales_template_lines', templateId, null, { count: lines.length }, userId);
   return getTemplate(tenantId, templateId);
 }
@@ -492,9 +507,14 @@ export async function updateDraft(tenantId: string, id: string, input: UpdateDai
   if (input.businessDate !== undefined) updates['businessDate'] = input.businessDate;
   if (input.tagId !== undefined) updates['tagId'] = input.tagId;
   if (input.notes !== undefined) updates['notes'] = input.notes;
-  await db.update(dailySalesEntries).set(updates)
-    .where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
-  if (input.values !== undefined) await saveValues(tenantId, id, input.values);
+  // One transaction, the entry locked first: the route's stamp (U-291) is
+  // compared under that lock, so two saves from one read can't both write (race fix).
+  await db.transaction(async (tx) => {
+    await lockExpectedStamp(tx, 'daily_sales_entries', id, { tenantId, what: 'This entry' });
+    await tx.update(dailySalesEntries).set(updates)
+      .where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
+    if (input.values !== undefined) await saveValues(tenantId, id, input.values, tx);
+  });
   await auditLog(tenantId, 'update', 'daily_sales_entry', id, entry, updates, userId);
   return getEntry(tenantId, id);
 }
@@ -502,12 +522,17 @@ export async function updateDraft(tenantId: string, id: string, input: UpdateDai
 export async function deleteEntry(tenantId: string, id: string, userId?: string, companyId?: string) {
   const entry = await loadEntry(tenantId, id, companyId);
   if (entry.status === 'posted') throw AppError.badRequest('Void a posted entry instead of deleting it.');
-  await db.delete(dailySalesEntryValues).where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, id)));
-  await db.delete(dailySalesEntries).where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
-  // Don't strand the entry's files: return them to the unfiled pool
-  // ('draft', same as an unsaved form's uploads) so they stay in the
-  // attachment library and can be attached elsewhere.
-  const attachmentsUnfiled = await moveEntryAttachments(db, tenantId, id, 'draft', id, entry.companyId);
+  // One transaction, the entry locked first: the route's stamp (U-291) is
+  // compared under that lock (race fix).
+  const attachmentsUnfiled = await db.transaction(async (tx) => {
+    await lockExpectedStamp(tx, 'daily_sales_entries', id, { tenantId, what: 'This entry', forDelete: true });
+    await tx.delete(dailySalesEntryValues).where(and(eq(dailySalesEntryValues.tenantId, tenantId), eq(dailySalesEntryValues.entryId, id)));
+    await tx.delete(dailySalesEntries).where(and(eq(dailySalesEntries.tenantId, tenantId), eq(dailySalesEntries.id, id)));
+    // Don't strand the entry's files: return them to the unfiled pool
+    // ('draft', same as an unsaved form's uploads) so they stay in the
+    // attachment library and can be attached elsewhere.
+    return moveEntryAttachments(tx, tenantId, id, 'draft', id, entry.companyId);
+  });
   await auditLog(tenantId, 'delete', 'daily_sales_entry', id, entry,
     attachmentsUnfiled ? { attachmentsUnfiled } : null, userId);
 }

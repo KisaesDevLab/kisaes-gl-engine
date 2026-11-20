@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { expectStamp } from '../services/stale-context.js';
+import { expectStamp, takeExpectedStamp, staleCondition, staleConflictOf } from '../services/stale-context.js';
 import { Router } from 'express';
 import { z } from 'zod';
 import { writeCheckSchema, updateCheckSchema, printCheckSchema, renderChecksSchema, checkSettingsSchema, updateCheckMemoSchema, STEP_UP_REQUIRED, CHECK_LAYOUT_VALUES, CHECK_ACCOUNT_FORMAT_VALUES } from '@kis-books/shared';
@@ -359,12 +359,16 @@ checksRouter.put('/settings', expectStamp('companies', (req) => req.companyId, {
     merge = sql`(${merge}) || jsonb_build_object('layouts', jsonb_strip_nulls(
       COALESCE(check_settings->'layouts', '{}'::jsonb) || ${JSON.stringify(layouts)}::jsonb))`;
   }
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('companies', req.companyId);
+  const stale = staleCondition(companies.updatedAt, expected);
   const updated = await db.execute(sql`
     UPDATE companies SET check_settings = ${merge}
-    WHERE tenant_id = ${req.tenantId} AND id = ${req.companyId}
+    WHERE tenant_id = ${req.tenantId} AND id = ${req.companyId}${stale ? sql` AND ${stale}` : sql``}
     RETURNING check_settings
   `);
   const row = updated.rows[0] as { check_settings: Record<string, unknown> | null } | undefined;
+  if (!row && expected !== undefined) throw await staleConflictOf('companies', req.companyId, 'The company settings', req.tenantId);
   res.json({ settings: row?.check_settings ?? { ...rest, ...(nextCheckNumbers ? { nextCheckNumbers } : {}) } });
 });
 

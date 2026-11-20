@@ -12,6 +12,7 @@
 
 import bcrypt from 'bcrypt';
 import { and, eq, isNotNull } from 'drizzle-orm';
+import { checkExpectedStamp } from './stale-context.js';
 import { db, type Tx } from '../db/index.js';
 import { companies, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
@@ -189,11 +190,13 @@ export async function setClosingPassword(
 ): Promise<{ closingPasswordSet: boolean }> {
   if (input.newPassword !== null) assertNewClosingPassword(input.newPassword);
   return db.transaction(async (tx) => {
-    const [row] = await tx.select({ hash: companies.closingPasswordHash }).from(companies)
+    const [row] = await tx.select({ hash: companies.closingPasswordHash, updatedAt: companies.updatedAt }).from(companies)
       .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
       .for('update')
       .limit(1);
     if (!row) throw AppError.notFound('Company not found');
+    // The route's stamp (U-291), compared under this row lock (race fix).
+    checkExpectedStamp('companies', companyId, row, 'The company settings');
     const wasSet = !!row.hash;
     if (wasSet && !isClosingDateAdmin(actor)) {
       // Own connection (as the wrong-password row below), kept on rollback.

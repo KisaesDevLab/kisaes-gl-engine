@@ -5,6 +5,7 @@
 import { seedEquityRolesBestEffort } from './equity-roles.service.js';
 import { seedUnappliedReceiptsBestEffort } from './system-accounts.service.js';
 import { eq, and, notInArray, count } from 'drizzle-orm';
+import { checkExpectedStamp } from './stale-context.js';
 import type { UpdateCompanyInput } from '@kis-books/shared';
 import DecimalLib from 'decimal.js';
 import { db, type DbOrTx } from '../db/index.js';
@@ -163,11 +164,13 @@ export async function updateCompany(
   // so a concurrent password or closing-date change can't slip between.
   const requestedLock = (input as Record<string, unknown>)['lockDate'];
   const updated = await db.transaction(async (tx) => {
-    const [locked] = await tx.select({ lockDate: companies.lockDate }).from(companies)
+    const [locked] = await tx.select({ lockDate: companies.lockDate, updatedAt: companies.updatedAt }).from(companies)
       .where(and(eq(companies.tenantId, tenantId), eq(companies.id, companyId)))
       .for('update')
       .limit(1);
     if (!locked) throw AppError.notFound('Company not found');
+    // The route's stamp (U-291), compared under this row lock (race fix).
+    checkExpectedStamp('companies', companyId, locked, 'The company settings');
     const lockChanges = requestedLock !== undefined && ((requestedLock as string | null) || null) !== (locked.lockDate || null);
     let passwordSetNow = false;
     if (lockChanges || closing?.password !== undefined) {

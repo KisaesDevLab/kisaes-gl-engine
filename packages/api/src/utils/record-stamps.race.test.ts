@@ -191,6 +191,69 @@ describe('stamps strictly increase', () => {
   });
 });
 
+// Routes whose middleware compared the stamp before the handler (U-291b
+// precheck) now compare it again in the write: under the service's row lock,
+// in the UPDATE itself, or in a new transaction that locks the record first.
+describe('precheck routes: five saves from one read, one wins', () => {
+  async function stampIn(table: string, id: string): Promise<string> {
+    const [row] = await e.query<{ s: string }>(
+      `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS s FROM ${table} WHERE id = $1`, [id]);
+    return row!.s;
+  }
+
+  async function raceRoute(table: string, id: string, runs: number,
+    save: (c: number, stamp: string, run: number) => ReturnType<LanEngine['call']>) {
+    const lost: string[] = [];
+    const bad: string[] = [];
+    let accepted = 0;
+    for (let run = 0; run < runs; run++) {
+      const stamp = await stampIn(table, id);
+      const rs = await Promise.all(Array.from({ length: CLIENTS }, (_, c) => save(c, stamp, run)));
+      const won = rs.filter((r) => r.status === 200).length;
+      accepted += won;
+      if (won > 1) lost.push(`run ${run}: ${won} saves accepted from ${stamp}`);
+      for (const r of rs) {
+        if (r.status !== 200 && !(r.status === 409 && ['STALE', 'RETRY'].includes(r.json?.error?.code))) bad.push(`${r.status} ${JSON.stringify(r.json)}`);
+      }
+    }
+    console.log(`[precheck ${table}] ${CLIENTS} clients x ${runs} runs: ${accepted} accepted, ${lost.length} lost, ${bad.length} other`);
+    expect(lost, lost.slice(0, 5).join('\n')).toEqual([]);
+    expect(bad, bad.slice(0, 5).join('\n')).toEqual([]);
+    expect(accepted).toBeGreaterThan(runs / 2);
+  }
+
+  it('price level (compared under the service\'s row lock)', async () => {
+    const pl = await e.call(who[0]!, '/api/v1/price-levels', { method: 'POST', jwt: jwt[0], body: { name: 'Race Level', percent: '-5' } });
+    expect(pl.status, JSON.stringify(pl.json)).toBe(201);
+    const id = (pl.json.priceLevel ?? pl.json).id as string;
+    await raceRoute('price_levels', id, 30, (c, stamp, run) => e.call(who[c]!, `/api/v1/price-levels/${id}`, {
+      method: 'PUT', jwt: jwt[c], body: { name: `Race Level ${run} by ${c}`, expectedUpdatedAt: stamp },
+    }));
+  }, 120_000);
+
+  it('JE template header (compare-and-set in the UPDATE) and lines (a transaction that locks the template first)', async () => {
+    const t = await e.call(who[0]!, '/api/v1/je-templates', { method: 'POST', jwt: jwt[0], body: { name: 'Race Template' } });
+    expect(t.status, JSON.stringify(t.json)).toBe(201);
+    const id = t.json.template.id as string;
+    await raceRoute('je_templates', id, 30, (c, stamp, run) => e.call(who[c]!, `/api/v1/je-templates/${id}`, {
+      method: 'PUT', jwt: jwt[c], body: { memo: `memo ${run} by ${c}`, expectedUpdatedAt: stamp },
+    }));
+    await raceRoute('je_templates', id, 30, (c, stamp, run) => e.call(who[c]!, `/api/v1/je-templates/${id}/lines`, {
+      method: 'PUT', jwt: jwt[c], body: { lines: [{ label: `line ${run} by ${c}`, normalSide: 'debit' }], expectedUpdatedAt: stamp },
+    }));
+    // One save's lines, never two.
+    const [n] = await e.query<{ n: number }>('SELECT count(*)::int AS n FROM je_template_lines WHERE template_id = $1', [id]);
+    expect(n!.n).toBe(1);
+  }, 120_000);
+
+  it('company settings (compared under the company row lock)', async () => {
+    const [co] = await e.query<{ id: string }>('SELECT id FROM companies LIMIT 1');
+    await raceRoute('companies', co!.id, 30, (c, stamp, run) => e.call(who[c]!, '/api/v1/company', {
+      method: 'PUT', jwt: jwt[c], body: { phone: `555-0${c}${String(run).padStart(2, '0')}`, expectedUpdatedAt: stamp },
+    }));
+  }, 120_000);
+});
+
 describe('five workstations, one read stamp (U-291 race fix)', () => {
   it('journal entries: at most one save per read stamp (5 clients, 200 rounds)', async () => {
     await race('journal_entry');

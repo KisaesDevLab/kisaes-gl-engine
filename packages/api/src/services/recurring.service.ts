@@ -12,6 +12,7 @@ import { templateForSchedule } from './templates/templates.service.js';
 import { templateTouchesHidden } from './templates/visibility.js';
 import { hiddenAccountIds, isHiddenSql, sensitiveAccountError } from './visibility.js';
 import { AppError } from '../utils/errors.js';
+import { takeExpectedStamp, staleCondition, staleConflictOf } from './stale-context.js';
 import { auditLog } from '../middleware/audit.js';
 import * as ledger from './ledger.service.js';
 import * as billService from './bill.service.js';
@@ -218,9 +219,13 @@ export async function deactivate(tenantId: string, id: string, userId?: string) 
   const before = await db.query.recurringSchedules.findFirst({
     where: and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)),
   });
-  await db.update(recurringSchedules)
+  // The route's stamp (DELETE /recurring/:id, U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('recurring_schedules', id);
+  const done = await db.update(recurringSchedules)
     .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id)));
+    .where(and(eq(recurringSchedules.tenantId, tenantId), eq(recurringSchedules.id, id), staleCondition(recurringSchedules.updatedAt, expected)))
+    .returning({ id: recurringSchedules.id });
+  if (before && done.length === 0 && expected !== undefined) throw await staleConflictOf('recurring_schedules', id, 'This schedule', tenantId);
   if (before) {
     await auditLog(tenantId, 'update', 'recurring_schedule', id, before, { ...before, isActive: false }, userId);
   }

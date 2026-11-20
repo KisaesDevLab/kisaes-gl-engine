@@ -17,6 +17,7 @@ import { permissionTemplates, userPermissions, users, userTenantAccess } from '.
 import { isDesktop } from '../desktop/profile.js';
 import { auditLog } from '../middleware/audit.js';
 import { AppError } from '../utils/errors.js';
+import { takeExpectedStamp, staleCondition, staleConflictOf } from './stale-context.js';
 
 // Per-member permissions service. Mirrors feature-flags.service.ts:
 // tenant-scoped reads, a set-with-before/after path for audit, and a
@@ -77,6 +78,8 @@ export async function updateTemplate(
   actingUserId?: string,
 ) {
   const before = await getTemplateOrThrow(tenantId, id);
+  // The route's stamp (U-291), compared in the UPDATE itself (race fix).
+  const expected = takeExpectedStamp('permission_templates', id);
   const [after] = await db
     .update(permissionTemplates)
     .set({
@@ -85,8 +88,9 @@ export async function updateTemplate(
       ...(input.permissions !== undefined ? { permissions: input.permissions } : {}),
       updatedAt: new Date(),
     })
-    .where(and(eq(permissionTemplates.tenantId, tenantId), eq(permissionTemplates.id, id)))
+    .where(and(eq(permissionTemplates.tenantId, tenantId), eq(permissionTemplates.id, id), staleCondition(permissionTemplates.updatedAt, expected)))
     .returning();
+  if (!after && expected !== undefined) throw await staleConflictOf('permission_templates', id, 'This permission template', tenantId);
   await auditLog(tenantId, 'update', 'permission_template', id, before, after, actingUserId);
   return after!;
 }
@@ -95,10 +99,14 @@ export async function deleteTemplate(tenantId: string, id: string, actingUserId?
   const before = await getTemplateOrThrow(tenantId, id);
   // template_id on user_permissions is ON DELETE SET NULL — assignees
   // fall back to their overrides (deny-by-default) rather than being
-  // deleted along with the template.
-  await db
+  // deleted along with the template. The route's stamp (U-291) is compared
+  // in the DELETE itself (race fix).
+  const expected = takeExpectedStamp('permission_templates', id);
+  const gone = await db
     .delete(permissionTemplates)
-    .where(and(eq(permissionTemplates.tenantId, tenantId), eq(permissionTemplates.id, id)));
+    .where(and(eq(permissionTemplates.tenantId, tenantId), eq(permissionTemplates.id, id), staleCondition(permissionTemplates.updatedAt, expected)))
+    .returning({ id: permissionTemplates.id });
+  if (gone.length === 0 && expected !== undefined) throw await staleConflictOf('permission_templates', id, 'This permission template', tenantId);
   await auditLog(tenantId, 'delete', 'permission_template', id, before, null, actingUserId);
 }
 

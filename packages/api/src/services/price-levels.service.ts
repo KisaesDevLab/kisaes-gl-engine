@@ -20,6 +20,7 @@ import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { roundLevelItemPrice, type PricingLevel } from '../utils/invoice-compute.js';
 import * as ledger from './ledger.service.js';
+import { checkExpectedStamp } from './stale-context.js';
 
 type LevelRow = typeof priceLevels.$inferSelect;
 
@@ -124,6 +125,8 @@ export async function update(
 ): Promise<PriceLevelView> {
   await db.transaction(async (tx) => {
     const existing = await loadRow(tx, tenantId, id, companyId, true);
+    // The route's stamp (U-291), compared under this row lock (race fix).
+    checkExpectedStamp('price_levels', id, existing, 'This price level');
     const before = { ...existing, itemPrices: await itemPricesOf(tx, tenantId, id) };
     if (input.name !== undefined && input.name.toLowerCase() !== existing.name.toLowerCase()) {
       await assertNameFree(tx, tenantId, input.name, existing.companyId ?? companyId, id);
@@ -146,6 +149,7 @@ export async function update(
 export async function remove(tenantId: string, id: string, userId?: string, companyId?: string) {
   await db.transaction(async (tx) => {
     const existing = await loadRow(tx, tenantId, id, companyId, true);
+    checkExpectedStamp('price_levels', id, existing, 'This price level'); // U-291 race fix
     const [used] = await tx.select({ n: sql<number>`count(*)::int` }).from(contacts)
       .where(and(eq(contacts.tenantId, tenantId), eq(contacts.priceLevelId, id)));
     if ((used?.n ?? 0) > 0) {
