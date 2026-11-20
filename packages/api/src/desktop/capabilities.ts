@@ -1849,4 +1849,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * cleared column has a value, whatever the file's own `omitted` says; a transfer's rows may not name the importer;
    * the scrub writes names literally and removes account numbers inside check settings.
    */
-  'tenant-archive-transfer-v1',];
+  'tenant-archive-transfer-v1',
+  /**
+   * U-288 (ClientLedger P33; no migration, no behaviour change). openapi.json marks every operation with
+   * `x-lan: workstation|host` and every write with `x-stale: stale(updatedAt)|stale(version)|stale(schedule)|create|
+   * state-guarded|bulk|n-a` (desktop/route-classes.ts; desktop-only /api/v1/desktop routes are classified there too).
+   * x-lan is default deny: a route no workstation rule lists is host-only. Host-only: every /desktop write, archives
+   * (import, restore, download, job state), POST /tenants and every route below /tenants/:id, imports and payroll
+   * import writes, company create and delete, recovery-key rotation, AI and chat admin writes, SMTP and Stripe
+   * settings, API keys, public API v2 writes, report packs. x-stale is the target contract: it binds with
+   * stale-all-v1 (stamps checked on every stale route) and stale-required-v1 (428 STALE_REQUIRED in LAN mode).
+   */
+  'route-classes-v1',
+];

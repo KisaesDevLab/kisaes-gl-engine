@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { installRecorder, type RouteCollection } from './recorder.js';
 import { buildOpenApiDocument, type SecurityScheme } from './generate.js';
 import { checkSkipped, SKIP_TABLE } from './skip-table.js';
+import { routeClassExtensions } from '../desktop/route-classes.js';
 
 export interface EngineSpec {
   app: Express;
@@ -90,6 +91,8 @@ async function load(): Promise<EngineSpec> {
       'responses are not yet documented unless a route uses describe().',
     security,
     skipped: collection.skipped.map((s) => ({ key: s.key, reason: SKIP_TABLE[s.key] ?? s.reason })),
+    // x-lan on every operation, x-stale on every write (U-288, route-classes-v1).
+    extensions: routeClassExtensions,
   });
   return { app, collection, doc };
 }
