@@ -10,7 +10,8 @@
 //   CL_TRANSFER_EXPECTED    expected.json: {definition, asOf, companies:
 //                           [{totalAssets, totalLiabilities, totalEquity,
 //                           netIncome, accountsReceivable, accountsPayable,
-//                           trialBalanceDebits, trialBalanceCredits}], counts}
+//                           trialBalanceDebits, trialBalanceCredits}], counts,
+//                           canaries?: string[] (the harness's planted secrets)}
 //   CL_TRANSFER_CANARIES    optional, comma-separated extra canaries
 // In server mode, through the HTTP routes, as firm staff who are not super
 // admins: import with transferOnly, compare expected = actual = the file,
@@ -48,6 +49,17 @@ interface Expected {
   asOf: string;
   companies: Array<Record<'totalAssets' | 'totalLiabilities' | 'totalEquity' | 'netIncome' | 'accountsReceivable' | 'accountsPayable' | 'trialBalanceDebits' | 'trialBalanceCredits', string>>;
   counts: Record<string, number>;
+  /** Strings the desktop harness planted (transfer_live.rs `canaries`): none may be found in the destination. */
+  canaries?: unknown;
+}
+
+/** expected.json `canaries`: absent, or an array of strings (anything else fails the run rather than scanning less). */
+function expectedCanaries(e: Expected): string[] {
+  if (e.canaries === undefined || e.canaries === null) return [];
+  if (!Array.isArray(e.canaries) || !e.canaries.every((c) => typeof c === 'string')) {
+    throw new Error('expected.json: canaries must be an array of strings');
+  }
+  return (e.canaries as string[]).map((c) => c.trim()).filter(Boolean);
 }
 
 interface Comparison { definition: string; expected: VerificationTotals | null; actual: VerificationTotals; matches: boolean | null; differences: unknown[] }
@@ -185,7 +197,8 @@ describe.skipIf(!FILE)('a ClientLedger transfer file in MyBooks Online (CI round
     expect((names.rows[0] as { n: number }).n).toBeGreaterThan(0);
 
     // The canaries: nowhere in the database, nowhere in the uploads.
-    const canaries = [...BUILT_IN_CANARIES, PASSPHRASE, ...(process.env['CL_TRANSFER_CANARIES'] ?? '').split(',').map((x) => x.trim()).filter(Boolean)];
+    const canaries = [...new Set([...BUILT_IN_CANARIES, PASSPHRASE, ...expectedCanaries(expected),
+      ...(process.env['CL_TRANSFER_CANARIES'] ?? '').split(',').map((x) => x.trim()).filter(Boolean)])];
     for (const c of canaries) expect(await tablesContaining(c), `canary ${c === PASSPHRASE ? '(passphrase)' : c}`).toEqual([]);
     expect(filesContaining(process.env['UPLOAD_DIR'] || '/data/uploads', canaries)).toEqual([]);
     const hashes = await db.execute(sql`SELECT count(*)::int AS n FROM audit_log WHERE tenant_id = ${r.tenantId}
