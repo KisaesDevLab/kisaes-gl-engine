@@ -8,6 +8,7 @@
 // inline; we never persist the raw file bytes (just sha256 + parsed
 // canonical rows in the import_sessions row).
 
+import { requireMaintenanceInLan } from '../desktop/maintenance.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.js';
@@ -298,7 +299,7 @@ const CLOSED_PERIOD_DOC = 'A date on or before the closing date needs closingPas
   + 'confirmClosedPeriod: true instead. Checked before the 202 for the earliest date; one closing_date_override audit row per '
   + 'batch. Owner or super admin only (403 IMPORT_ADMIN_REQUIRED).';
 
-importsRouter.post('/batches/:id/commit',
+importsRouter.post('/batches/:id/commit', requireMaintenanceInLan(), 
   requireImportAdmin, closingPasswordLimiter, lockContextMiddleware,
   idempotent({ successStatus: 202, replay: async (req) => ({ batchId: req.params['id'] }) }),
   validate(importBatchCommitSchema), describe({
@@ -341,7 +342,7 @@ importsRouter.post('/batches/:id/commit',
     res.status(202).json(out);
   });
 
-importsRouter.post('/batches/:id/undo',
+importsRouter.post('/batches/:id/undo', requireMaintenanceInLan(), 
   requireImportAdmin, closingPasswordLimiter, lockContextMiddleware,
   idempotent({ successStatus: 202, replay: async (req) => ({ batchId: req.params['id'] }) }),
   validate(importBatchUndoSchema), describe({
@@ -565,7 +566,7 @@ importsRouter.get('/:id', async (req, res) => {
 // ── POST /imports/:id/commit ──────────────────────────────────────
 // U-261: commits the session as a one-session batch (kind 'single') in ONE
 // database transaction, synchronously; a failure posts nothing.
-importsRouter.post('/:id/commit', describe({
+importsRouter.post('/:id/commit',  requireMaintenanceInLan(), describe({
   summary: 'Commit one import session (one-session batch)',
   description: 'Commits the session as a one-session batch (kind single, U-261) in one database transaction and answers '
     + '{session, result}. A failure posts nothing and leaves the session failed. 409 IMPORT_SESSION_IN_BATCH when the '

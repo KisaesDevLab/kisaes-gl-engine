@@ -137,9 +137,12 @@ export const app = express();
 // webhook routers and /health. Not mounted for the server appliance.
 import { isDesktop, desktopProfile } from './desktop/profile.js';
 import { desktopGate } from './middleware/desktop-gate.js';
+import { maintenanceGate } from './desktop/maintenance.js';
 import { serverOnly as serverOnlyFor, mountDesktopUnavailable } from './desktop/features.js';
 if (isDesktop()) {
   app.use(desktopGate());
+  // Maintenance mode (U-293): only the holder's session works while it is on.
+  app.use(maintenanceGate());
   // Route families the desktop edition leaves out (desktop/features.ts)
   // answer 404 NOT_AVAILABLE_IN_DESKTOP before any other router sees them.
   mountDesktopUnavailable(app);

@@ -25,6 +25,7 @@ import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-pro
 import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
 import { isDesktop } from '../desktop/profile.js';
 import { currentLanContext } from '../desktop/lan-context.js';
+import { assertMaintenanceAllowsChain, assertMaintenanceAllowsUser } from '../desktop/maintenance.js';
 import { assertNotWorkspace, auditTenantsForUser, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: env.MAX_SESSIONS_PER_USER (default
@@ -624,6 +625,9 @@ export async function login(input: LoginInput): Promise<{ user: typeof users.$in
     .set({ lastLoginAt: new Date() })
     .where(eq(users.id, user.id));
 
+  // U-293: during maintenance only the holder's user signs in (503 MAINTENANCE).
+  await assertMaintenanceAllowsUser(user.id);
+
   // Get accessible tenants
   const accessibleTenants = await getAccessibleTenants(user.id);
 
@@ -815,6 +819,13 @@ async function refreshWithin(exec: DbOrTx, refreshToken: string): Promise<AuthTo
     return AppError.unauthorized('Refresh token expired');
   }
 
+  // U-293: during maintenance only the holder's chain refreshes (503 MAINTENANCE).
+  try {
+    await assertMaintenanceAllowsChain(session.chainId);
+  } catch (err) {
+    if (err instanceof AppError) return err;
+    throw err;
+  }
   // U-290: a session refreshes only from the device it was created on (the
   // row is already gone, so a stolen token is spent either way).
   try {

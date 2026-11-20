@@ -2,6 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
+import { requireMaintenanceInLan } from '../desktop/maintenance.js';
 import { Router, type Request } from 'express';
 import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../db/index.js';
@@ -261,7 +262,7 @@ const readPosted = async (req: Request) => {
   return { journalEntryIds, count: journalEntryIds.length };
 };
 
-payrollImportRouter.post('/sessions/:id/post', idempotent({ successStatus: 200, replay: readPosted }),
+payrollImportRouter.post('/sessions/:id/post',  requireMaintenanceInLan(), idempotent({ successStatus: 200, replay: readPosted }),
   closingPasswordLimiter, lockContextMiddleware, validate(postPayrollSchema), async (req, res) => {
     const sessionId = uuidParam.parse(req.params['id']);
     const session = await importService.getSession(req.tenantId, sessionId);
@@ -295,7 +296,7 @@ const readReversed = async (req: Request) => {
   return { reversed: voided.length, journalEntryIds: voided };
 };
 
-payrollImportRouter.post('/sessions/:id/reverse', idempotent({ successStatus: 200, replay: readReversed }),
+payrollImportRouter.post('/sessions/:id/reverse',  requireMaintenanceInLan(), idempotent({ successStatus: 200, replay: readReversed }),
   closingPasswordLimiter, lockContextMiddleware, validate(reversePayrollSchema), async (req, res) => {
     const sessionId = uuidParam.parse(req.params['id']);
     const result = await jeService.reverseJE(req.tenantId, sessionId, req.body.reason, req.userId);
@@ -315,13 +316,13 @@ payrollImportRouter.get('/sessions/:id/check-register', async (req, res) => {
   res.json(result);
 });
 
-payrollImportRouter.post('/sessions/:id/check-register/post', validate(postCheckRegisterSchema), async (req, res) => {
+payrollImportRouter.post('/sessions/:id/check-register/post',  requireMaintenanceInLan(), validate(postCheckRegisterSchema), async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);
   const result = await checkRegisterService.postCheckRegister(req.tenantId, sessionId, req.body, req.userId, req.companyId);
   res.json(result);
 });
 
-payrollImportRouter.post('/sessions/:id/checks/post', validate(postChecksSchema), async (req, res) => {
+payrollImportRouter.post('/sessions/:id/checks/post',  requireMaintenanceInLan(), validate(postChecksSchema), async (req, res) => {
   const sessionId = uuidParam.parse(req.params['id']);
   const result = await modeBService.postChecks(
     req.tenantId, sessionId, req.body.bankAccountId, req.body.clearingAccountId, req.body.checkIds, req.userId, req.companyId,

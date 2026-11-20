@@ -20,6 +20,7 @@
  * Error bodies never echo file contents or the passphrase.
  */
 
+import { requireMaintenanceInLan } from '../desktop/maintenance.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -189,7 +190,7 @@ export async function requireImportPermission(req: Request, _res: Response, next
   next();
 }
 
-tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission, upload.single('file'), (req, _res, next) => {
+tenantArchivesRouter.post('/import', requireSessionAuth,  requireMaintenanceInLan(), requireImportPermission, upload.single('file'), (req, _res, next) => {
   // multipart fields arrive as strings; coerce the two booleans before validation.
   const body = req.body as Record<string, unknown>;
   if (typeof body['scratch'] === 'string') body['scratch'] = body['scratch'] === 'true';

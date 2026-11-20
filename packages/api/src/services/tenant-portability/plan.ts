@@ -161,6 +161,7 @@ export const GLOBAL_TABLES: Record<string, string> = {
   ai_prompt_templates: 'shipped and custom AI prompt templates',
   check_registry: 'review-check registry keyed by check_key (identical on every install)',
   coa_templates: 'chart-of-accounts templates (boot-seeded; mapped by slug)',
+  desktop_maintenance: 'desktop maintenance hold of this install (U-293; never exported)',
   global_rule_submissions: 'install-level bank-rule submissions queue',
   knowledge_articles: 'help knowledge base',
   mcp_config: 'install MCP configuration',
