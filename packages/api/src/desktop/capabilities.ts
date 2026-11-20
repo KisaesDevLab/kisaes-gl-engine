@@ -1899,6 +1899,9 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * `x-stale: bulk` routes take `stamps {id: updatedAt}`: bulk edits skip stale items (reply `stale` [{id,
    * updatedAt}], bulk-update `skipped` reason 'stale'), merges refuse with 409 STALE {details.stale}. Bulk writers
    * lock entries in id order. Server mode: unchanged (stamps set in code; all stamp fields optional).
+   * Race fix (P33 soak): every stamp is compared in the write's own transaction (under its row lock, or in the
+   * UPDATE/DELETE itself), again after a deadlock retry inside the engine, so of any number of saves from one read
+   * at most one is accepted; ledger edits write lines before balances, as postings do (no lock-order deadlock).
    */
   'stale-all-v1',
   /**
