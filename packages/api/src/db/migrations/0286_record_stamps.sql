@@ -90,7 +90,7 @@ END $$;
 -- '-col1,col2': columns the engine maintains on the child (an UPDATE that
 -- changes only those does not bump). Quiet writers skip.
 CREATE OR REPLACE FUNCTION mybooks_stamp_child() RETURNS trigger
-LANGUAGE plpgsql AS $
+LANGUAGE plpgsql AS $$
 DECLARE
   i int := 0;
   o jsonb := CASE WHEN TG_OP <> 'INSERT' THEN to_jsonb(OLD) END;
