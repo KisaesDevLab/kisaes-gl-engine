@@ -16,13 +16,25 @@
  *   3. `X-CL-Token` missing or wrong   → 401 DESKTOP_TOKEN_REQUIRED
  *      (same body for both cases; constant-time compare of SHA-256 digests)
  *
+ * LAN mode (CL_LAN=1, U-289): a request carrying CL_LAN_TOKEN instead of
+ * CL_TOKEN is a workstation request, forwarded by the desktop app's host
+ * proxy. Then also:
+ *   4. `X-Forwarded-For` (one IP) or `X-CL-Device` (64 hex) bad → 400 LAN_HEADERS_INVALID
+ *   5. the route is not `x-lan: workstation` (desktop/route-classes.ts) → 403 HOST_ONLY
+ * and `req.ip` becomes the workstation's address, `req.lanDevice` its device.
+ *
+ * Paths: `encodeURI`-style tricks cannot widen access: a path the
+ * classifier does not recognise is host-only (default deny).
+ *
  * The launch token is transport trust only ("this is the desktop app").
  * User identity still comes from the JWT in `Authorization: Bearer`, so
  * per-route auth and roles are unchanged.
  */
 
 import type { NextFunction, Request, Response } from 'express';
-import { verifyDesktopToken } from '../desktop/profile.js';
+import { desktopProfile, matchDesktopToken } from '../desktop/profile.js';
+import { lanClassOf } from '../desktop/route-classes.js';
+import { LAN_DEVICE_HEADER, parseLanDevice, parseLanPeer, runWithLanContext } from '../desktop/lan-context.js';
 
 declare global {
   namespace Express {
@@ -59,8 +71,8 @@ export function hostAllowed(hostHeader: string | undefined): boolean {
   if (isUnspecified(bound.host)) {
     // Bound to all interfaces: clients may use any name or address of
     // this machine, so only the port is checked. Origin rejection and the
-    // token still apply. Unreachable today: the profile refuses CL_LAN=1
-    // (CL_LAN_UNSUPPORTED) and every non-loopback bind; revisit with P33.
+    // token still apply. Unreachable: the profile refuses every non-loopback
+    // bind, also with CL_LAN=1 (the desktop app's proxy faces the LAN).
     return h.endsWith(`:${port}`);
   }
   const literal = bound.host.includes(':') ? `[${bound.host}]` : bound.host;
@@ -81,11 +93,36 @@ export function desktopGate() {
       deny(res, 421, 'HOST_NOT_ALLOWED', 'Unexpected Host header.');
       return;
     }
-    if (!verifyDesktopToken(req.headers[DESKTOP_TOKEN_HEADER])) {
+    const tokenClass = matchDesktopToken(req.headers[DESKTOP_TOKEN_HEADER]);
+    if (tokenClass === null) {
       deny(res, 401, 'DESKTOP_TOKEN_REQUIRED', 'Missing or invalid X-CL-Token.');
       return;
     }
     req.desktopTrusted = true;
-    next();
+    if (tokenClass === 'host') {
+      if (desktopProfile().lan) req.lanClass = 'host';
+      next();
+      return;
+    }
+
+    // Workstation (CL_LAN=1, U-289): the class comes from the token that
+    // matched, never from a header. The host proxy sets exactly one
+    // X-Forwarded-For hop and the device fingerprint on every request.
+    const peerIp = parseLanPeer(req.headers['x-forwarded-for']);
+    const device = parseLanDevice(req.headers[LAN_DEVICE_HEADER]);
+    if (!peerIp || !device) {
+      deny(res, 400, 'LAN_HEADERS_INVALID', 'Missing or invalid X-Forwarded-For or X-CL-Device.');
+      return;
+    }
+    req.lanClass = 'workstation';
+    req.lanDevice = device;
+    // Limiters, logs and audit rows see the workstation, not the proxy.
+    Object.defineProperty(req, 'ip', { value: peerIp, configurable: true, enumerable: true, writable: false });
+    // Default deny: only routes classified x-lan: workstation.
+    if (lanClassOf(req.method, req.path) !== 'workstation') {
+      deny(res, 403, 'HOST_ONLY', 'Do this on the host computer.');
+      return;
+    }
+    runWithLanContext({ device, peerIp }, next);
   };
 }

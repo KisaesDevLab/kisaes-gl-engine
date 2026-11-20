@@ -1861,4 +1861,16 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * stale-all-v1 (stamps checked on every stale route) and stale-required-v1 (428 STALE_REQUIRED in LAN mode).
    */
   'route-classes-v1',
+  /**
+   * U-289 (ClientLedger P33; no migration). LAN profile: CL_LAN=1 needs CL_LAN_TOKEN (≥ 256 bits, different from
+   * CL_TOKEN; removed from the environment, scrubbed from logs); the bind stays loopback (the desktop app's host
+   * proxy faces the LAN). A request's class comes from the token it carries: CL_TOKEN = host, CL_LAN_TOKEN =
+   * workstation. Workstation requests must carry exactly one X-Forwarded-For IP and X-CL-Device (64 hex, the
+   * device certificate fingerprint), else 400 LAN_HEADERS_INVALID; a route not `x-lan: workstation` is 403
+   * HOST_ONLY "Do this on the host computer." (default deny). For workstation requests req.ip is the peer, the
+   * global limiter (1200/min) and the auth limiters count per device, and audit rows record ip_address = peer and
+   * user_agent = "lan-device:<fingerprint>". Path imports ({path}) are host-app only. GET /desktop/info `lan`
+   * is true. Server mode and desktop mode without CL_LAN are unchanged.
+   */
+  'lan-profile-v1',
 ];

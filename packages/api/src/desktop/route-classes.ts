@@ -357,8 +357,11 @@ function compile(rule: string): CompiledRule {
   return { method, segments: splitPath(path), rest };
 }
 
+// Lower case: Express routes ignore case, so `/API/V1/Desktop/...` must
+// classify as `/api/v1/desktop/...`. Empty segments (`//`, a trailing `/`)
+// are dropped, as Express's non-strict routing ignores a trailing slash.
 function splitPath(path: string): string[] {
-  return path.split('?')[0]!.split('/').filter((s) => s.length > 0);
+  return path.split('?')[0]!.toLowerCase().split('/').filter((s) => s.length > 0);
 }
 
 function methodMatches(ruleMethod: string, method: string): boolean {

@@ -10,6 +10,8 @@ import {
   loadDesktopProfile,
   parseBind,
   verifyDesktopToken,
+  matchDesktopToken,
+  desktopLanTokenForScrubber,
   redisEnabled,
   isDesktop,
   DesktopConfigError,
@@ -197,13 +199,37 @@ describe('desktop mode', () => {
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '127.0.0.2:4000' })))).toBe('NO_ERROR');
   });
 
-  it('CL_LAN=1 is refused (no TLS yet), whatever the address', () => {
-    for (const bind of ['0.0.0.0:0', '[::]:0', '8.8.8.8:3001', '192.168.1.5:3001', '[fd00::1]:0', '127.0.0.1:0']) {
-      expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: bind, CL_LAN: '1' }))), bind).toBe('CL_LAN_UNSUPPORTED');
+  it('CL_LAN=1 (U-289) keeps the bind on loopback and needs a distinct CL_LAN_TOKEN', () => {
+    const LAN_TOKEN = 'lan_' + 'w'.repeat(44);
+    for (const bind of ['0.0.0.0:0', '[::]:0', '8.8.8.8:3001', '192.168.1.5:3001', '[fd00::1]:0']) {
+      expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: bind, CL_LAN: '1', CL_LAN_TOKEN: LAN_TOKEN }))), bind)
+        .toBe('CL_BIND_NOT_LOOPBACK');
     }
-    // Any other value is not LAN mode: loopback rules apply.
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LAN: '1' })))).toBe('CL_LAN_TOKEN_REQUIRED');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LAN: '1', CL_LAN_TOKEN: 'short' })))).toBe('CL_LAN_TOKEN_INVALID');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LAN: '1', CL_LAN_TOKEN: TOKEN })))).toBe('CL_LAN_TOKEN_INVALID');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LAN_TOKEN: LAN_TOKEN })))).toBe('CL_ENV_CONFLICT');
+    expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_LAN: 'yes', CL_LAN_TOKEN: LAN_TOKEN })))).toBe('CL_ENV_INVALID');
+
+    const env = desktopEnv({ CL_LAN: '1', CL_LAN_TOKEN: LAN_TOKEN });
+    const p = loadDesktopProfile(env);
+    expect(p.lan).toBe(true);
+    expect(env['CL_LAN_TOKEN']).toBeUndefined();
+    expect(matchDesktopToken(TOKEN)).toBe('host');
+    expect(matchDesktopToken(LAN_TOKEN)).toBe('workstation');
+    expect(matchDesktopToken(LAN_TOKEN + 'x')).toBeNull();
+    expect(matchDesktopToken(undefined)).toBeNull();
+    expect(matchDesktopToken([LAN_TOKEN])).toBeNull();
+    // The workstation token is not a launch token for the old check.
+    expect(verifyDesktopToken(LAN_TOKEN)).toBe(false);
+    expect(desktopLanTokenForScrubber()).toBe(LAN_TOKEN);
+
+    // Without LAN mode the workstation token matches nothing.
+    _resetDesktopProfileForTests();
     expect(codeOf(() => loadDesktopProfile(desktopEnv({ CL_BIND: '0.0.0.0:0', CL_LAN: '0' })))).toBe('CL_BIND_NOT_LOOPBACK');
     expect(loadDesktopProfile(desktopEnv({ CL_LAN: '0' })).lan).toBe(false);
+    expect(matchDesktopToken(LAN_TOKEN)).toBeNull();
+    expect(desktopLanTokenForScrubber()).toBeNull();
   });
 
   it('parseBind handles v4, v6, port range', () => {

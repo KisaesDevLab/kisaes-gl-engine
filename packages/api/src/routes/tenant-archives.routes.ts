@@ -147,7 +147,7 @@ export const importArchiveSchema = z.object({
   /** Refuse anything but a ClientLedger transfer file (U-284, tenant-archive-transfer-v1): 422 NOT_A_TRANSFER_FILE. */
   transferOnly: z.boolean().optional().default(false)
     .describe('Refuse an archive that is not a transfer file with 422 NOT_A_TRANSFER_FILE before anything is written (tenant-archive-transfer-v1). The MyBooks Online transfer import page always sets it.'),
-  /** Desktop (CL_LAN != 1) only: absolute path of a local .zip / .clbackup, opened read-only. */
+  /** Desktop only (in LAN mode, the host app only): absolute path of a local .zip / .clbackup, opened read-only. */
   path: z.string().min(1).max(4096).optional(),
 });
 
@@ -217,8 +217,9 @@ tenantArchivesRouter.post('/import', requireSessionAuth, requireImportPermission
       fs.chmodSync(filePath, 0o600); // owner-only while it waits for its job (no-op on Windows)
     } catch { /* best effort */ }
   } else if (body.path !== undefined) {
-    if (!isDesktop() || desktopProfile().lan) {
-      throw AppError.badRequest('Path imports are only available on the desktop without LAN mode; upload the file instead.', 'VALIDATION_ERROR');
+    // LAN mode (U-289): only the host app may name a file on the host's disk.
+    if (!isDesktop() || (desktopProfile().lan && req.lanClass !== 'host')) {
+      throw AppError.badRequest('Path imports are only available on the desktop app of this computer; upload the file instead.', 'VALIDATION_ERROR');
     }
     filePath = resolveImportPath(body.path);
   } else {

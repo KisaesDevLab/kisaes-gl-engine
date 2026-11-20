@@ -461,11 +461,11 @@ describe('database role (non-superuser owner)', () => {
 });
 
 describe('CL_LAN=1', () => {
-  it('is refused until LAN mode has TLS: one fatal JSON line, exit 78', async () => {
-    const e = spawnEngine({ DATABASE_URL: urlFor('unused'), CL_BIND: '0.0.0.0:0', CL_LAN: '1' });
+  it('never binds a non-loopback address, also in LAN mode: one fatal JSON line, exit 78', async () => {
+    const e = spawnEngine({ DATABASE_URL: urlFor('unused'), CL_BIND: '0.0.0.0:0', CL_LAN: '1', CL_LAN_TOKEN: 'lan_' + 'w'.repeat(44) });
     try {
       expect(await e.ready).toEqual({ exitCode: 78 });
-      expect(fatalLine(e)).toMatchObject({ event: 'fatal', code: 'CL_LAN_UNSUPPORTED' });
+      expect(fatalLine(e)).toMatchObject({ event: 'fatal', code: 'CL_BIND_NOT_LOOPBACK' });
     } finally {
       await stopEngine(e);
     }

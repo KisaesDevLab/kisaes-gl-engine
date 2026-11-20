@@ -5,6 +5,7 @@
 import rateLimit from 'express-rate-limit';
 import type { Response } from 'express';
 import { getRateLimitStore } from '../utils/rate-limit-store.js';
+import { limiterClientKey } from '../desktop/lan-context.js';
 
 // Closing-date password guessing bound (U-15). Every route that accepts a
 // `closingPassword` (postings, the closing date), a `currentPassword`
@@ -35,7 +36,7 @@ export const closingPasswordLimiter = rateLimit({
   },
   keyGenerator: (req) => {
     const userId = (req as { userId?: string }).userId;
-    return userId ? `user:${userId}` : `ip:${req.ip || 'unknown'}`;
+    return userId ? `user:${userId}` : limiterClientKey(req);
   },
   message: {
     error: {
