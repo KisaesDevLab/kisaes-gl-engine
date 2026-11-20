@@ -122,6 +122,24 @@ describe('bulk stamps under the lock (P33 review S4)', () => {
   });
 });
 
+describe('stamp settings do not build up on a pooled connection (P33 review M7)', () => {
+  it('a desktop pool connection is replaced after DESKTOP_POOL_MAX_USES uses', async () => {
+    const { pool, DESKTOP_POOL_MAX_USES } = await import('../db/index.js');
+    const pids = new Set<number>();
+    for (let i = 0; i <= DESKTOP_POOL_MAX_USES; i++) {
+      const c = await pool.connect();
+      try {
+        // The stamp triggers' kind of setting: one name per record touched.
+        const r = await c.query(`SELECT pg_backend_pid() AS pid, set_config('mybooks.s_m7_' || $1::text, 'done', false)`, [String(i)]);
+        pids.add(Number(r.rows[0].pid));
+      } finally {
+        c.release();
+      }
+    }
+    expect(pids.size).toBeGreaterThan(1);
+  });
+});
+
 describe('permission before the stamp (P33 review M6)', () => {
   it('a user who may not change company settings gets 403, not 409 STALE with the stored stamp', async () => {
     const host = await e.signIn('host');
