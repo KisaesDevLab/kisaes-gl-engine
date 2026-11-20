@@ -1901,4 +1901,11 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * lock entries in id order. Server mode: unchanged (stamps set in code; all stamp fields optional).
    */
   'stale-all-v1',
+  /**
+   * U-292 (ClientLedger P33; no migration). In LAN mode (CL_LAN=1) a write classified `x-stale: stale(updatedAt)` or
+   * `stale(schedule)` without `expectedUpdatedAt` (body, or query), `stale(version)` without `version`, or `bulk` without
+   * `stamps` is 428 STALE_REQUIRED {details.field} before any handler runs, for host and workstation requests. Internal
+   * callers (the automatic reversal void, jobs) are not affected. Server mode and desktop without LAN: unchanged.
+   */
+  'stale-required-v1',
 ];
