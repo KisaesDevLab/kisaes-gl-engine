@@ -23310,6 +23310,41 @@
         "x-lan": "workstation"
       }
     },
+    "/api/v1/changes": {
+      "get": {
+        "description": "Response `{cursor, feedEpoch, reset, changes: [{kind (table), id, op: upsert | delete | left}]}`. No cursor, another epoch (restore, archive import, engine upgrade), a cursor older than 7 days or more than 1000 changes: `reset: true` and no changes (reload everything, then poll with the new cursor). Ids and kinds only. `left`: the record moved out of your view (a hidden account).",
+        "operationId": "get_api_v1_changes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "maxLength": 80,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Records changed since the cursor (changes-v1, desktop)",
+        "tags": [
+          "changes"
+        ],
+        "x-lan": "workstation"
+      }
+    },
     "/api/v1/chat/admin/config": {
       "get": {
         "operationId": "get_api_v1_chat_admin_config",

@@ -183,6 +183,8 @@ export async function endMaintenance(holder: { sessionChainId: string | undefine
 export async function resetMaintenance(): Promise<boolean> {
   const r = await db.execute(sql`DELETE FROM desktop_maintenance RETURNING holder_session`);
   cached = null;
+  // A file-level restore moved the books under every client: they reload (changes-v1).
+  await db.execute(sql`UPDATE change_feed_state SET epoch = gen_random_uuid() WHERE id = 1`);
   if (r.rows.length > 0) await auditMaintenance('maintenance_reset', {});
   return r.rows.length > 0;
 }

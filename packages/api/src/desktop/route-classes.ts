@@ -151,6 +151,8 @@ export const LAN_WORKSTATION_RULES: readonly string[] = [
     'duplicates', 'budgets', 'document-numbers', 'forms', 'downloads', 'export', 'sensitive-doors',
   ].map((f) => `* /api/v1/${f}/**`),
   'GET /api/v1/audit-log/**',
+  // The desktop change feed (U-294).
+  'GET /api/v1/changes',
   // Import and payroll history can be read; the writes are host-only above.
   'GET /api/v1/imports/**',
   'GET /api/v1/payroll-import/**',

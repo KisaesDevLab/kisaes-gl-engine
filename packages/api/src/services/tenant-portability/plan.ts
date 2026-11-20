@@ -162,6 +162,8 @@ export const GLOBAL_TABLES: Record<string, string> = {
   check_registry: 'review-check registry keyed by check_key (identical on every install)',
   coa_templates: 'chart-of-accounts templates (boot-seeded; mapped by slug)',
   desktop_maintenance: 'desktop maintenance hold of this install (U-293; never exported)',
+  change_feed: 'desktop change feed of this install (U-294; ids only, kept 7 days; never exported)',
+  change_feed_state: 'desktop change feed epoch of this install (U-294; never exported)',
   global_rule_submissions: 'install-level bank-rule submissions queue',
   knowledge_articles: 'help knowledge base',
   mcp_config: 'install MCP configuration',
@@ -1093,6 +1095,8 @@ export const TRIGGERS: Record<string, TriggerClass> = {
     'vendor_credit_applications', 'deposit_lines', 'attachments',
     'daily_sales_entry_values', 'daily_sales_template_lines', 'je_template_lines', 'unit_set_units', 'price_level_items',
   ].map((t) => [`${t}.mybooks_stamp_child`, 'fires-ok'])) as Record<string, TriggerClass>,
+  // U-294 (migration 0289): change-feed rows, desktop connections only; the archive import turns them off.
+  ...Object.fromEntries(['transactions','accounts','contacts','items','tags','tag_groups','companies','recurring_schedules','invoice_templates','permission_templates','conditional_rules','document_drafts','vendor_layout_templates','tenants','sales_tax_agencies','sales_tax_codes','sales_tax_items','contact_tax_exemptions','daily_sales_entries','daily_sales_templates','je_templates','unit_sets','price_levels'].map((t) => [`${t}.mybooks_feed`, 'delete-side-effect:change_feed'])) as Record<string, TriggerClass>,
   'share_session_audit.share_session_audit_append_only': 'delete-guard:mybooks.share_audit_retention',
   'tax_est_snapshots.trg_tax_est_snapshots_immutable': 'insert-safe',
 };
@@ -1114,6 +1118,8 @@ export const VOLATILE_COLUMNS: Record<string, VolatileColumn> = {
 /** Columns outside the tenant's own rows that point at a tenant, and what the delete plan does with them. */
 export const CROSS_TENANT_COLUMNS: Record<string, CrossTenantAction> = {
   'backup_runs.tenant_id': 'set-null',
+  // U-294: change-feed rows of a tenant go with it (ids only; the feed is install-wide).
+  'change_feed.tenant_id': 'delete',
   'share_session_participants.viewer_tenant_id': 'delete',
   'global_rule_submissions.source_tenant_id': 'set-null',
   'tenant_archive_imports.source_tenant_id': 'keep',

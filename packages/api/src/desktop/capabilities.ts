@@ -1921,4 +1921,15 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * MAINTENANCE_REQUIRED unless the caller holds maintenance. All audited (entity desktop_maintenance).
    */
   'maintenance-v1',
+  /**
+   * U-294 (ClientLedger P33; migration 0289_change_feed, additive + rollback). GET /api/v1/changes?cursor= (desktop
+   * only; workstations allowed): {cursor, feedEpoch, reset, changes: [{kind (table name), id, op: upsert | delete |
+   * left}]}, ids and kinds only, for the caller's company. Written by desktop-gated triggers on the stale-checked
+   * tables (an update counts only when it moved the record's stamp); read on an xid8 snapshot horizon, so late commits
+   * are never skipped and writers never wait. reset: true (reload everything) for no cursor, another epoch (maintenance
+   * reset after a file-level restore, an archive import, an engine upgrade), a cursor older than the 7-day retention, or
+   * more than 1000 changes. The cursor moves past other companies' rows; a record moved out of the viewer's view (a
+   * hidden account or an entry on one) comes as `left`.
+   */
+  'changes-v1',
 ];

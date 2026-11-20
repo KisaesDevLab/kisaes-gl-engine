@@ -20,6 +20,7 @@
  * Error bodies never echo file contents or the passphrase.
  */
 
+import { rotateFeedEpoch } from '../services/change-feed.service.js';
 import { requireMaintenanceInLan } from '../desktop/maintenance.js';
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import crypto from 'node:crypto';
@@ -242,6 +243,8 @@ tenantArchivesRouter.post('/import', requireSessionAuth,  requireMaintenanceInLa
     try {
       const result = await runImport({ filePath, passphrase: body.passphrase, name: body.name, callerUserId: userId, resetIntakeSettings: body.resetIntakeSettings, resetDocumentDrafts: body.resetDocumentDrafts, transferOnly: body.transferOnly }, progress);
       clearPassphraseFailures(userId);
+      // Desktop (U-294): every change-feed client reloads after an import.
+      if (isDesktop()) await rotateFeedEpoch();
       return result;
     } catch (err) {
       if (err instanceof ArchiveError && err.code === 'ARCHIVE_PASSPHRASE_INVALID') recordPassphraseFailure(userId);

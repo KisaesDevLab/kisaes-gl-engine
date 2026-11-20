@@ -609,6 +609,9 @@ app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 // Cheap change-detector so clients can refetch only when the books move.
 app.use('/api/v1/ledger-version', ledgerVersionRouter);
+// Desktop change feed (U-294, changes-v1): 404 on the server appliance.
+import { changesRouter } from './routes/changes.routes.js';
+app.use('/api/v1/changes', changesRouter);
 app.use('/api/v1/attachments', attachmentsRouter);
 app.use('/api/v1/recurring', recurringRouter);
 app.use('/api/v1/templates', templatesRouter);
