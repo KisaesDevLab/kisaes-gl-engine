@@ -153,7 +153,7 @@ apiV2Router.get('/tenants', async (req, res) => {
 
 apiV2Router.post('/tenants/switch', requireSessionAuth, async (req, res) => {
   const { tenantId } = switchTenantBodySchema.parse(req.body);
-  const tokens = await authService.switchTenant(req.userId, tenantId, undefined, req.authTime);
+  const tokens = await authService.switchTenant(req.userId, tenantId, undefined, req.authTime, req.sessionChainId);
   res.json({ tokens });
 });
 

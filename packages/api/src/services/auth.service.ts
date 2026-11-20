@@ -25,7 +25,7 @@ import { assignTenantToApplianceFirm, resolveFirmForNewClient } from './firm-pro
 import * as tenantFirmAssignmentService from './tenant-firm-assignment.service.js';
 import { isDesktop } from '../desktop/profile.js';
 import { currentLanContext } from '../desktop/lan-context.js';
-import { assertMaintenanceAllowsChain, assertMaintenanceAllowsUser } from '../desktop/maintenance.js';
+import { assertMaintenanceAllowsChain, assertMaintenanceAllowsUser, holdChain, followHoldInTx, forgetMaintenanceCache } from '../desktop/maintenance.js';
 import { assertNotWorkspace, auditTenantsForUser, requireWorkspaceTenantId } from '../desktop/workspace.js';
 
 // Cap per CLOUDFLARE_TUNNEL_PLAN Phase 3: env.MAX_SESSIONS_PER_USER (default
@@ -657,6 +657,8 @@ export async function switchTenant(
   priorRefreshToken?: string,
   /** `auth_time` (unix seconds) of the JWT that authorised this call. */
   callerAuthTime?: number,
+  /** The session chain (`sid`) of the JWT that authorised this call (desktop maintenance follows it). */
+  callerChainId?: string,
 ): Promise<AuthTokens> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
   if (!user) throw AppError.notFound('User not found');
@@ -741,12 +743,16 @@ export async function switchTenant(
       chainId: switchChainId,
       deviceId: currentLanContext()?.device ?? null,
     });
+    // Desktop: a switch that starts a new chain takes the caller's maintenance
+    // hold with it, so the holder keeps the books (P33 review B1).
+    await followHoldInTx(tx, callerChainId, switchChainId);
     // Mark this tenant as most-recently-accessed for the switcher's "recent"
     // ordering. No-ops for a super-admin with no explicit access row.
     await tx.update(userTenantAccess)
       .set({ lastAccessedAt: new Date() })
       .where(and(eq(userTenantAccess.userId, userId), eq(userTenantAccess.tenantId, targetTenantId)));
   });
+  forgetMaintenanceCache();
 
   // Enforce the per-user session cap. The `priorRefreshToken` branch
   // above keeps net count unchanged, but the api-v2 switchTenant path
@@ -764,7 +770,7 @@ export async function switchTenant(
  * Idempotent — a no-op when the user already has ≤ the cap.
  */
 async function trimOldestSessions(userId: string, exec: DbOrTx = db): Promise<void> {
-  const active = await exec.select({ id: sessions.id, createdAt: sessions.createdAt })
+  const active = await exec.select({ id: sessions.id, createdAt: sessions.createdAt, chainId: sessions.chainId })
     .from(sessions)
     .where(and(
       eq(sessions.userId, userId),
@@ -774,8 +780,12 @@ async function trimOldestSessions(userId: string, exec: DbOrTx = db): Promise<vo
 
   const max = env.MAX_SESSIONS_PER_USER;
   if (active.length > max) {
-    const toDrop = active.slice(0, active.length - max).map((s) => s.id);
-    await exec.delete(sessions).where(inArray(sessions.id, toDrop));
+    // Desktop: the maintenance holder's chain is never trimmed (P33 review B1);
+    // it still counts toward the cap, so the oldest other chains go instead.
+    const holder = await holdChain();
+    const candidates = holder ? active.filter((s) => s.chainId !== holder) : active;
+    const toDrop = candidates.slice(0, active.length - max).map((s) => s.id);
+    if (toDrop.length > 0) await exec.delete(sessions).where(inArray(sessions.id, toDrop));
   }
 }
 

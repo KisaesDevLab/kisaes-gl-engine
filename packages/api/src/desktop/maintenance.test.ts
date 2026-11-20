@@ -58,7 +58,9 @@ describe('maintenance (U-293)', () => {
     expect((await e.call(A, '/api/v1/accounts', { jwt: ws2 })).status).toBe(200);
 
     // Reset (after a file-level restore): the launch token alone clears a stale hold.
-    await e.query("INSERT INTO desktop_maintenance (id, holder_session, holder_user) VALUES (1, gen_random_uuid(), gen_random_uuid())");
+    // (The holder is a live session: a hold whose holder session is gone is void on its own, P33 review B1.)
+    const hostSid = (JSON.parse(Buffer.from(host.split('.')[1]!, 'base64url').toString()) as { sid: string }).sid;
+    await e.query("INSERT INTO desktop_maintenance (id, holder_session, holder_user) VALUES (1, $1, gen_random_uuid())", [hostSid]);
     _forgetMaintenanceCache();
     expect((await e.call(A, '/api/v1/accounts', { jwt: ws2 })).status).toBe(503);
     const reset = await e.call('host', '/api/v1/desktop/maintenance/reset', { method: 'POST' });
