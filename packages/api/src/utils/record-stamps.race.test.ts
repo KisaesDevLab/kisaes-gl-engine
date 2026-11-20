@@ -69,43 +69,45 @@ async function race(kind: Kind) {
   let accepted = 0;
   let stale = 0;
   let retry = 0;
+  let createRetry = 0;
   for (let round = 0; round < ROUNDS; round++) {
-    // Every shared record, read once; each client saves the record of its
-    // turn from that read (different content per client), and posts a new
-    // entry on the same two accounts, all at once.
-    const reads = await Promise.all(shared.map((id) => stampOf(id)));
+    // One shared record, read once; all five clients save it from that read
+    // (different content each), and each also posts a new entry on the same
+    // two accounts, all at once.
+    const k = round % SHARED;
+    const read = await stampOf(shared[k]!);
     const results = await Promise.all(Array.from({ length: CLIENTS }, async (_, c) => {
-      const k = (round + c) % SHARED;
-      const [save] = await Promise.all([
+      const [save, made] = await Promise.all([
         e.call(who[c]!, `/api/v1/transactions/${shared[k]}`, {
-          method: 'PUT', jwt: jwt[c], body: body(kind, `shared ${k} round ${round} by ${c}`, '1.00', reads[k]!.stamp),
+          method: 'PUT', jwt: jwt[c], body: body(kind, `shared ${k} round ${round} by ${c}`, '1.00', read.stamp),
         }),
         e.call(who[c]!, '/api/v1/transactions', {
           method: 'POST', jwt: jwt[c], body: body(kind, `new ${round} by ${c}`, `${1 + ((round * 7 + c) % 9)}.00`),
-        }).then((r) => { if (r.status !== 201) failures.push(`create ${r.status} ${JSON.stringify(r.json)}`); }),
+        }),
       ]);
-      return { k, c, save: save! };
+      return { c, save: save!, made: made! };
     }));
-    for (let k = 0; k < SHARED; k++) {
-      const mine = results.filter((x) => x.k === k);
-      const won = mine.filter((x) => x.save.status === 200);
-      accepted += won.length;
-      for (const x of mine) {
-        if (x.save.status === 409 && x.save.json?.error?.code === 'STALE') stale++;
-        else if (x.save.status === 409 && x.save.json?.error?.code === 'RETRY') retry++;
-        else if (x.save.status !== 200) failures.push(`save ${x.save.status} ${JSON.stringify(x.save.json)}`);
-      }
-      if (won.length > 1) lost.push(`round ${round} record ${k}: ${won.length} saves accepted from read ${reads[k]!.stamp}`);
-      if (won.length === 1) {
-        const now = await stampOf(shared[k]!);
-        if (now.memo !== `shared ${k} round ${round} by ${won[0]!.c}`) lost.push(`round ${round} record ${k}: stored ${now.memo}`);
-      }
+    for (const x of results) {
+      // A 409 RETRY saved nothing (the client sends again): allowed, counted.
+      if (x.made.status === 409 && x.made.json?.error?.code === 'RETRY') createRetry++;
+      else if (x.made.status !== 201) failures.push(`create ${x.made.status} ${JSON.stringify(x.made.json)}`);
+      if (x.save.status === 409 && x.save.json?.error?.code === 'STALE') stale++;
+      else if (x.save.status === 409 && x.save.json?.error?.code === 'RETRY') retry++;
+      else if (x.save.status !== 200) failures.push(`save ${x.save.status} ${JSON.stringify(x.save.json)}`);
+    }
+    const won = results.filter((x) => x.save.status === 200);
+    accepted += won.length;
+    if (won.length > 1) lost.push(`round ${round} record ${k}: ${won.length} saves accepted from read ${read.stamp}`);
+    if (won.length === 1) {
+      const now = await stampOf(shared[k]!);
+      if (now.memo !== `shared ${k} round ${round} by ${won[0]!.c}`) lost.push(`round ${round} record ${k}: stored ${now.memo}`);
     }
   }
-  console.log(`[race ${kind}] ${CLIENTS} clients x ${ROUNDS} rounds: ${accepted} accepted, ${stale} stale, ${retry} retry, ${lost.length} lost, ${failures.length} failures`);
-  expect(failures, failures.slice(0, 5).join('\n')).toEqual([]);
+  console.log(`[race ${kind}] ${CLIENTS} clients x ${ROUNDS} rounds on one read each: ${accepted} accepted, ${stale} stale, `
+    + `${retry} save retry, ${createRetry} create retry, ${lost.length} lost, ${failures.length} failures`);
   expect(lost, lost.slice(0, 5).join('\n')).toEqual([]);
-  expect(accepted).toBeGreaterThan(ROUNDS);
+  expect(failures, failures.slice(0, 5).join('\n')).toEqual([]);
+  expect(accepted).toBeGreaterThan(ROUNDS / 2);
   // The books still balance: every account's balance is the sum of its lines.
   const off = await e.query<{ id: string }>(`
     SELECT a.id FROM accounts a
@@ -127,48 +129,53 @@ async function onConn<T>(desktop: boolean, fn: (c: pg.Client) => Promise<T>): Pr
 }
 
 describe('stamps strictly increase', () => {
-  it('back-to-back commits within the same millisecond each move the stamp by at least 1 ms', async () => {
-    const r = await e.call(who[0]!, '/api/v1/transactions', { method: 'POST', jwt: jwt[0], body: body('journal_entry', 'ticks', '1.00') });
-    expect(r.status, JSON.stringify(r.json)).toBe(201);
-    const id = r.json.transaction.id as string;
+  /** `ticks` edits of `id`, one commit each, back to back; the stamp after each, in epoch milliseconds. */
+  async function backToBack(id: string, ticks: number): Promise<number[]> {
     expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    const ticks = 200;
-    const rows = await onConn(true, async (c) => {
-      await c.query('CREATE TEMP TABLE stamps_seen (n int, s timestamptz, at timestamptz)');
-      // One commit per edit, microseconds apart: many land in the same millisecond.
+    return onConn(true, async (c) => {
+      await c.query('CREATE TEMP TABLE stamps_seen (n int, s timestamptz)');
       await c.query(`DO $$ BEGIN
         FOR i IN 1..${ticks} LOOP
           UPDATE transactions SET memo = 'tick ' || i WHERE id = '${id}';
-          INSERT INTO stamps_seen SELECT i, updated_at, date_trunc('milliseconds', clock_timestamp()) FROM transactions WHERE id = '${id}';
+          INSERT INTO stamps_seen SELECT i, updated_at FROM transactions WHERE id = '${id}';
           COMMIT;
         END LOOP;
       END $$`);
-      return (await c.query<{ n: number; ms: string; at: string }>(
-        `SELECT n, (extract(epoch FROM s) * 1000)::numeric(20,3)::text AS ms, (extract(epoch FROM at) * 1000)::numeric(20,3)::text AS at
-         FROM stamps_seen ORDER BY n`)).rows;
+      return (await c.query<{ ms: string }>(
+        'SELECT (extract(epoch FROM s) * 1000)::numeric(20,3)::text AS ms FROM stamps_seen ORDER BY n')).rows.map((r) => Number(r.ms));
     });
-    expect(rows).toHaveLength(ticks);
-    let pushed = 0;
-    for (let i = 1; i < rows.length; i++) {
-      const prev = Number(rows[i - 1]!.ms);
-      const cur = Number(rows[i]!.ms);
-      expect(cur - prev, `commit ${i + 1}`).toBeGreaterThanOrEqual(1);
-      // The clock had not reached the next millisecond: the stamp was pushed to old + 1 ms.
-      if (cur > Number(rows[i]!.at)) pushed++;
-    }
-    expect(pushed, 'some commits fell in an earlier stamp\'s millisecond').toBeGreaterThan(0);
-    // And the stamp the API returns is the stored one, to the millisecond.
+  }
+
+  async function newEntry(memo: string): Promise<string> {
+    const r = await e.call(who[0]!, '/api/v1/transactions', { method: 'POST', jwt: jwt[0], body: body('journal_entry', memo, '1.00') });
+    expect(r.status, JSON.stringify(r.json)).toBe(201);
+    return r.json.transaction.id as string;
+  }
+
+  it('back-to-back commits each move the stamp forward by at least 1 ms', async () => {
+    const id = await newEntry('ticks');
+    const ms = await backToBack(id, 200);
+    expect(ms).toHaveLength(200);
+    for (let i = 1; i < ms.length; i++) expect(ms[i]! - ms[i - 1]!, `commit ${i + 1}`).toBeGreaterThanOrEqual(1);
+    // The stamp the API returns is the stored one, to the millisecond.
     const got = await e.call(who[1]!, `/api/v1/transactions/${id}`, { jwt: jwt[1] });
     expect(got.status).toBe(200);
-    expect(new Date(got.json.updatedAt ?? got.json.transaction?.updatedAt).getTime()).toBe(Number(rows[ticks - 1]!.ms));
+    expect(Date.parse(got.json.updatedAt ?? got.json.transaction?.updatedAt)).toBe(ms[ms.length - 1]);
   });
 
-  it('a stamp ahead of the clock still moves forward; a stored stamp with microseconds compares to the millisecond', async () => {
-    const [ahead] = await onConn(true, async (c) => (await c.query<{ ok: boolean }>(
-      `SELECT mybooks_stamp_next(t) = t + interval '1 millisecond' AS ok
-       FROM (SELECT date_trunc('milliseconds', clock_timestamp()) + interval '1 hour' AS t) x`)).rows);
-    expect(ahead!.ok).toBe(true);
-    const t = (await e.call(who[0]!, '/api/v1/transactions', { method: 'POST', jwt: jwt[0], body: body('journal_entry', 'micro', '1.00') })).json.transaction as { id: string };
+  it('commits within the stamp\'s millisecond (the clock behind it) move it exactly 1 ms each', async () => {
+    const id = await newEntry('ahead');
+    // A stamp an hour ahead of the clock (written with the gate off): every
+    // commit below lands "in the same millisecond or earlier" than the stamp.
+    await onConn(false, (c) => c.query(
+      "UPDATE transactions SET updated_at = date_trunc('milliseconds', clock_timestamp()) + interval '1 hour' WHERE id = $1", [id]));
+    const [start] = await e.query<{ ms: string }>('SELECT (extract(epoch FROM updated_at) * 1000)::numeric(20,3)::text AS ms FROM transactions WHERE id = $1', [id]);
+    const ms = await backToBack(id, 50);
+    expect(ms.map((m, i) => m - (i === 0 ? Number(start!.ms) : ms[i - 1]!))).toEqual(Array(50).fill(1));
+  });
+
+  it('a stored stamp with microseconds compares to the millisecond and moves forward', async () => {
+    const t = { id: await newEntry('micro') };
     // An archive import keeps the archive's stamps (gate off): microseconds.
     await onConn(false, (c) => c.query("UPDATE transactions SET updated_at = '2026-03-02T10:00:00.123456Z' WHERE id = $1", [t.id]));
     const ok = await e.call(who[0]!, `/api/v1/transactions/${t.id}`, {
