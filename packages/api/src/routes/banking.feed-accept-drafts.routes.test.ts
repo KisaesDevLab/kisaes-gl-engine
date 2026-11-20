@@ -294,12 +294,14 @@ describe('POST /banking/feed/accept with documentDraft (U-181)', () => {
     const st = await readyDraft('statement');
     const gone = await readyDraft();
     await db.update(documentDrafts).set({ attachmentId: null }).where(eq(documentDrafts.id, gone.draft.id));
+    // The edit above moves the draft's stamp on a desktop connection (U-291): send the current one.
+    const [goneNow] = await db.select({ updatedAt: documentDrafts.updatedAt }).from(documentDrafts).where(eq(documentDrafts.id, gone.draft.id));
     const a = await feed('21.10');
     const b = await feed('21.11');
     const ok = await feed('21.12');
     const r = await accept({ items: [
       { id: a, documentDraft: { id: st.draft.id, expectedUpdatedAt: st.draft.updatedAt } },
-      { id: b, documentDraft: { id: gone.draft.id, expectedUpdatedAt: gone.draft.updatedAt } },
+      { id: b, documentDraft: { id: gone.draft.id, expectedUpdatedAt: goneNow!.updatedAt!.toISOString() } },
       { id: ok },
     ] });
     expect(r.status, JSON.stringify(r.json)).toBe(200);

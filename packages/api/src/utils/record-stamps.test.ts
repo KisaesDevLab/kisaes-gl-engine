@@ -92,7 +92,7 @@ describe('catalogue and gate', () => {
     const on = await db.execute(sql`SELECT current_setting('mybooks.desktop', true) AS v`);
     expect((on.rows[0] as { v: string }).v).toBe('on');
     // A plain connection (the server appliance's pool): the code's stamp is kept.
-    const c = new pg.Client({ connectionString: e.dbUrl });
+    const c = new pg.Client({ connectionString: e.dbUrl, options: '-c mybooks.desktop=off' });
     await c.connect();
     try {
       const [acc] = (await c.query('SELECT id FROM accounts WHERE id = $1', [accA])).rows;
