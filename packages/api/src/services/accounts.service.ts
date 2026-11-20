@@ -2,7 +2,8 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp } from './stale-context.js';
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp, lockItemStamps } from './stale-context.js';
+import { rotateFeedEpochInTx } from './change-feed.service.js';
 import { eq, and, ilike, sql, count, inArray, asc, desc, type SQL } from 'drizzle-orm';
 import type { CreateAccountInput, UpdateAccountInput, AccountFilters, BulkUpdateAccountsInput, ImportAccountRow } from '@kis-books/shared';
 import { COA_TEMPLATES } from '@kis-books/shared';
@@ -184,11 +185,17 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
       existing.isSensitive === true);
   }
 
-  const [updated] = await db
-    .update(accounts)
-    .set({ ...sanitized, updatedAt: new Date() })
-    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id), staleCondition(accounts.updatedAt, expectedStamp)))
-    .returning();
+  // A re-parent can move sub-accounts into or out of a sensitive branch: the
+  // desktop change feed rotates its epoch in the same transaction (P33 review M5).
+  const [updated] = await db.transaction(async (tx) => {
+    const rows = await tx
+      .update(accounts)
+      .set({ ...sanitized, updatedAt: new Date() })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, id), staleCondition(accounts.updatedAt, expectedStamp)))
+      .returning();
+    if (rows.length > 0 && parentChanged) await rotateFeedEpochInTx(tx, tenantId);
+    return rows;
+  });
 
   if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This account');
   if (!updated) {
@@ -214,22 +221,30 @@ export async function update(tenantId: string, id: string, input: UpdateAccountI
  * with the change (or roll back with it).
  */
 export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInput, userId?: string) {
-  const { updates } = input;
+  const { updates: requested } = input;
 
   // Reject duplicate targets — two edits to the same account would make
   // the result order-dependent.
-  const ids = updates.map((u) => u.id);
+  const ids = requested.map((u) => u.id);
   if (new Set(ids).size !== ids.length) {
     throw AppError.badRequest('Duplicate account ids in bulk update');
   }
 
-  const existing = await db.select().from(accounts)
-    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids), visibleAccount(await hiddenAccountIds(), accounts.id)));
+  const hidden = await hiddenAccountIds();
+  // One database transaction from the first read: bulk stamps (stale-all-v1)
+  // are compared under the row locks, so an edit that committed after the
+  // caller read is skipped, never overwritten (P33 review S4).
+  return db.transaction(async (tx) => {
+  const existing = await tx.select().from(accounts)
+    .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.id, ids), visibleAccount(hidden, accounts.id)));
   const byId = new Map(existing.map((a) => [a.id, a]));
   const missing = ids.filter((id) => !byId.has(id));
   if (missing.length > 0) {
     throw AppError.notFound(`Account(s) not found: ${missing.join(', ')}`);
   }
+  const stale = await lockItemStamps(tx, 'accounts', ids, { tenantId });
+  // A record whose stamp still matches under the lock is as the first read saw it.
+  const updates = requested.filter((u) => !stale.has(u.id.toLowerCase()));
 
   // Per-account guards + compute each account's FINAL number for the
   // uniqueness checks below (undefined = unchanged).
@@ -239,7 +254,7 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
     if (acct.isSystem && u.accountType && u.accountType !== acct.accountType) {
       throw AppError.badRequest(`Cannot change the type of system account "${acct.name}"`);
     }
-    if (u.accountType && u.accountType !== acct.accountType) await assertAccountNotInventory(db, tenantId, [u.id]);
+    if (u.accountType && u.accountType !== acct.accountType) await assertAccountNotInventory(tx, tenantId, [u.id]);
     const finalNumber = u.accountNumber !== undefined ? (u.accountNumber || null) : acct.accountNumber;
     finalNumbers.set(u.id, finalNumber);
   }
@@ -254,20 +269,21 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
     }
     seen.set(num, id);
   }
-  // …and against tenant accounts NOT part of this batch.
+  // …and against tenant accounts NOT edited here (a skipped stale account keeps its number).
+  const editing = new Set(updates.map((u) => u.id));
   const claimed = [...seen.keys()];
   if (claimed.length > 0) {
-    const outside = await db.select({ id: accounts.id, accountNumber: accounts.accountNumber })
+    const outside = await tx.select({ id: accounts.id, accountNumber: accounts.accountNumber })
       .from(accounts)
       .where(and(eq(accounts.tenantId, tenantId), inArray(accounts.accountNumber, claimed)));
     for (const o of outside) {
-      if (!byId.has(o.id)) {
+      if (!editing.has(o.id)) {
         throw AppError.conflict(`Account number ${o.accountNumber} already exists`, 'ACCOUNT_NUMBER_EXISTS');
       }
     }
   }
 
-  const updated = await db.transaction(async (tx) => {
+  {
     // Phase 1: free the numbers of every edited row whose number changes,
     // so renumber shuffles/swaps can't trip the unique index mid-flight.
     const renumbered = updates.filter((u) => {
@@ -301,9 +317,8 @@ export async function bulkUpdate(tenantId: string, input: BulkUpdateAccountsInpu
       results.push(after);
     }
     return results;
+  }
   });
-
-  return updated;
 }
 
 export async function deactivate(tenantId: string, id: string, userId?: string) {
@@ -627,6 +642,8 @@ export async function setSensitive(tenantId: string, id: string, isSensitive: bo
       .returning();
     if (!updated && expectedStamp !== undefined) throw staleConflict(null, 'This account');
     if (!updated) throw AppError.internal('Failed to update account');
+    // The hidden set changed: desktop clients reload in step (P33 review M5).
+    await rotateFeedEpochInTx(tx);
     await auditLog(tenantId, 'update', 'account', id, { isSensitive: row.isSensitive }, { isSensitive }, userId, tx);
     return updated;
   });
@@ -662,13 +679,16 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
   }
 
   // Re-point journal_lines will be done when journal_lines table exists (Phase 4)
-  // For now, just deactivate the source
-  await db
-    .update(accounts)
-    .set({ isActive: false, updatedAt: new Date() })
-    .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, sourceId)));
-
-  await auditLog(tenantId, 'update', 'account', sourceId, source, { merged_into: targetId }, userId);
+  // For now, just deactivate the source. Bulk stamps (stale-all-v1) are
+  // compared under the row locks, in the same transaction (P33 review S4).
+  await db.transaction(async (tx) => {
+    await lockItemStamps(tx, 'accounts', [sourceId, targetId], { tenantId });
+    await tx
+      .update(accounts)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(and(eq(accounts.tenantId, tenantId), eq(accounts.id, sourceId)));
+    await auditLog(tenantId, 'update', 'account', sourceId, source, { merged_into: targetId }, userId, tx);
+  });
   return target;
 }
 

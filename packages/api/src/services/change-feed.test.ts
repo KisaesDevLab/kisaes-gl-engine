@@ -114,6 +114,43 @@ describe('change feed (U-294)', () => {
     expect(after.feedEpoch).not.toBe(page.feedEpoch);
   });
 
+  it('for a viewer with hidden accounts a hard-deleted entry comes as left, never as delete (P33 review M5)', async () => {
+    const t = await e.call(A, '/api/v1/transactions', { method: 'POST', jwt, body: jeBody('4.00') });
+    expect(t.status, JSON.stringify(t.json)).toBe(201);
+    const id = t.json.transaction.id as string;
+    const before = await poll();
+    // A hard delete (as an import undo does): the lines and the header go.
+    const c = new pg.Client({ connectionString: e.dbUrl, options: '-c mybooks.desktop=on' });
+    await c.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('DELETE FROM journal_lines WHERE transaction_id = $1', [id]);
+      await c.query('DELETE FROM transactions WHERE id = $1', [id]);
+      await c.query('COMMIT');
+    } finally {
+      await c.end();
+    }
+    const { readChanges } = await import('./change-feed.service.js');
+    const hiddenView = await readChanges(e.company, before.cursor, [accB]);
+    expect(hiddenView.changes).toContainEqual({ kind: 'transactions', id, op: 'left' });
+    expect(hiddenView.changes.some((x) => x.op === 'delete')).toBe(false);
+    // A viewer who sees everything gets the delete.
+    expect((await readChanges(e.company, before.cursor, [])).changes).toContainEqual({ kind: 'transactions', id, op: 'delete' });
+  });
+
+  it('marking an account sensitive (or unmarking it) makes every client reload (P33 review M5)', async () => {
+    for (const isSensitive of [true, false]) {
+      const before = await poll();
+      const s = (await e.query<{ s: string }>(
+        `SELECT to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS s FROM accounts WHERE id = $1`, [accA]))[0]!.s;
+      const r = await e.call(A, `/api/v1/accounts/${accA}/sensitive`, { method: 'PUT', jwt, body: { isSensitive, expectedUpdatedAt: s } });
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      const after = await poll(before.cursor);
+      expect(after.reset, `isSensitive=${isSensitive}`).toBe(true);
+      expect(after.feedEpoch).not.toBe(before.feedEpoch);
+    }
+  });
+
   it('a malformed or foreign cursor resets', async () => {
     expect((await poll('nonsense')).reset).toBe(true);
     expect((await poll('abc.12')).reset).toBe(true);

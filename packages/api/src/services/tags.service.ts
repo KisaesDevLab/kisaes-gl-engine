@@ -2,7 +2,7 @@
 // Licensed under the PolyForm Internal Use License 1.0.0.
 // See LICENSE and NOTICE.md for terms.
 
-import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp, checkExpectedStamp } from './stale-context.js';
+import { takeExpectedStamp, staleCondition, staleConflict, assertCurrentStamp, checkExpectedStamp, lockItemStamps } from './stale-context.js';
 import { eq, and, or, sql, ilike, count, inArray, asc, type SQL } from 'drizzle-orm';
 import type { CreateTagInput, UpdateTagInput, TagFilters } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
@@ -296,6 +296,8 @@ export async function merge(tenantId: string, sourceId: string, targetId: string
   // delete fail and the whole merge roll back. The audit row is written in
   // the same transaction and lists the transaction ids.
   await db.transaction(async (tx) => {
+    // Bulk stamps (stale-all-v1): both tags are locked and compared first (P33 review S4).
+    await lockItemStamps(tx, 'tags', [sourceId, targetId], { tenantId });
     const affected = await guardMergeTransactions(tx, tenantId, sql`
       SELECT transaction_id FROM transaction_tags WHERE tenant_id = ${tenantId} AND tag_id = ${sourceId}
       UNION
