@@ -13,7 +13,6 @@ import { users, sessions } from '../db/schema/index.js';
 import { apiKeyAuth } from './api-key-auth.js';
 import { consumeDownloadToken } from '../utils/download-token.js';
 import { desktopProfile, isDesktop } from '../desktop/profile.js';
-import { currentLanContext } from '../desktop/lan-context.js';
 import { workspaceFence } from '../desktop/workspace.js';
 import { hiddenAccountIdsFor, refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
 import { refuseReportOutsideArea } from '../services/report-areas.js';
@@ -94,14 +93,14 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
  * (none for the host app). Revoking a session (deleting its rows) or
  * evicting it therefore ends its access tokens at the next request.
  */
-async function assertLiveSession(userId: string, sid: string | undefined): Promise<void> {
+async function assertLiveSession(userId: string, sid: string | undefined, device: string | undefined): Promise<void> {
   if (!sid || !UUID_RE.test(sid)) throw AppError.unauthorized('Sign in again.', 'SESSION_REVOKED');
   const [row] = await db.select({ deviceId: sessions.deviceId })
     .from(sessions)
     .where(and(eq(sessions.chainId, sid), eq(sessions.userId, userId), sql`${sessions.expiresAt} > NOW()`))
     .limit(1);
   if (!row) throw AppError.unauthorized('This sign-in has ended. Sign in again.', 'SESSION_REVOKED');
-  if ((row.deviceId ?? null) !== (currentLanContext()?.device ?? null)) {
+  if ((row.deviceId ?? null) !== (device ?? null)) {
     throw AppError.unauthorized('This sign-in belongs to another computer. Sign in again.', 'SESSION_DEVICE_MISMATCH');
   }
 }
@@ -229,7 +228,7 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
   // Desktop: the workspace fence runs outside the token try/catch so a
   // database error is not reported as an invalid token.
   if (isDesktop()) {
-    if (desktopProfile().lan) await assertLiveSession(req.userId, sid);
+    if (desktopProfile().lan) await assertLiveSession(req.userId, sid, req.lanDevice);
     await workspaceFence(req);
     next();
   }

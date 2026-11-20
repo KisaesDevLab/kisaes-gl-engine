@@ -55,6 +55,25 @@ describe('LAN sessions (U-290)', () => {
     expect(stolen.json.error.code).toBe('SESSION_DEVICE_MISMATCH');
   });
 
+  it('the chain always has a live row while it refreshes (no 401 in the rotation gap)', async () => {
+    const t = await e.login(A);
+    let refresh = t.refreshToken;
+    let stop = false;
+    const seen: number[] = [];
+    const reader = (async () => {
+      while (!stop) seen.push((await e.call(A, '/api/v1/auth/me', { jwt: t.accessToken })).status);
+    })();
+    for (let i = 0; i < 50; i++) {
+      const r = await e.call(A, '/api/v1/auth/refresh', { method: 'POST', body: { refreshToken: refresh } });
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      refresh = decodeURIComponent(r.cookies.map((c) => /^kb_refresh=([^;]+)/.exec(c)?.[1]).find((v) => v) ?? '');
+    }
+    stop = true;
+    await reader;
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.filter((s) => s !== 200)).toEqual([]);
+  });
+
   it('a token without a live session (revoked, or no sid) is refused at the next request', async () => {
     const host = await e.login('host');
     const t = await e.login(A);

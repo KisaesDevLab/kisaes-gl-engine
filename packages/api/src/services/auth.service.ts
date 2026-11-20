@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import { eq, and, sql, asc, inArray } from 'drizzle-orm';
 import type { RegisterInput, LoginInput, AuthTokens, JwtPayload } from '@kis-books/shared';
 import { entityTypes } from '@kis-books/shared';
-import { db } from '../db/index.js';
+import { db, type DbOrTx } from '../db/index.js';
 import { apiKeys, tenants, users, sessions, userTenantAccess, companies, passwordResetTokens } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
@@ -123,6 +123,7 @@ async function createSession(
   userId: string,
   refreshToken: string,
   context?: { tenantId?: string | null; role?: string | null; authTime?: Date | null; chainId?: string },
+  exec: DbOrTx = db,
 ): Promise<string> {
   const chainId = context?.chainId ?? crypto.randomUUID();
   // 7 days from now, computed as an exact 7-day offset rather than via
@@ -131,7 +132,7 @@ async function createSession(
   // the container's local TZ.
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-  await db.insert(sessions).values({
+  await exec.insert(sessions).values({
     userId,
     refreshTokenHash: hashToken(refreshToken),
     expiresAt,
@@ -148,7 +149,7 @@ async function createSession(
   // recent row so a rapid re-login never revokes its own token. Shared
   // with switchTenant's post-transaction path so cap enforcement lives
   // in exactly one place.
-  await trimOldestSessions(userId);
+  await trimOldestSessions(userId, exec);
   return chainId;
 }
 
@@ -758,8 +759,8 @@ export async function switchTenant(
  * remain. Called after any flow that might push the user over the cap.
  * Idempotent — a no-op when the user already has ≤ the cap.
  */
-async function trimOldestSessions(userId: string): Promise<void> {
-  const active = await db.select({ id: sessions.id, createdAt: sessions.createdAt })
+async function trimOldestSessions(userId: string, exec: DbOrTx = db): Promise<void> {
+  const active = await exec.select({ id: sessions.id, createdAt: sessions.createdAt })
     .from(sessions)
     .where(and(
       eq(sessions.userId, userId),
@@ -770,11 +771,23 @@ async function trimOldestSessions(userId: string): Promise<void> {
   const max = env.MAX_SESSIONS_PER_USER;
   if (active.length > max) {
     const toDrop = active.slice(0, active.length - max).map((s) => s.id);
-    await db.delete(sessions).where(inArray(sessions.id, toDrop));
+    await exec.delete(sessions).where(inArray(sessions.id, toDrop));
   }
 }
 
+/**
+ * Rotates a refresh token. The old row's delete, the lookups and the new
+ * row's insert are one transaction, so the session chain is never without a
+ * live row (LAN mode checks it on every request, U-290). Refusals commit the
+ * delete (a refused token is spent) and are thrown after it.
+ */
 export async function refresh(refreshToken: string): Promise<AuthTokens> {
+  const out = await db.transaction((tx) => refreshWithin(tx, refreshToken));
+  if (out instanceof AppError) throw out;
+  return out;
+}
+
+async function refreshWithin(exec: DbOrTx, refreshToken: string): Promise<AuthTokens | AppError> {
   const tokenHash = hashToken(refreshToken);
 
   // Atomic delete-and-return: only the caller that wins the race actually
@@ -790,30 +803,35 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // That's fine for usability but breaks replay protection — an attacker
   // who somehow got a copy of the refresh token would be able to use it
   // alongside the legitimate user instead of being detected.
-  const [session] = await db.delete(sessions)
+  const [session] = await exec.delete(sessions)
     .where(eq(sessions.refreshTokenHash, tokenHash))
     .returning();
 
   if (!session) {
-    throw AppError.unauthorized('Invalid refresh token');
+    return AppError.unauthorized('Invalid refresh token');
   }
 
   if (new Date() > session.expiresAt) {
-    throw AppError.unauthorized('Refresh token expired');
+    return AppError.unauthorized('Refresh token expired');
   }
 
   // U-290: a session refreshes only from the device it was created on (the
   // row is already gone, so a stolen token is spent either way).
-  assertSessionDevice(session.deviceId);
+  try {
+    assertSessionDevice(session.deviceId);
+  } catch (err) {
+    if (err instanceof AppError) return err;
+    throw err;
+  }
 
   // Get user (after we've claimed the session row, so even if user lookup
   // fails the old refresh token is already invalidated)
-  const user = await db.query.users.findFirst({
+  const user = await exec.query.users.findFirst({
     where: eq(users.id, session.userId),
   });
 
   if (!user || !user.isActive) {
-    throw AppError.unauthorized('User not found or deactivated');
+    return AppError.unauthorized('User not found or deactivated');
   }
 
   // Preserve the TENANT the session was operating under, so an expired
@@ -834,7 +852,7 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // has active access before re-issuing — revoked access must not keep
   // refreshing into it. Super-admins retain cross-tenant access.
   if (effectiveTenantId !== user.tenantId) {
-    const access = await db.query.userTenantAccess.findFirst({
+    const access = await exec.query.userTenantAccess.findFirst({
       where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, effectiveTenantId)),
     });
     if (access?.isActive) {
@@ -853,7 +871,7 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   // the workspace access row's (readonly for everyone but the owner), as
   // login reports it; without an active row, readonly.
   if (isDesktop() && effectiveTenantId === user.tenantId) {
-    const wsAccess = await db.query.userTenantAccess.findFirst({
+    const wsAccess = await exec.query.userTenantAccess.findFirst({
       where: and(eq(userTenantAccess.userId, user.id), eq(userTenantAccess.tenantId, user.tenantId)),
     });
     effectiveRole = wsAccess?.isActive ? (wsAccess.role || 'readonly') : 'readonly';
@@ -864,7 +882,7 @@ export async function refresh(refreshToken: string): Promise<AuthTokens> {
   const chainAuthTime = session.authTime ?? session.createdAt ?? new Date();
   const jwtPayload: JwtPayload = { userId: user.id, tenantId: effectiveTenantId, role: effectiveRole, isSuperAdmin: user.isSuperAdmin || false, auth_time: authTimeClaim(chainAuthTime) };
   const newRefreshToken = generateRefreshToken();
-  const sid = await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole, authTime: chainAuthTime, chainId: session.chainId });
+  const sid = await createSession(user.id, newRefreshToken, { tenantId: effectiveTenantId, role: effectiveRole, authTime: chainAuthTime, chainId: session.chainId }, exec);
   const newAccessToken = generateAccessToken({ ...jwtPayload, sid });
 
   return { accessToken: newAccessToken, refreshToken: newRefreshToken };
