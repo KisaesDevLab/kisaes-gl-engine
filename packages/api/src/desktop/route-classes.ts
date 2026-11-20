@@ -350,6 +350,32 @@ export const STALE_EXEMPT_RECORD_WRITES: Readonly<Record<string, string>> = {
   'PUT /api/v1/company/users/{userId}/permissions': 'team permissions an owner or admin edits; the body states the whole value',
 };
 
+/**
+ * Stale-checked writes that can also create (U-292b). The body must carry
+ * `expectedUpdatedAt` (the key is required by the schema); `null` is a stamp
+ * that says "I read it and nothing was stored", the service creates only then
+ * and answers 409 STALE when a record exists. So in LAN mode an explicit
+ * `null` body stamp counts as carried here (an absent key is still 428). On
+ * every other route `null` is no stamp. Each line has its reason; the test
+ * checks the list against the spec both ways.
+ */
+export const NULL_STAMP_CREATES: Readonly<Record<string, string>> = {
+  'PUT /api/v1/vendor-layout-templates': 'create or replace by (vendor, fingerprint); null creates only',
+  'PUT /api/v1/company/intake-settings': 'the intake folders; null before the first save',
+};
+
+/**
+ * Stale-checked writes on a path with no record id: settings rows that always
+ * exist (one per company), so no call ever creates one. Any other stale write
+ * without a path parameter must be on NULL_STAMP_CREATES (route-classes.test.ts).
+ */
+export const STALE_SINGLETON_WRITES: Readonly<Record<string, string>> = {
+  'PUT /api/v1/company': 'the company row; exists from company creation',
+  'PUT /api/v1/company/settings': 'settings on the company row',
+  'PUT /api/v1/company/closing-password': 'the closing password on the company row',
+  'PUT /api/v1/checks/settings': 'check settings on the company row',
+};
+
 // ── Matching ─────────────────────────────────────────────────────────
 
 interface CompiledRule {
@@ -440,6 +466,15 @@ export function routeClassExtensions(method: string, path: string): Record<`x-${
   const stale = staleClassOf(method, path);
   if (stale) ext['x-stale'] = stale;
   return ext;
+}
+
+const NULL_STAMP = Object.keys(NULL_STAMP_CREATES).map(compile);
+
+/** True when an explicit null `expectedUpdatedAt` is a stamp on (method, path) (NULL_STAMP_CREATES). */
+export function acceptsNullStamp(method: string, path: string): boolean {
+  const m = method.toUpperCase();
+  const segs = splitPath(path);
+  return NULL_STAMP.some((r) => matches(r, m, segs));
 }
 
 /** Test hook: the rule strings that never matched any of the given operations. */

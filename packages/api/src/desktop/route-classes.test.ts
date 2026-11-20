@@ -11,7 +11,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadEngineSpec } from '../openapi/engine-spec.js';
 import {
+  acceptsNullStamp,
   isMutating,
+  NULL_STAMP_CREATES,
+  STALE_SINGLETON_WRITES,
   lanClassOf,
   staleClassOf,
   STALE_CLASSES,
@@ -170,6 +173,58 @@ describe('x-stale', () => {
       expect(op!['x-lan'], k).toBe('workstation');
       expect(['n-a', 'create'], k).toContain(op!['x-stale']);
     }
+  });
+
+  it('no create needs a stamp (U-292b)', () => {
+    type Schema = { properties?: Record<string, { anyOf?: Array<{ type?: string }>; type?: string | string[] }>; required?: string[] };
+    type FullOp = Operation & { summary?: string; requestBody?: { content?: { 'application/json'?: { schema?: Schema } } } };
+    const bodyOf = (o: Op) => (o.op as FullOp).requestBody?.content?.['application/json']?.schema;
+    const allowsNull = (p: { anyOf?: Array<{ type?: string }>; type?: string | string[] } | undefined) =>
+      !!p && (p.anyOf?.some((a) => a.type === 'null') || (Array.isArray(p.type) ? p.type.includes('null') : p.type === 'null'));
+    const isStale = (o: Op) => !!o.op['x-stale'] && (o.op['x-stale'].startsWith('stale(') || o.op['x-stale'] === 'bulk');
+    const getPaths = new Set(ops.filter((o) => o.method === 'get').map((o) => o.path));
+
+    // Every op that can create: a "Create..." summary, a POST on a collection
+    // (a path without a parameter that is also listed), or a stale write on a
+    // path with no record id. None is stale-checked or bulk, unless null is its stamp
+    // for a create (NULL_STAMP_CREATES) or it is a settings row that always exists.
+    const creates = ops.filter((o) => isMutating(o.method) && (
+      /^create\b/i.test((o.op as FullOp).summary ?? '')
+      || (o.method === 'post' && !o.path.includes('{') && getPaths.has(o.path))
+      // (bulk writes name their records in the body)
+      || (!!o.op['x-stale']?.startsWith('stale(') && !o.path.includes('{'))
+    ));
+    expect(creates.length).toBeGreaterThan(50);
+    const offenders = creates
+      .filter(isStale)
+      .map(key)
+      .filter((k) => !(k in NULL_STAMP_CREATES) && !(k in STALE_SINGLETON_WRITES));
+    expect(offenders).toEqual([]);
+
+    // A stale write whose stamp may be null is on the list, and each listed
+    // route is a stale(updatedAt) write whose body requires the stamp key and allows null.
+    const nullable = ops
+      .filter((o) => o.op['x-stale']?.startsWith('stale('))
+      .filter((o) => allowsNull(bodyOf(o)?.properties?.[o.op['x-stale'] === 'stale(version)' ? 'version' : 'expectedUpdatedAt']))
+      .map(key);
+    expect(nullable.sort()).toEqual(Object.keys(NULL_STAMP_CREATES).sort());
+    const byKey = new Map(ops.map((o) => [key(o), o]));
+    for (const k of Object.keys(NULL_STAMP_CREATES)) {
+      const o = byKey.get(k)!;
+      expect(o.op['x-stale'], k).toBe('stale(updatedAt)');
+      expect(bodyOf(o)?.required ?? [], k).toContain('expectedUpdatedAt');
+      const [m, p] = k.split(' ') as [string, string];
+      expect(acceptsNullStamp(m, p), k).toBe(true);
+      expect(acceptsNullStamp(m, concrete(p)), k).toBe(true);
+    }
+    for (const k of Object.keys(STALE_SINGLETON_WRITES)) {
+      const o = byKey.get(k);
+      expect(o, `${k} is not in the spec`).toBeDefined();
+      expect(o!.op['x-stale'], k).toBe('stale(updatedAt)');
+    }
+    // Null is never a stamp on an ordinary record write.
+    expect(acceptsNullStamp('PUT', `/api/v1/transactions/${SAMPLE}`)).toBe(false);
+    expect(acceptsNullStamp('DELETE', `/api/v1/vendor-layout-templates/${SAMPLE}`)).toBe(false);
   });
 
   it('the core money records are stale-checked', () => {

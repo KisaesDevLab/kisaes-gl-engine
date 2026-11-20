@@ -40,6 +40,45 @@ describe('stale-required (U-292)', () => {
     expect(requiredStampField('POST', '/api/v1/tags/bulk-tag')).toBe('stamps');
     expect(requiredStampField('POST', '/api/v1/transactions')).toBeNull();
     expect(requiredStampField('GET', '/api/v1/transactions/x')).toBeNull();
+    expect(requiredStampField('PUT', '/api/v1/vendor-layout-templates')).toBe('expectedUpdatedAt');
+    expect(requiredStampField('DELETE', '/api/v1/vendor-layout-templates/0b6c2a4e-6f6e-4c1d-8a37-6c1f4d8e9a01')).toBe('expectedUpdatedAt');
+  });
+
+  it('null is the stamp of a create on a create-or-replace route; an absent key is still refused (U-292b)', async () => {
+    const v = await e.call(A, '/api/v1/contacts', { method: 'POST', jwt, body: { contactType: 'vendor', displayName: 'Layout Vendor U292b' } });
+    expect(v.status, JSON.stringify(v.json)).toBe(201);
+    const contactId = (v.json.contact ?? v.json).id as string;
+    const layout = (n: number, stamp: unknown) => ({
+      contactId, fingerprint: 'u292b:layout:1', fieldRegions: { total: { box: [7000, 8000, 9500, 8400], anchor: 'TOTAL DUE' }, version: n },
+      ...(stamp === undefined ? {} : { expectedUpdatedAt: stamp }),
+    });
+    const url = '/api/v1/vendor-layout-templates';
+    const created = await e.call(A, url, { method: 'PUT', jwt, body: layout(1, null) });
+    expect(created.status, JSON.stringify(created.json)).toBe(201);
+    // A second null: the layout exists now, so the null stamp is stale.
+    const again = await e.call(A, url, { method: 'PUT', jwt, body: layout(2, null) });
+    expect(again.status).toBe(409);
+    expect(again.json.error.code).toBe('STALE');
+    // The key left out is no stamp: never a write.
+    const absent = await e.call(A, url, { method: 'PUT', jwt, body: layout(2, undefined) });
+    expect(absent.status).toBe(428);
+    const replaced = await e.call(A, url, { method: 'PUT', jwt, body: layout(2, created.json.template.updatedAt) });
+    expect(replaced.status, JSON.stringify(replaced.json)).toBe(200);
+
+    // Intake folders: null before the first save.
+    const folders = [{ id: crypto.randomUUID(), name: 'Bills', path: '\\\\nas\\scans\\u292b', defaultKind: 'bills', autoRead: false, keepOriginals: false }];
+    const first = await e.call(A, '/api/v1/company/intake-settings', { method: 'PUT', jwt, body: { folders, expectedUpdatedAt: null } });
+    expect(first.status, JSON.stringify(first.json)).toBe(200);
+    expect((await e.call(A, '/api/v1/company/intake-settings', { method: 'PUT', jwt, body: { folders, expectedUpdatedAt: null } })).status).toBe(409);
+    expect((await e.call(A, '/api/v1/company/intake-settings', { method: 'PUT', jwt, body: { folders } })).status).toBe(428);
+    const second = await e.call(A, '/api/v1/company/intake-settings', { method: 'PUT', jwt, body: { folders, expectedUpdatedAt: first.json.updatedAt } });
+    expect(second.status, JSON.stringify(second.json)).toBe(200);
+
+    // Elsewhere null is no stamp.
+    const c = await e.call(A, '/api/v1/transactions', { method: 'POST', jwt, body: jeBody() });
+    expect(c.status, JSON.stringify(c.json)).toBe(201);
+    const r = await e.call(A, `/api/v1/transactions/${c.json.transaction.id}`, { method: 'PUT', jwt, body: jeBody({ expectedUpdatedAt: null }) });
+    expect(r.status).toBe(428);
   });
 
   it('a stale-checked write without its stamp is 428, from a workstation and from the host', async () => {

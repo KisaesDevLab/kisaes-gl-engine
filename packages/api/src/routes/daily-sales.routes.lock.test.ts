@@ -217,3 +217,27 @@ describe('daily sales closing date (U-57)', () => {
     expect(entriesA.json.entries.map((e: any) => e.id)).toContain(entry.json.entry.id);
   });
 });
+
+describe('daily sales list stamps (U-292 follow-up)', () => {
+  it('each list row carries updatedAt, the stamp an edit or delete sends', async () => {
+    const created = await request('POST', '/api/v1/daily-sales/entries', s.token, draft('2026-07-03'));
+    expect(created.status).toBe(201);
+    const id = created.json.entry.id as string;
+    const row = () => request('GET', '/api/v1/daily-sales/entries', s.token)
+      .then((l) => l.json.entries.find((e: any) => e.id === id));
+    const listed = await row();
+    const detail = await request('GET', `/api/v1/daily-sales/entries/${id}`, s.token);
+    expect(typeof listed.updatedAt).toBe('string');
+    expect(listed.updatedAt).toBe(detail.json.entry.updatedAt);
+
+    const edited = await request('PUT', `/api/v1/daily-sales/entries/${id}`, s.token, { ...draft('2026-07-03', '300.00'), expectedUpdatedAt: listed.updatedAt });
+    expect(edited.status, JSON.stringify(edited.json)).toBe(200);
+    // The old row's stamp is now stale; the new row's deletes.
+    const stale = await request('DELETE', `/api/v1/daily-sales/entries/${id}`, s.token, { expectedUpdatedAt: listed.updatedAt });
+    expect(stale.status).toBe(409);
+    const fresh = await row();
+    expect(fresh.updatedAt).not.toBe(listed.updatedAt);
+    const deleted = await request('DELETE', `/api/v1/daily-sales/entries/${id}`, s.token, { expectedUpdatedAt: fresh.updatedAt });
+    expect(deleted.status, JSON.stringify(deleted.json)).toBe(200);
+  });
+});

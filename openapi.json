@@ -33037,7 +33037,97 @@
     },
     "/api/v1/daily-sales/entries": {
       "get": {
+        "description": "Response `{entries, total}`. Each row: id, templateId, templateName, businessDate, status, transactionId, overShortAmount, totalSales, totalTax, totalPayments, postedAt, createdAt, updatedAt, attachmentCount. `updatedAt` is the stamp for PUT and DELETE /entries/:id (`expectedUpdatedAt`), the same value GET /entries/:id returns.",
         "operationId": "get_api_v1_daily_sales_entries",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "draft",
+                "posted",
+                "void"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "templateId",
+            "required": false,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "maxLength": 20,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "maxLength": 20,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "enum": [
+                "businessDate",
+                "templateName",
+                "totalSales",
+                "totalTax",
+                "overShortAmount",
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sortDir",
+            "required": false,
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 500,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "Response not yet documented in this specification."
@@ -33051,6 +33141,7 @@
             "ApiKeyAuth": []
           }
         ],
+        "summary": "List daily-sales entries",
         "tags": [
           "daily-sales"
         ],

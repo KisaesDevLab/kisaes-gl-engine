@@ -444,6 +444,8 @@ export async function listEntries(
     totalPayments: dailySalesEntries.totalPayments,
     postedAt: dailySalesEntries.postedAt,
     createdAt: dailySalesEntries.createdAt,
+    // The stamp for PUT/DELETE /entries/:id (expectedUpdatedAt), same as GET /entries/:id.
+    updatedAt: dailySalesEntries.updatedAt,
     // Files on the entry (draft) or, once posted, on its journal entry
     // (same type set the Transaction Report reads for a transaction).
     attachmentCount: sql<number>`(

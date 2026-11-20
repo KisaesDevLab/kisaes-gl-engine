@@ -13,6 +13,11 @@
  *     query string)
  *   - stale(version): `version` (body or query)
  *   - bulk: `stamps` (body only: a map)
+ * A null stamp is no stamp, except on the routes that create as well as
+ * replace (NULL_STAMP_CREATES, U-292b): there an explicit body `null` means
+ * "nothing was stored when I read it", the service creates only then (409
+ * STALE when a record exists), so it counts as carried. Creates never need a
+ * stamp.
  * Host and workstation requests alike: two people editing are two people
  * wherever they sit. Internal callers (the automatic reversal void, jobs)
  * call services directly and are never affected (S1).
@@ -28,7 +33,7 @@
  */
 
 import type { NextFunction, Request, Response } from 'express';
-import { staleClassOf } from '../desktop/route-classes.js';
+import { acceptsNullStamp, staleClassOf } from '../desktop/route-classes.js';
 
 /**
  * The stamp a request carries for `field`: the body's when present and not
@@ -82,10 +87,17 @@ export function stampLocations() {
   };
 }
 
+/** An explicit body `expectedUpdatedAt: null` on a route where null is a stamp (U-292b). */
+function explicitNullCreate(req: Request, field: string): boolean {
+  if (field !== 'expectedUpdatedAt' || !acceptsNullStamp(req.method, req.path)) return false;
+  const body = req.body as Record<string, unknown> | undefined;
+  return !!body && typeof body === 'object' && !Array.isArray(body) && body[field] === null;
+}
+
 export function staleRequired() {
   return function clStaleRequired(req: Request, res: Response, next: NextFunction): void {
     const field = requiredStampField(req.method, req.path);
-    if (field === null || stampOf(req, field) !== undefined) {
+    if (field === null || stampOf(req, field) !== undefined || explicitNullCreate(req, field)) {
       next();
       return;
     }
