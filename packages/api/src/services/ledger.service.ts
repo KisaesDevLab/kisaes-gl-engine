@@ -2711,7 +2711,7 @@ export async function bulkUpdateTransactions(
   companyId?: string,
 ): Promise<BulkUpdateTransactionsResult> {
   const { txnIds, setPayeeContactId, setCategoryAccountId, setTagId, tagAccountId, moveFromAccountId, moveToAccountId } = input;
-  const skipped: Array<{ id: string; reason: string }> = [];
+  const skipped: Array<{ id: string; reason: string; updatedAt?: string | null }> = [];
   let updated = 0;
 
   return await db.transaction(async (tx) => {
@@ -2759,12 +2759,18 @@ export async function bulkUpdateTransactions(
       if (row.lock_date && (!maxLock || row.lock_date > maxLock)) maxLock = row.lock_date;
     }
 
-    for (const txnId of txnIds) {
+    // Id order (U-291): two batches over the same entries lock them in the same order.
+    for (const txnId of [...new Set(txnIds)].sort()) {
       const conds = [eq(transactions.tenantId, tenantId), eq(transactions.id, txnId)];
       if (companyId) conds.push(eq(transactions.companyId, companyId));
       const [txn] = await tx.select().from(transactions).where(and(...conds)).for('update').limit(1);
 
       if (!txn || txn.status === 'deleted') { skipped.push({ id: txnId, reason: 'not_found' }); continue; }
+      const expected = input.stamps?.[txnId];
+      if (expected !== undefined && (txn.updatedAt?.getTime() ?? null) !== Date.parse(expected)) {
+        skipped.push({ id: txnId, reason: 'stale', updatedAt: txn.updatedAt ? txn.updatedAt.toISOString() : null });
+        continue;
+      }
       if (txn.status === 'void') { skipped.push({ id: txnId, reason: 'void' }); continue; }
       // TB3: AJE lifecycle is firm-only and runs through the tb router —
       // bulk recategorize/retag must never rewrite an adjusting entry.
