@@ -322,6 +322,9 @@ import { invoiceEmailJson } from './routes/invoices.routes.js';
 // be a new route family for the desktop gate's classification.
 app.use(invoiceEmailJson);
 app.use(express.json({ limit: '10mb' }));
+// Desktop LAN mode only (U-292): stale-checked writes must carry their stamp (428 STALE_REQUIRED).
+import { staleRequired } from './middleware/stale-required.js';
+if (isDesktop() && desktopProfile().lan) app.use(staleRequired());
 // Bound the array elements a body may carry before any schema sees it
 // (middleware/json-array-cap.ts): zod 3 keeps one issue per failing
 // element of an unbounded array, so the size limit alone is not enough.
