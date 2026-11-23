@@ -1970,6 +1970,7 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * open test-restore transaction (application_name mybooks-test-restore), so workstations keep seeing saves.
    */
   'tenant-archive-test-restore-v1',
+  /**
    * U-12 (ClientLedger P34; migration 0290_integrity_runs, additive + rollback). Verify Data, company-scoped:
    * POST /api/v1/integrity/checks {level: quick|full} -> 200 IntegrityRun {id, level, companyId, startedAt, finishedAt,
    * ledgerVersion (decimal string), checks: [{code, status: ok|found|skipped, found}], findings: [{id, code, severity:
