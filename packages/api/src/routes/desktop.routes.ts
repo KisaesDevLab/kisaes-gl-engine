@@ -439,6 +439,8 @@ desktopRouter.post(
 // Host-only (route-classes.ts). Start and end: a super admin's session (the
 // holder). Reset: the launch token only (cl-host after a file-level restore).
 
+// keepSessions (maintenance-sessions-v1): a routine hold leaves the other sessions signed in.
+const maintenanceStartSchema = z.object({ keepSessions: z.boolean().optional() });
 const holdShape = z.object({ active: z.boolean(), holderSession: z.string().nullable(), holderUser: z.string().nullable(), startedAt: z.string().nullable() });
 const holdView = (h: Awaited<ReturnType<typeof maintenance.currentHold>>) => ({
   active: !!h, holderSession: h?.holderSession ?? null, holderUser: h?.holderUser ?? null, startedAt: h?.startedAt ?? null,
@@ -454,11 +456,16 @@ desktopRouter.get('/maintenance', describe({
 desktopRouter.post('/maintenance', authenticate, requireSuperAdmin, describe({
   summary: 'Start maintenance mode for this session (maintenance-v1)',
   description: 'Super admin. Writes the hold, waits up to 30 s for other writes in flight (else the hold is dropped: 409 '
-    + 'MAINTENANCE_BUSY), then ends every other session. While on, every other request is 503 MAINTENANCE; only this '
-    + 'user signs in and only this session refreshes. 409 MAINTENANCE_HELD when another session holds it. Audited.',
+    + 'MAINTENANCE_BUSY), then ends every other session, unless the body has keepSessions: true (a routine hold; '
+    + 'maintenance-sessions-v1): then the other sessions stay, and the end leaves them too. While on, every other request '
+    + 'is 503 MAINTENANCE; only this user signs in and only this session refreshes. 409 MAINTENANCE_HELD when another '
+    + 'session holds it. Audited.',
+  body: maintenanceStartSchema,
   response: holdShape,
 }), async (req, res) => {
-  res.json(holdView(await maintenance.startMaintenance({ sessionChainId: req.sessionChainId, userId: req.userId })));
+  const body = maintenanceStartSchema.safeParse(req.body ?? {});
+  const keepSessions = body.success && body.data.keepSessions === true;
+  res.json(holdView(await maintenance.startMaintenance({ sessionChainId: req.sessionChainId, userId: req.userId }, { keepSessions })));
 });
 
 desktopRouter.delete('/maintenance', authenticate, describe({

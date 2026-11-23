@@ -101,4 +101,34 @@ describe('maintenance (U-293)', () => {
     expect(Number(posted[0]!.n)).toBe(results.filter((r) => r.status === 201).length);
     await e.call('host', '/api/v1/desktop/maintenance', { method: 'DELETE', jwt: host });
   });
+
+  // ClientLedger PR-8 S6: a routine hold (payroll, an import) keeps the workstations signed in.
+  it('a keepSessions hold refuses others while on and leaves their sessions; a plain hold still ends them', async () => {
+    const host = await e.signIn('host');
+    const ws = await e.signIn(A);
+    expect((await e.call(A, '/api/v1/accounts', { jwt: ws })).status).toBe(200);
+
+    const start = await e.call('host', '/api/v1/desktop/maintenance', { method: 'POST', jwt: host, body: { keepSessions: true } });
+    expect(start.status, JSON.stringify(start.json)).toBe(200);
+    // Refused while it lasts, but still signed in.
+    const blocked = await e.call(A, '/api/v1/accounts', { jwt: ws });
+    expect(blocked.status).toBe(503);
+    expect(blocked.json.error.code).toBe('MAINTENANCE');
+    expect((await e.query('SELECT 1 FROM sessions WHERE device_id = $1', [DEVICE_A])).length).toBeGreaterThan(0);
+    // The guarded routes pass for the holder.
+    const guarded = await e.call('host', '/api/v1/tenant-archives/import', { method: 'POST', jwt: host, body: { passphrase: 'x'.repeat(16) } });
+    expect(guarded.json.error?.code).not.toBe('MAINTENANCE_REQUIRED');
+
+    const end = await e.call('host', '/api/v1/desktop/maintenance', { method: 'DELETE', jwt: host });
+    expect(end.status, JSON.stringify(end.json)).toBe(200);
+    // The same sign-in works again: nothing was lost on the workstation.
+    expect((await e.call(A, '/api/v1/accounts', { jwt: ws })).status).toBe(200);
+
+    // A plain hold (a restore) still signs the workstation out.
+    const plain = await e.call('host', '/api/v1/desktop/maintenance', { method: 'POST', jwt: host, body: {} });
+    expect(plain.status, JSON.stringify(plain.json)).toBe(200);
+    expect((await e.query('SELECT 1 FROM sessions WHERE device_id = $1', [DEVICE_A])).length).toBe(0);
+    await e.call('host', '/api/v1/desktop/maintenance', { method: 'DELETE', jwt: host });
+    expect((await e.call(A, '/api/v1/accounts', { jwt: ws })).status).not.toBe(200);
+  });
 });
