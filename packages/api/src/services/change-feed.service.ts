@@ -97,14 +97,33 @@ export const FEED_SKIPPED_APPLICATION_NAME = 'mybooks-test-restore';
 /**
  * The feed horizon: the oldest transaction still running when the snapshot
  * was taken (pg_snapshot_xmin), except a test restore's (see above).
+ *
+ * The read is not atomic: pg_current_snapshot() (the procarray) and
+ * pg_stat_activity (each backend's status entry: application_name, then its
+ * backend_xid) are separate reads. Why a skip stays safe (P34 review M8):
+ *  - Only xids in this snapshot's in-progress list can be skipped, and the
+ *    snapshot is taken (FROM clause) before pg_stat_activity is read (the
+ *    select-list subquery). An xid a pooled backend takes after the
+ *    snapshot is not in that list, so it can never be skipped.
+ *  - A test restore sets its name with SET LOCAL before its first write;
+ *    the name reverts when that transaction ends, before the same backend
+ *    can start another. So a backend showing the name with an xid from the
+ *    list is the test restore itself.
+ *  - pg_stat_activity is cached for the length of the reading transaction:
+ *    called with a long-lived `exec` transaction, the cache can be older
+ *    than the snapshot, so names and xids could be stale. Every caller
+ *    passes the pool (autocommit), so each read is fresh.
+ * The skip is also limited explicitly to xids at or above the snapshot's
+ * xmin (always true for the in-progress list; it states the rule and keeps
+ * the 32-bit backend_xid match inside the snapshot's own xid range).
  */
 export async function feedHorizon(exec: DbOrTx = db): Promise<string> {
   const h = await exec.execute(sql`
     SELECT COALESCE(
       (SELECT min(x) FROM pg_snapshot_xip(q.s) AS x
-        WHERE xid(x) <> ALL (ARRAY(
+        WHERE NOT (x >= pg_snapshot_xmin(q.s) AND xid(x) = ANY (ARRAY(
           SELECT a.backend_xid FROM pg_stat_activity a
-          WHERE a.application_name = ${FEED_SKIPPED_APPLICATION_NAME} AND a.backend_xid IS NOT NULL))),
+          WHERE a.application_name = ${FEED_SKIPPED_APPLICATION_NAME} AND a.backend_xid IS NOT NULL)))),
       pg_snapshot_xmax(q.s))::text AS h
     FROM (SELECT pg_current_snapshot() AS s) q`);
   return (h.rows[0] as { h: string }).h;

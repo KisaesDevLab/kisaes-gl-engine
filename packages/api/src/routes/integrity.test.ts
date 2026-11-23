@@ -228,6 +228,15 @@ describe('Verify Data (U-12)', () => {
     const audit = await q<{ after_data: unknown }>(`SELECT after_data FROM audit_log WHERE tenant_id = $1 AND entity_type = 'integrity_fix' ORDER BY created_at LIMIT 1`, [tenantId]);
     const data = typeof audit[0]!.after_data === 'string' ? JSON.parse(audit[0]!.after_data as string) : audit[0]!.after_data;
     expect(data).toMatchObject({ runId: run.id, findingIds: [drift], backupArchiveId: 'arch-1' });
+    // S8: each fix's cached balance before and after, exact strings (the run's stored and ledger figures).
+    const dr = run.findings.find((f) => f.id === drift)!;
+    expect(data.fixes).toEqual([{ findingId: drift, accountId: cash, before: dr.amounts!['actualExact'], after: dr.amounts!['expectedExact'] }]);
+    const [bal] = await q<{ b: string }>('SELECT balance::numeric::text AS b FROM accounts WHERE id = $1', [cash]);
+    expect(bal!.b).toBe(dr.amounts!['expectedExact']);
+    // The repeat that fixed nothing records no amounts.
+    const audit2 = await q<{ after_data: unknown }>(`SELECT after_data FROM audit_log WHERE tenant_id = $1 AND entity_type = 'integrity_fix' ORDER BY created_at DESC LIMIT 1`, [tenantId]);
+    const data2 = typeof audit2[0]!.after_data === 'string' ? JSON.parse(audit2[0]!.after_data as string) : audit2[0]!.after_data;
+    expect(data2.fixes).toEqual([]);
 
     const recheck = (await call('POST', '/api/v1/integrity/checks', { level: 'quick' })).json as unknown as Run;
     expect(found(recheck, 'ACCOUNT_BALANCE_DRIFT')).toMatchObject({ status: 'ok', found: 0 });
@@ -259,6 +268,113 @@ describe('Verify Data (U-12)', () => {
     const gone = await call('GET', `/api/v1/integrity/runs/${run.id}`);
     expect(gone.status).toBe(404);
   }, 120_000);
+
+  it('every check, the inventory valuation included, reads one snapshot (M6)', async () => {
+    const svc = await import('../services/integrity.service.js');
+    // Inventory on, with an inventory asset account and no stock: the valuation is 0.
+    const invAcct = crypto.randomUUID();
+    await q('UPDATE companies SET inventory_enabled = true WHERE id = $1', [companyId]);
+    await q(`INSERT INTO accounts (id, tenant_id, company_id, name, account_type, system_tag, balance)
+      VALUES ($1, $2, $3, $4, 'asset', 'inventory_asset', 0)`, [invAcct, tenantId, companyId, `Inventory Asset ${stamp}`]);
+    const jeId = crypto.randomUUID();
+    let isolation = '';
+    svc._integrityTestHooks.beforeCheck = async (code, ex) => {
+      const { sql } = await import('drizzle-orm');
+      if (code === 'UNBALANCED_TRANSACTION') {
+        isolation = ((await ex.execute(sql`SELECT current_setting('transaction_isolation') AS i`)).rows[0] as { i: string }).i;
+      }
+      if (code !== 'INVENTORY_VALUE_DIFFERENCE') return;
+      // Committed from another connection after the run's snapshot: a balanced entry on the inventory account.
+      await raw([
+        [`INSERT INTO transactions (id, tenant_id, company_id, txn_type, txn_date, status) VALUES ($1, $2, $3, 'journal_entry', '2026-02-03', 'posted')`, [jeId, tenantId, companyId]],
+        [`INSERT INTO journal_lines (tenant_id, company_id, transaction_id, account_id, debit, credit) VALUES ($1, $2, $3, $4, 7.2500, 0), ($1, $2, $3, $5, 0, 7.2500)`, [tenantId, companyId, jeId, invAcct, cash]],
+      ]);
+    };
+    try {
+      const r = await call('POST', '/api/v1/integrity/checks', { level: 'full' });
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      const inSnap = r.json as unknown as Run;
+      expect(isolation).toBe('repeatable read');
+      expect(found(inSnap, 'INVENTORY_VALUE_DIFFERENCE')).toMatchObject({ status: 'ok', found: 0 });
+    } finally {
+      delete svc._integrityTestHooks.beforeCheck;
+    }
+    // The next run sees the entry: the check itself finds it.
+    const next = (await call('POST', '/api/v1/integrity/checks', { level: 'full' })).json as unknown as Run;
+    expect(found(next, 'INVENTORY_VALUE_DIFFERENCE')).toMatchObject({ status: 'found', found: 1 });
+    expect(next.findings.find((f) => f.code === 'INVENTORY_VALUE_DIFFERENCE')!.amounts).toEqual({
+      expectedExact: '0.00', actualExact: '7.25', differenceExact: '7.25',
+    });
+    await raw([
+      [`DELETE FROM journal_lines WHERE transaction_id = $1`, [jeId]],
+      [`DELETE FROM transactions WHERE id = $1`, [jeId]],
+      [`DELETE FROM accounts WHERE id = $1`, [invAcct]],
+    ]);
+    await q('UPDATE companies SET inventory_enabled = false WHERE id = $1', [companyId]);
+  }, 60_000);
+
+  it('the time budget is per run, not per statement (M6)', async () => {
+    const svc = await import('../services/integrity.service.js');
+    const { sql } = await import('drizzle-orm');
+    svc._integrityTestHooks.budgetMs = 1_500;
+    // Each check waits 0.6 s: every statement is under the budget, the run is not.
+    svc._integrityTestHooks.beforeCheck = async (_code, ex) => { await ex.execute(sql`SELECT pg_sleep(0.6)`); };
+    try {
+      const r = await call('POST', '/api/v1/integrity/checks', { level: 'full' });
+      expect(r.status, JSON.stringify(r.json)).toBe(503);
+      expect((r.json['error'] as { code: string }).code).toBe('INTEGRITY_TIMEOUT');
+    } finally {
+      delete svc._integrityTestHooks.beforeCheck;
+      delete svc._integrityTestHooks.budgetMs;
+    }
+    // A JS-side wait past the deadline (no statement running) fails the same way.
+    svc._integrityTestHooks.budgetMs = 300;
+    svc._integrityTestHooks.beforeCheck = async () => { await new Promise((res) => setTimeout(res, 200)); };
+    try {
+      const r = await call('POST', '/api/v1/integrity/checks', { level: 'quick' });
+      expect(r.status, JSON.stringify(r.json)).toBe(503);
+      expect((r.json['error'] as { code: string }).code).toBe('INTEGRITY_TIMEOUT');
+    } finally {
+      delete svc._integrityTestHooks.beforeCheck;
+      delete svc._integrityTestHooks.budgetMs;
+    }
+    expect((await call('POST', '/api/v1/integrity/checks', { level: 'quick' })).status).toBe(200);
+  }, 60_000);
+
+  it('A/R and A/P count company-less entries alike (M7)', async () => {
+    const ap = (await q<{ id: string }>(`SELECT id FROM accounts WHERE tenant_id = $1 AND system_tag = 'accounts_payable' LIMIT 1`, [tenantId]))[0];
+    const ar = (await q<{ id: string }>(`SELECT id FROM accounts WHERE tenant_id = $1 AND system_tag = 'accounts_receivable' LIMIT 1`, [tenantId]))[0];
+    expect(ap && ar).toBeTruthy();
+    const other = cash;
+    const bill = crypto.randomUUID();
+    const inv = crypto.randomUUID();
+    // Company-less posted entries (company_id NULL), as posting stores when a write names no company.
+    await raw([
+      [`INSERT INTO transactions (id, tenant_id, company_id, txn_type, txn_date, status, txn_number) VALUES ($1, $2, NULL, 'bill', '2026-02-04', 'posted', 'NC-B')`, [bill, tenantId]],
+      [`INSERT INTO journal_lines (tenant_id, company_id, transaction_id, account_id, debit, credit) VALUES ($1, NULL, $2, $3, 12.3400, 0), ($1, NULL, $2, $4, 0, 12.3400)`, [tenantId, bill, other, ap!.id]],
+      [`INSERT INTO transactions (id, tenant_id, company_id, txn_type, txn_date, status, txn_number) VALUES ($1, $2, NULL, 'invoice', '2026-02-04', 'posted', 'NC-I')`, [inv, tenantId]],
+      [`INSERT INTO journal_lines (tenant_id, company_id, transaction_id, account_id, debit, credit) VALUES ($1, NULL, $2, $3, 4.5600, 0), ($1, NULL, $2, $4, 0, 4.5600)`, [tenantId, inv, ar!.id, other]],
+    ]);
+    try {
+      const { db } = dbm;
+      const { apOpenItemsAsOf } = await import('../services/ap-open-items.js');
+      const strict = await apOpenItemsAsOf(db, { tenantId, companyId, asOf: '2026-12-31' });
+      const wide = await apOpenItemsAsOf(db, { tenantId, companyId, asOf: '2026-12-31', includeCompanyless: true });
+      // The A/P reports' strict default is unchanged; the integrity scope includes the company-less bill.
+      expect(strict.some((i) => i.txnId === bill)).toBe(false);
+      expect(wide.find((i) => i.txnId === bill)?.openExact).toBe('12.3400');
+      const r = await call('POST', '/api/v1/integrity/checks', { level: 'full' });
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      const full = r.json as unknown as Run;
+      expect(found(full, 'AR_CONTROL_DIFFERENCE')).toMatchObject({ status: 'ok', found: 0 });
+      expect(found(full, 'AP_CONTROL_DIFFERENCE')).toMatchObject({ status: 'ok', found: 0 });
+    } finally {
+      await raw([
+        [`DELETE FROM journal_lines WHERE transaction_id IN ($1, $2)`, [bill, inv]],
+        [`DELETE FROM transactions WHERE id IN ($1, $2)`, [bill, inv]],
+      ]);
+    }
+  }, 60_000);
 });
 
 describe('desktop profile (Q-P34b)', () => {

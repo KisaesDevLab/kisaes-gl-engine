@@ -70,6 +70,12 @@ export interface ApOpenItemsQuery {
   contactIds?: string[];
   /** Header-level tag filter (ADR §5.2): keep items whose transaction has a line with one of these tags. */
   tagIds?: string[];
+  /**
+   * Also count company-less transactions (company_id IS NULL) as the
+   * company's, as posting and the A/R open items do. Default false: the
+   * strict scope of the A/P reports. Verify Data (U-12) sets it.
+   */
+  includeCompanyless?: boolean;
 }
 
 interface Work {
@@ -102,7 +108,9 @@ const ids = (list: string[]) => sql.join(list.map((id) => sql`${id}::uuid`), sql
  */
 export async function apOpenItemsAsOf(executor: DbOrTx, q: ApOpenItemsQuery): Promise<ApOpenItem[]> {
   const { tenantId, asOf } = q;
-  const scope = q.companyId ? sql`AND t.company_id = ${q.companyId}` : sql``;
+  const scope = !q.companyId ? sql`` : q.includeCompanyless
+    ? sql`AND (t.company_id = ${q.companyId} OR t.company_id IS NULL)`
+    : sql`AND t.company_id = ${q.companyId}`;
   const contactFilter = q.contactIds && q.contactIds.length > 0
     ? sql`AND COALESCE(jl.contact_id, t.contact_id) IN (${ids(q.contactIds)})`
     : sql``;

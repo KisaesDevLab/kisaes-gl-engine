@@ -5,7 +5,8 @@
 /**
  * Verify Data (U-12, integrity-v1), mounted at /api/v1/integrity, company-scoped.
  *
- *   POST /checks      {level: quick|full} -> 200 IntegrityRun (synchronous, 120 s budget)
+ *   POST /checks      {level: quick|full} -> 200 IntegrityRun (synchronous, one snapshot, 120 s budget per run;
+ *                     503 INTEGRITY_TIMEOUT past it)
  *   POST /fixes       {runId, findingIds[], expectedLedgerVersion, backupArchiveId?}
  *                     -> 200 {fixed[], skipped[{id, reason}], ledgerVersion}; 409 INTEGRITY_STALE;
  *                     404 INTEGRITY_RUN_UNKNOWN. LAN: host only, under a maintenance hold.

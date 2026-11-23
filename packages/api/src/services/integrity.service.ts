@@ -28,8 +28,8 @@
  *                                                       (skipped while inventory is off)
  */
 
-import { sql } from 'drizzle-orm';
-import { db, type DbOrTx } from '../db/index.js';
+import { sql, type SQL } from 'drizzle-orm';
+import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { arOpenItemsAsOf } from './ar-open-items.js';
@@ -50,8 +50,28 @@ export const FULL_CHECKS: readonly FindingCode[] = [
 export const MAX_FINDINGS = 500;
 /** Runs kept per company. */
 export const KEEP_RUNS = 20;
-/** Statement budget of a check run. */
-export const CHECK_BUDGET = '120s';
+/** Time budget of one check run (every statement of it together), in ms. */
+export const CHECK_BUDGET_MS = 120_000;
+
+/** Test seams: a hook before each check (inside the run's snapshot) and a shorter budget. */
+export const _integrityTestHooks: {
+  beforeCheck?: (code: FindingCode, ex: DbOrTx) => Promise<void>;
+  budgetMs?: number;
+} = {};
+
+function timeoutError(): AppError {
+  return new AppError(503, 'Checking the books took too long. Try the quick check, or try again later.', 'INTEGRITY_TIMEOUT');
+}
+
+function pgCode(err: unknown): string | undefined {
+  let e: unknown = err;
+  for (let i = 0; i < 4 && e && typeof e === 'object'; i++) {
+    const c = (e as { code?: unknown }).code;
+    if (typeof c === 'string' && /^[0-9A-Z]{5}$/.test(c)) return c;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
 
 export interface Finding {
   id: string;
@@ -182,11 +202,18 @@ async function lineScope(ex: DbOrTx, s: Scope): Promise<Found> {
   };
 }
 
-/** Open items (exact strings) vs the control accounts' posted balance as of `asOf`, compared in SQL numeric. */
+/**
+ * Open items (exact strings) vs the control accounts' posted balance as of
+ * `asOf`, compared in SQL numeric. A/R and A/P use one company scope, the
+ * same as the other checks and the ledger version: the company's own
+ * transactions plus company-less ones (posting stores company_id NULL when
+ * a write names no company; those rows count for every company). The open
+ * items are read with that same scope, so the two sides always match.
+ */
 async function control(ex: DbOrTx, s: Scope, kind: 'ar' | 'ap', asOf: string): Promise<Found> {
   const items = kind === 'ar'
     ? await arOpenItemsAsOf(ex, { tenantId: s.tenantId, companyId: s.companyId, asOf })
-    : await apOpenItemsAsOf(ex, { tenantId: s.tenantId, companyId: s.companyId, asOf });
+    : await apOpenItemsAsOf(ex, { tenantId: s.tenantId, companyId: s.companyId, asOf, includeCompanyless: true });
   // openExact: the exact open amount (4 places) of each item, A/R and A/P alike (open-balances-asof-v1).
   const opens = items.map((i) => {
     const text = i.openExact;
@@ -195,7 +222,9 @@ async function control(ex: DbOrTx, s: Scope, kind: 'ar' | 'ap', asOf: string): P
   });
   const tag = kind === 'ar' ? 'accounts_receivable' : 'accounts_payable';
   const sign = kind === 'ar' ? sql`jl.debit - jl.credit` : sql`jl.credit - jl.debit`;
-  const scope = kind === 'ar' ? sql`(t.company_id = ${s.companyId} OR t.company_id IS NULL)` : sql`t.company_id = ${s.companyId}`;
+  const scope = sql`(t.company_id = ${s.companyId} OR t.company_id IS NULL)`;
+  // One text[] parameter (an array literal of checked decimals; '{}' when none).
+  const openArray = `{${opens.join(',')}}`;
   const r = await ex.execute(sql`
     WITH ctl AS (
       SELECT COALESCE(SUM(${sign}), 0) AS b FROM journal_lines jl
@@ -203,7 +232,7 @@ async function control(ex: DbOrTx, s: Scope, kind: 'ar' | 'ap', asOf: string): P
       JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
       WHERE jl.tenant_id = ${s.tenantId} AND t.status = 'posted' AND a.system_tag = ${tag} AND t.txn_date <= ${asOf}::date AND ${scope}
     ), open AS (
-      SELECT COALESCE(SUM(v::numeric), 0) AS o FROM unnest(${sql.raw(`ARRAY[${opens.map((o) => `'${o}'`).join(',')}]::text[]`)}) AS v
+      SELECT COALESCE(SUM(v::numeric), 0) AS o FROM unnest(${openArray}::text[]) AS v
     ), acct AS (
       SELECT a.id, a.name, a.account_number FROM accounts a
       WHERE a.tenant_id = ${s.tenantId} AND a.system_tag = ${tag} AND (a.company_id = ${s.companyId} OR a.company_id IS NULL)
@@ -228,10 +257,10 @@ async function control(ex: DbOrTx, s: Scope, kind: 'ar' | 'ap', asOf: string): P
 
 const ZERO = /^-?0+(\.0+)?$/;
 
-async function inventoryValue(s: Scope, asOf: string): Promise<Found | 'skipped'> {
+async function inventoryValue(ex: DbOrTx, s: Scope, asOf: string): Promise<Found | 'skipped'> {
   let summary;
   try {
-    summary = await valuationSummary(s.tenantId, asOf, s.companyId);
+    summary = await valuationSummary(s.tenantId, asOf, s.companyId, ex);
   } catch (err) {
     if (err instanceof AppError && err.code === 'INVENTORY_OFF') return 'skipped';
     throw err;
@@ -248,38 +277,70 @@ async function inventoryValue(s: Scope, asOf: string): Promise<Found | 'skipped'
   };
 }
 
-/** Runs every check of `level` and stores the run. */
+/**
+ * Runs every check of `level` and stores the run. All checks, the
+ * inventory valuation included, read one READ ONLY REPEATABLE READ snapshot
+ * (set as the transaction's first statement), together with the ledger
+ * version they saw. The run has one deadline (CHECK_BUDGET_MS): before each
+ * raw statement statement_timeout is set to the time left, and the time is
+ * checked before each check. Query-builder reads inside a helper (the
+ * inventory valuation's selects) run under the timeout set by the statement
+ * before them, so they can overrun the deadline by at most that one
+ * statement's time. 503 INTEGRITY_TIMEOUT when the deadline passes.
+ */
 export async function runChecks(s: Scope, level: IntegrityLevel, userId: string | null): Promise<IntegrityRun> {
   const startedAt = new Date().toISOString();
   const codes = level === 'full' ? FULL_CHECKS : QUICK_CHECKS;
-  const asOf = (await db.execute(sql`SELECT to_char(now(), 'YYYY-MM-DD') AS d`)).rows[0] as { d: string };
-  const out = await db.transaction(async (tx) => {
-    await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${CHECK_BUDGET}'`));
-    // One snapshot for every check and the ledger version they saw.
-    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`).catch(() => undefined);
-    const ledgerVersion = await ledgerVersionText(tx, s);
-    const checks: CheckResult[] = [];
-    const findings: Finding[] = [];
-    for (const code of codes) {
-      let f: Found | 'skipped';
-      switch (code) {
-        case 'UNBALANCED_TRANSACTION': f = await unbalanced(tx, s); break;
-        case 'ACCOUNT_BALANCE_DRIFT': f = await drift(tx, s); break;
-        case 'DRAFT_AFFECTS_BOOKS': f = await draftsInBooks(tx, s); break;
-        case 'LINE_ACCOUNT_SCOPE': f = await lineScope(tx, s); break;
-        case 'AR_CONTROL_DIFFERENCE': f = await control(tx, s, 'ar', asOf.d); break;
-        case 'AP_CONTROL_DIFFERENCE': f = await control(tx, s, 'ap', asOf.d); break;
-        case 'INVENTORY_VALUE_DIFFERENCE': f = await inventoryValue(s, asOf.d); break;
+  const deadline = Date.now() + (_integrityTestHooks.budgetMs ?? CHECK_BUDGET_MS);
+  const left = () => {
+    const ms = Math.floor(deadline - Date.now());
+    if (ms <= 0) throw timeoutError();
+    return ms;
+  };
+  let out: { ledgerVersion: string; checks: CheckResult[]; findings: Finding[] };
+  try {
+    out = await db.transaction(async (tx) => {
+      // First statement of the transaction: one snapshot for every check and the ledger version they saw.
+      await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`);
+      const execute = async (q: SQL) => {
+        await tx.execute(sql`SELECT set_config('statement_timeout', ${String(left())}, true)`);
+        return tx.execute(q);
+      };
+      // Helpers that take a DbOrTx get the time left before each raw statement.
+      const ex = new Proxy(tx, {
+        get: (t, prop, recv) => (prop === 'execute' ? execute : Reflect.get(t, prop, recv)),
+      }) as Tx;
+      const asOf = ((await ex.execute(sql`SELECT to_char(now(), 'YYYY-MM-DD') AS d`)).rows[0] as { d: string }).d;
+      const ledgerVersion = await ledgerVersionText(ex, s);
+      const checks: CheckResult[] = [];
+      const findings: Finding[] = [];
+      for (const code of codes) {
+        left();
+        if (_integrityTestHooks.beforeCheck) await _integrityTestHooks.beforeCheck(code, ex);
+        let f: Found | 'skipped';
+        switch (code) {
+          case 'UNBALANCED_TRANSACTION': f = await unbalanced(ex, s); break;
+          case 'ACCOUNT_BALANCE_DRIFT': f = await drift(ex, s); break;
+          case 'DRAFT_AFFECTS_BOOKS': f = await draftsInBooks(ex, s); break;
+          case 'LINE_ACCOUNT_SCOPE': f = await lineScope(ex, s); break;
+          case 'AR_CONTROL_DIFFERENCE': f = await control(ex, s, 'ar', asOf); break;
+          case 'AP_CONTROL_DIFFERENCE': f = await control(ex, s, 'ap', asOf); break;
+          case 'INVENTORY_VALUE_DIFFERENCE': f = await inventoryValue(ex, s, asOf); break;
+        }
+        if (f === 'skipped') {
+          checks.push({ code, status: 'skipped', found: 0 });
+          continue;
+        }
+        checks.push({ code, status: f.total > 0 ? 'found' : 'ok', found: f.total });
+        findings.push(...f.findings);
       }
-      if (f === 'skipped') {
-        checks.push({ code, status: 'skipped', found: 0 });
-        continue;
-      }
-      checks.push({ code, status: f.total > 0 ? 'found' : 'ok', found: f.total });
-      findings.push(...f.findings);
-    }
-    return { ledgerVersion, checks, findings };
-  });
+      return { ledgerVersion, checks, findings };
+    });
+  } catch (err) {
+    // 57014 query_canceled: a statement ran past the time left.
+    if (pgCode(err) === '57014') throw timeoutError();
+    throw err;
+  }
   const truncated = out.findings.length > MAX_FINDINGS || out.checks.some((c) => c.found > MAX_FINDINGS);
   const findings = out.findings.slice(0, MAX_FINDINGS);
   const summary = {
@@ -372,7 +433,9 @@ export interface FixResult {
  * the caller's expected version is not the current one). Each finding is
  * re-checked with its account row locked: one already right is skipped
  * (NO_LONGER_FOUND), so repeating a request is harmless. Writes only
- * accounts.balance and one integrity_fix audit row, in one transaction.
+ * accounts.balance and one integrity_fix audit row, in one transaction; the
+ * audit row lists each fix as {findingId, accountId, before, after} with the
+ * cached balance before and after as exact decimal strings.
  */
 export async function fix(s: Scope, req: FixRequest, userId: string | null): Promise<FixResult> {
   const run = await getRun(s, req.runId);
@@ -396,6 +459,8 @@ export async function fix(s: Scope, req: FixRequest, userId: string | null): Pro
     }
     const fixed: string[] = [];
     const skipped: FixResult['skipped'] = [];
+    // The audit trail of each fix: the cached balance before and the one written, exact (numeric::text).
+    const changes: Array<{ findingId: string; accountId: string; before: string; after: string }> = [];
     for (const id of [...new Set(req.findingIds)]) {
       const f = byId.get(id);
       if (!f || f.fix !== 'recompute_account_balance' || f.subject.type !== 'account') {
@@ -404,17 +469,21 @@ export async function fix(s: Scope, req: FixRequest, userId: string | null): Pro
       }
 
       const r = await tx.execute(DRIFT_SQL(s, f.subject.id));
-      const row = r.rows[0] as { ledger: string } | undefined;
+      const row = r.rows[0] as { id: string; stored: string; ledger: string } | undefined;
       if (!row) {
         skipped.push({ id, reason: 'NO_LONGER_FOUND' });
         continue;
       }
-      await tx.execute(sql`UPDATE accounts SET balance = ${row.ledger}::numeric
-        WHERE id = ${f.subject.id} AND tenant_id = ${s.tenantId}`);
+      const upd = await tx.execute(sql`UPDATE accounts SET balance = ${row.ledger}::numeric
+        WHERE id = ${f.subject.id} AND tenant_id = ${s.tenantId}
+        RETURNING balance::numeric::text AS after`);
+      const after = (upd.rows[0] as { after: string } | undefined)?.after ?? row.ledger;
+      changes.push({ findingId: id, accountId: row.id, before: row.stored, after });
       fixed.push(id);
     }
     await auditLog(s.tenantId, 'update', 'integrity_fix', run.id, null, {
       runId: run.id, findingIds: fixed, skipped: skipped.map((k) => k.id), backupArchiveId: req.backupArchiveId ?? null,
+      fixes: changes,
     }, userId ?? undefined, tx);
     return { fixed, skipped, ledgerVersion: await ledgerVersionText(tx, s) };
   });
