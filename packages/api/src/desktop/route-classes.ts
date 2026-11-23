@@ -96,6 +96,8 @@ export const LAN_HOST_RULES: readonly string[] = [
   'POST /api/v1/auth/register',
   'POST /api/v1/auth/forgot-password',
   'POST /api/v1/auth/reset-password',
+  // Verify Data fixes (U-12): on the host, under a maintenance hold.
+  'POST /api/v1/integrity/fixes',
   // Settings only the host sets (Q-P33l): AI configuration, SMTP, Stripe.
   'WRITE /api/v1/ai/admin/**',
   'WRITE /api/v1/chat/admin/**',
@@ -153,6 +155,8 @@ export const LAN_WORKSTATION_RULES: readonly string[] = [
   'GET /api/v1/audit-log/**',
   // The desktop change feed (U-294).
   'GET /api/v1/changes',
+  // Verify Data (U-12): checks, runs and the summary; fixes are host-only above.
+  '* /api/v1/integrity/**',
   // Import and payroll history can be read; the writes are host-only above.
   'GET /api/v1/imports/**',
   'GET /api/v1/payroll-import/**',
@@ -313,6 +317,8 @@ export const STALE_RULES: ReadonlyArray<readonly [string, StaleClass]> = [
   ['WRITE /api/v1/tags/groups/*', U], ['POST /api/v1/tags/saved-filters', C],
   ['DELETE /api/v1/tags/saved-filters/*', N], ['PUT /api/v1/tags/transactions/*', U],
   ['POST /api/v1/tags/transactions/*/*', N], ['WRITE /api/v1/tags/*', U],
+  // Verify Data (U-12): a check stores a run but changes no record.
+  ['POST /api/v1/integrity/checks', N],
   // Companies (tenants): rename.
   ['PATCH /api/v1/tenants/*', U],
   // Transactions (journal entries, expenses, transfers, deposits, cash sales).

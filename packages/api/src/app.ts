@@ -37,6 +37,7 @@ import { reportAskRouter } from './routes/report-ask.routes.js';
 import { bankingRouter } from './routes/banking.routes.js';
 import { dashboardRouter } from './routes/dashboard.routes.js';
 import { ledgerVersionRouter } from './routes/ledger-version.routes.js';
+import { integrityRouter } from './routes/integrity.routes.js';
 import { attachmentsRouter } from './routes/attachments.routes.js';
 import { recurringRouter } from './routes/recurring.routes.js';
 import { templatesRouter } from './routes/templates.routes.js';
@@ -612,6 +613,7 @@ app.use('/api/v1/banking', bankingRouter);
 app.use('/api/v1/dashboard', dashboardRouter);
 // Cheap change-detector so clients can refetch only when the books move.
 app.use('/api/v1/ledger-version', ledgerVersionRouter);
+app.use('/api/v1/integrity', integrityRouter);
 // Desktop change feed (U-294, changes-v1): 404 on the server appliance.
 import { changesRouter } from './routes/changes.routes.js';
 app.use('/api/v1/changes', changesRouter);

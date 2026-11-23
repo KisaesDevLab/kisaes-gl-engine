@@ -43,7 +43,6 @@ describe('schedulers', () => {
     loadDesktop();
     expect(names.filter((n) => schedulerEnabled(n)).sort()).toEqual([
       'aiRetention',
-      'balanceValidation',
       'classificationStateBackfill',
       'fingerprint',
       'reportPackSweep',

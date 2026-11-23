@@ -146,10 +146,14 @@ export const DESKTOP_SCHEDULERS = {
   // Portal document requests and reminders: the portal is not mounted and
   // the scheduler sends outbound email/SMS to portal contacts.
   recurringDocRequests: false,
+  // The daily balance auto-repair rewrites cached balances with no backup
+  // and no owner OK (and would hide what Verify Data reports): on desktop
+  // the owner runs Verify Data and fixes after a backup instead (U-12,
+  // ClientLedger Q-P34b). The server keeps it.
+  balanceValidation: false,
   // Worker-only schedulers: on the server only the worker container starts
   // them; on desktop the in-process worker does. Database only (the sweep
   // deletes expired pack files through the local storage provider).
-  balanceValidation: true,
   reportPackSweep: true,
   classificationStateBackfill: true,
   tagBackfill: true,
