@@ -44106,6 +44106,672 @@
         "x-stale": "n-a"
       }
     },
+    "/api/v1/integrity/checks": {
+      "post": {
+        "operationId": "post_api_v1_integrity_checks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "level": {
+                    "enum": [
+                      "quick",
+                      "full"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "level"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "found": {
+                            "type": "integer"
+                          },
+                          "status": {
+                            "enum": [
+                              "ok",
+                              "found",
+                              "skipped"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "status",
+                          "found"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "companyId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "findings": {
+                      "description": "At most 500; checks[].found stays exact.",
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "amounts": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "actualExact": {
+                                "type": "string"
+                              },
+                              "differenceExact": {
+                                "type": "string"
+                              },
+                              "expectedExact": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "expectedExact",
+                              "actualExact",
+                              "differenceExact"
+                            ],
+                            "type": "object"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "fix": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "recompute_account_balance"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "severity": {
+                            "enum": [
+                              "error",
+                              "warning"
+                            ],
+                            "type": "string"
+                          },
+                          "subject": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "id": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "enum": [
+                                  "account",
+                                  "transaction",
+                                  "document_draft",
+                                  "item"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "label"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "code",
+                          "severity",
+                          "subject",
+                          "fix"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "finishedAt": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "ledgerVersion": {
+                      "description": "The company ledger version the checks saw (decimal string); send it back as expectedLedgerVersion.",
+                      "type": "string"
+                    },
+                    "level": {
+                      "enum": [
+                        "quick",
+                        "full"
+                      ],
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": "string"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "level",
+                    "companyId",
+                    "startedAt",
+                    "finishedAt",
+                    "ledgerVersion",
+                    "checks",
+                    "findings",
+                    "truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Run the integrity checks of one level for the company and store the run (integrity-v1)",
+        "tags": [
+          "integrity"
+        ],
+        "x-lan": "workstation",
+        "x-stale": "n-a"
+      }
+    },
+    "/api/v1/integrity/fixes": {
+      "post": {
+        "operationId": "post_api_v1_integrity_fixes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "backupArchiveId": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "expectedLedgerVersion": {
+                    "pattern": "^\\d{1,20}$",
+                    "type": "string"
+                  },
+                  "findingIds": {
+                    "items": {
+                      "maxLength": 128,
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "maxItems": 500,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "runId": {
+                    "format": "uuid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "runId",
+                  "findingIds",
+                  "expectedLedgerVersion"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "fixed": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "ledgerVersion": {
+                      "type": "string"
+                    },
+                    "skipped": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "NO_LONGER_FOUND",
+                              "NOT_FIXABLE"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "fixed",
+                    "skipped",
+                    "ledgerVersion"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Fix findings of a stored run (recompute cached account balances); 409 INTEGRITY_STALE when the books moved",
+        "tags": [
+          "integrity"
+        ],
+        "x-lan": "host",
+        "x-stale": "n-a"
+      }
+    },
+    "/api/v1/integrity/runs/{id}": {
+      "get": {
+        "operationId": "get_api_v1_integrity_runs_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "checks": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "found": {
+                            "type": "integer"
+                          },
+                          "status": {
+                            "enum": [
+                              "ok",
+                              "found",
+                              "skipped"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "status",
+                          "found"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "companyId": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "findings": {
+                      "description": "At most 500; checks[].found stays exact.",
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "amounts": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "actualExact": {
+                                "type": "string"
+                              },
+                              "differenceExact": {
+                                "type": "string"
+                              },
+                              "expectedExact": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "expectedExact",
+                              "actualExact",
+                              "differenceExact"
+                            ],
+                            "type": "object"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "fix": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "recompute_account_balance"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "severity": {
+                            "enum": [
+                              "error",
+                              "warning"
+                            ],
+                            "type": "string"
+                          },
+                          "subject": {
+                            "additionalProperties": true,
+                            "properties": {
+                              "id": {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              "label": {
+                                "type": "string"
+                              },
+                              "type": {
+                                "enum": [
+                                  "account",
+                                  "transaction",
+                                  "document_draft",
+                                  "item"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "label"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "code",
+                          "severity",
+                          "subject",
+                          "fix"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "finishedAt": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "ledgerVersion": {
+                      "description": "The company ledger version the checks saw (decimal string); send it back as expectedLedgerVersion.",
+                      "type": "string"
+                    },
+                    "level": {
+                      "enum": [
+                        "quick",
+                        "full"
+                      ],
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": "string"
+                    },
+                    "truncated": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "level",
+                    "companyId",
+                    "startedAt",
+                    "finishedAt",
+                    "ledgerVersion",
+                    "checks",
+                    "findings",
+                    "truncated"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "One stored integrity run of the company",
+        "tags": [
+          "integrity"
+        ],
+        "x-lan": "workstation"
+      }
+    },
+    "/api/v1/integrity/summary": {
+      "get": {
+        "operationId": "get_api_v1_integrity_summary",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "lastFull": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "properties": {
+                            "counts": {
+                              "additionalProperties": true,
+                              "properties": {
+                                "error": {
+                                  "type": "integer"
+                                },
+                                "warning": {
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "error",
+                                "warning"
+                              ],
+                              "type": "object"
+                            },
+                            "finishedAt": {
+                              "type": "string"
+                            },
+                            "fixable": {
+                              "type": "integer"
+                            },
+                            "id": {
+                              "format": "uuid",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "finishedAt",
+                            "counts",
+                            "fixable"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lastQuick": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "properties": {
+                            "counts": {
+                              "additionalProperties": true,
+                              "properties": {
+                                "error": {
+                                  "type": "integer"
+                                },
+                                "warning": {
+                                  "type": "integer"
+                                }
+                              },
+                              "required": [
+                                "error",
+                                "warning"
+                              ],
+                              "type": "object"
+                            },
+                            "finishedAt": {
+                              "type": "string"
+                            },
+                            "fixable": {
+                              "type": "integer"
+                            },
+                            "id": {
+                              "format": "uuid",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "finishedAt",
+                            "counts",
+                            "fixable"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "lastQuick",
+                    "lastFull"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "The newest quick and full integrity runs of the company (any member)",
+        "tags": [
+          "integrity"
+        ],
+        "x-lan": "workstation"
+      }
+    },
     "/api/v1/inventory/adjustments": {
       "post": {
         "description": "Response 201 {adjustment}. inventory-adjust-v1: one line per inventory item {itemId, quantityChange?, valueChange?} (at least one): quantityChange a signed, non-zero decimal string (at most 4 places, |q| < 100,000,000) in the item's base unit; valueChange signed money (at most 2 places). Quantity only: the units go in or out at average cost (the walk writes the asset / adjustment account pair, inventoryLines). With a value: the asset account moves by it; a value-only line needs the item on hand at its date (400 INVENTORY_NO_STOCK, Q-P24s). adjustmentAccountId: an active account of the company that is not an inventory asset account (400 VALIDATION_ERROR). Inventory off: 400 INVENTORY_OFF. Dated on or before the closing date (for an edit, the old or the new date): 409 INVENTORY_PERIOD_CLOSED, closingPassword or not. 409 RETRY after a deadlock or lock timeout (nothing saved). The reply's warnings[] carries NEGATIVE_STOCK {code, itemId, date, onHand} when an item's on hand newly went below 0. Record: {id, date, adjustmentAccountId, memo, status, updatedAt, lines: [{itemId, quantityChange, valueChange, value (as costed), movementId}], inventoryLines: [{role, accountId, amount, movementId}]}. Units (units-of-measure-v1): a line may take unitId, the unit quantityChange is in (a unit of the item's set; null = base): stock moves by round4(quantityChange x factor) (400 UNIT_NOT_IN_SET, 400 UNIT_QUANTITY_TOO_SMALL); the record's lines add unitId and baseQuantityChange.",

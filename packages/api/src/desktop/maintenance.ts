@@ -85,6 +85,8 @@ const DRAIN_EXEMPT = routeMatcher([
   'POST /api/v1/*/preview',
   'POST /api/v1/*/*/preview',
   'POST /api/v1/desktop/maintenance/**',
+  // Verify Data checks only read the books (U-12); a long one never delays a hold.
+  'POST /api/v1/integrity/checks',
 ]);
 const DRAIN_COUNTED = routeMatcher([
   'POST /api/v1/ai/categorize/accept',

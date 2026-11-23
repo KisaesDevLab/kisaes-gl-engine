@@ -1970,4 +1970,22 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * open test-restore transaction (application_name mybooks-test-restore), so workstations keep seeing saves.
    */
   'tenant-archive-test-restore-v1',
+  /**
+   * U-12 (ClientLedger P34; migration 0290_integrity_runs, additive + rollback). Verify Data, company-scoped:
+   * POST /api/v1/integrity/checks {level: quick|full} -> 200 IntegrityRun {id, level, companyId, startedAt, finishedAt,
+   * ledgerVersion (decimal string), checks: [{code, status: ok|found|skipped, found}], findings: [{id, code, severity:
+   * error|warning, subject: {type: account|transaction|document_draft|item, id, label}, amounts?: {expectedExact,
+   * actualExact, differenceExact}, fix: recompute_account_balance|null}] (at most 500; found stays exact), truncated};
+   * synchronous, 120 s statement budget, stored (newest 20 per company). Codes: quick UNBALANCED_TRANSACTION,
+   * ACCOUNT_BALANCE_DRIFT, DRAFT_AFFECTS_BOOKS; full adds LINE_ACCOUNT_SCOPE, AR_CONTROL_DIFFERENCE,
+   * AP_CONTROL_DIFFERENCE, INVENTORY_VALUE_DIFFERENCE (skipped while inventory is off). Amounts are computed in SQL
+   * numeric. POST /integrity/fixes {runId, findingIds[], expectedLedgerVersion, backupArchiveId?} -> {fixed[],
+   * skipped[{id, reason: NO_LONGER_FOUND|NOT_FIXABLE}], ledgerVersion}; 409 INTEGRITY_STALE when the ledger version
+   * moved, 404 INTEGRITY_RUN_UNKNOWN; recomputes cached account balances only (never journal lines or transactions, so
+   * the ledger version does not move), each re-checked under a row lock; one integrity_fix audit row. LAN: host only,
+   * MAINTENANCE_REQUIRED without a hold. GET /integrity/summary {lastQuick, lastFull: {id, finishedAt, counts: {error,
+   * warning}, fixable} | null} (any member); GET /integrity/runs/{id}. Checks, runs and fixes need an owner or admin
+   * (403 INTEGRITY_ADMIN_REQUIRED). The desktop profile's daily balance auto-repair (balanceValidation) is off.
+   */
+  'integrity-v1',
 ];

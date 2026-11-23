@@ -82,9 +82,8 @@ describe('in-process worker (desktop profile)', () => {
     const w = await startInProcessWorker({ queue, handlers: noopHandlers, schedulers: spySchedulers(order), documentExtraction: true });
 
     expect(queue.worked).toEqual([...JOB_NAMES]);
-    expect(w.schedulers).toEqual(['balanceValidation', 'reportPackSweep', 'classificationStateBackfill', 'tagBackfill']);
+    expect(w.schedulers).toEqual(['reportPackSweep', 'classificationStateBackfill', 'tagBackfill']);
     expect(order).toEqual([
-      'start:balanceValidation',
       'start:reportPackSweep',
       'start:classificationStateBackfill',
       'start:tagBackfill',
@@ -93,8 +92,8 @@ describe('in-process worker (desktop profile)', () => {
 
     await w.stop();
     expect(queue.closed.sort()).toEqual([...JOB_NAMES].sort());
-    expect(order.slice(4)).toEqual([
-      'stop:balanceValidation',
+    // The daily balance auto-repair is off on desktop (U-12, Verify Data replaces it).
+    expect(order.slice(3)).toEqual([
       'stop:reportPackSweep',
       'stop:classificationStateBackfill',
       'stop:tagBackfill',
