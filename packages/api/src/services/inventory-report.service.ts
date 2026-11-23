@@ -64,9 +64,9 @@ async function vendorNames(executor: DbOrTx, tenantId: string, ids: readonly (st
   return new Map(rows.map((r) => [r.id, r.name]));
 }
 
-async function scope(tenantId: string, companyId: string | undefined) {
-  await assertInventoryOn(db, tenantId, companyId);
-  return companyIdOf(db, tenantId, companyId);
+async function scope(tenantId: string, companyId: string | undefined, executor: DbOrTx = db) {
+  await assertInventoryOn(executor, tenantId, companyId);
+  return companyIdOf(executor, tenantId, companyId);
 }
 
 // ─── Valuation summary ───────────────────────────────────────────────
@@ -86,12 +86,13 @@ export interface ValuationSummary {
  * account (tagged inventory_asset or named by a part) the valuation, the
  * accrual GL balance as of the date (posted lines dated on or before it) and
  * difference = glBalance - valuation ("0.00" unless a journal entry posted to
- * the account directly).
+ * the account directly). `executor`: every read runs on it (Verify Data,
+ * U-12, reads it inside its one snapshot); default db.
  */
-export async function valuationSummary(tenantId: string, asOf: string, companyId?: string): Promise<ValuationSummary> {
-  const co = await scope(tenantId, companyId);
-  const parts = await partsOf(db, tenantId, co);
-  const stock = await stockAsOf(db, tenantId, co, parts.map((p) => p.id), asOf);
+export async function valuationSummary(tenantId: string, asOf: string, companyId?: string, executor: DbOrTx = db): Promise<ValuationSummary> {
+  const co = await scope(tenantId, companyId, executor);
+  const parts = await partsOf(executor, tenantId, co);
+  const stock = await stockAsOf(executor, tenantId, co, parts.map((p) => p.id), asOf);
   const zero = new Decimal(0);
   let total = zero;
   const byAccount = new Map<string, Dec>();
@@ -109,14 +110,14 @@ export async function valuationSummary(tenantId: string, asOf: string, companyId
   }));
 
   // The inventory asset accounts of the company: tagged, or named by a part.
-  const acctRows = await db.select({ id: accounts.id, name: accounts.name, companyId: accounts.companyId, systemTag: accounts.systemTag })
+  const acctRows = await executor.select({ id: accounts.id, name: accounts.name, companyId: accounts.companyId, systemTag: accounts.systemTag })
     .from(accounts).where(eq(accounts.tenantId, tenantId));
   const assetIds = new Set(parts.map((p) => p.assetAccountId).filter((v): v is string => !!v));
   const invAccounts = acctRows.filter((a) => (a.systemTag === INVENTORY_ASSET_TAG && (!a.companyId || a.companyId === co)) || assetIds.has(a.id))
     .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
   const gl = new Map<string, Dec>();
   if (invAccounts.length > 0) {
-    const r = await db.execute(sql`
+    const r = await executor.execute(sql`
       SELECT jl.account_id::text AS account_id, COALESCE(SUM(jl.debit - jl.credit), 0)::text AS b
       FROM journal_lines jl JOIN transactions t ON t.id = jl.transaction_id
       WHERE jl.tenant_id = ${tenantId} AND t.status = 'posted' AND t.txn_date <= ${asOf}::date
@@ -131,7 +132,7 @@ export async function valuationSummary(tenantId: string, asOf: string, companyId
     return { accountId: a.id, name: a.name, valuation: money(valuation), glBalance: money(glBalance), difference: money(glBalance.minus(valuation)) };
   });
 
-  const [company] = await db.select({ method: companies.accountingMethod }).from(companies)
+  const [company] = await executor.select({ method: companies.accountingMethod }).from(companies)
     .where(and(eq(companies.tenantId, tenantId), eq(companies.id, co))).limit(1);
   return {
     title: 'Inventory Valuation Summary', asOf, basis: 'accrual', rows, accounts: accts, totalValue: money(total),
