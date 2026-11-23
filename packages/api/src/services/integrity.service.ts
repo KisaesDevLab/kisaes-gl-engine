@@ -187,7 +187,12 @@ async function control(ex: DbOrTx, s: Scope, kind: 'ar' | 'ap', asOf: string): P
   const items = kind === 'ar'
     ? await arOpenItemsAsOf(ex, { tenantId: s.tenantId, companyId: s.companyId, asOf })
     : await apOpenItemsAsOf(ex, { tenantId: s.tenantId, companyId: s.companyId, asOf });
-  const opens = items.map((i) => String((i as { open: unknown }).open));
+  // openExact: the exact open amount (4 places) of each item, A/R and A/P alike (open-balances-asof-v1).
+  const opens = items.map((i) => {
+    const text = i.openExact;
+    if (!/^-?\d{1,30}(\.\d{1,10})?$/.test(text)) throw new Error('open item amount is not a decimal');
+    return text;
+  });
   const tag = kind === 'ar' ? 'accounts_receivable' : 'accounts_payable';
   const sign = kind === 'ar' ? sql`jl.debit - jl.credit` : sql`jl.credit - jl.debit`;
   const scope = kind === 'ar' ? sql`(t.company_id = ${s.companyId} OR t.company_id IS NULL)` : sql`t.company_id = ${s.companyId}`;
@@ -198,7 +203,7 @@ async function control(ex: DbOrTx, s: Scope, kind: 'ar' | 'ap', asOf: string): P
       JOIN accounts a ON a.id = jl.account_id AND a.tenant_id = jl.tenant_id
       WHERE jl.tenant_id = ${s.tenantId} AND t.status = 'posted' AND a.system_tag = ${tag} AND t.txn_date <= ${asOf}::date AND ${scope}
     ), open AS (
-      SELECT COALESCE(SUM(v::numeric), 0) AS o FROM unnest(${sql.raw(`ARRAY[${opens.map((o) => `'${o.replace(/[^0-9.-]/g, '')}'`).join(',')}]::text[]`)}) AS v
+      SELECT COALESCE(SUM(v::numeric), 0) AS o FROM unnest(${sql.raw(`ARRAY[${opens.map((o) => `'${o}'`).join(',')}]::text[]`)}) AS v
     ), acct AS (
       SELECT a.id, a.name, a.account_number FROM accounts a
       WHERE a.tenant_id = ${s.tenantId} AND a.system_tag = ${tag} AND (a.company_id = ${s.companyId} OR a.company_id IS NULL)
@@ -379,6 +384,16 @@ export async function fix(s: Scope, req: FixRequest, userId: string | null): Pro
       });
     }
     const byId = new Map(run.findings.map((f) => [f.id, f]));
+    // Step 6 of the posting lock order (company-row-lock.ts): account rows, id
+    // order, the lock an UPDATE of a non-key column takes. A posting to one of
+    // them waits, then its lines are seen by the re-check below.
+    const accountIds = [...new Set(req.findingIds.map((id) => byId.get(id))
+      .filter((f): f is Finding => !!f && f.fix === 'recompute_account_balance' && f.subject.type === 'account')
+      .map((f) => f.subject.id.toLowerCase()))].sort();
+    if (accountIds.length > 0) {
+      await tx.execute(sql`SELECT id FROM accounts WHERE tenant_id = ${s.tenantId}
+        AND id = ANY(${`{${accountIds.join(',')}}`}::uuid[]) ORDER BY id FOR NO KEY UPDATE`);
+    }
     const fixed: string[] = [];
     const skipped: FixResult['skipped'] = [];
     for (const id of [...new Set(req.findingIds)]) {
@@ -387,8 +402,7 @@ export async function fix(s: Scope, req: FixRequest, userId: string | null): Pro
         skipped.push({ id, reason: 'NOT_FIXABLE' });
         continue;
       }
-      // The account row is locked: a posting to it waits, then this sees its lines.
-      await tx.execute(sql`SELECT 1 FROM accounts WHERE id = ${f.subject.id} AND tenant_id = ${s.tenantId} FOR UPDATE`);
+
       const r = await tx.execute(DRIFT_SQL(s, f.subject.id));
       const row = r.rows[0] as { ledger: string } | undefined;
       if (!row) {
