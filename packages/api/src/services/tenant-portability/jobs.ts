@@ -3,7 +3,8 @@
 // See LICENSE and NOTICE.md for terms.
 
 /**
- * In-process job registry for archive export and import (U-05). Jobs live
+ * In-process job registry for archive export, import and test restore (U-05,
+ * U-296). Jobs live
  * in memory only: after an engine restart a job id is 404 JOB_UNKNOWN, and
  * no other endpoint depends on job ids (S5). Finished jobs are kept for
  * JOB_RETENTION_MS.
@@ -20,7 +21,7 @@ export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
 export interface JobState<R = unknown> {
   id: string;
-  kind: 'export' | 'import';
+  kind: 'export' | 'import' | 'test-restore';
   tenantId: string | null;
   userId: string;
   status: JobStatus;
@@ -49,8 +50,13 @@ export interface JobProgress {
 
 const JOB_RETENTION_MS = 24 * 60 * 60 * 1000;
 const jobs = new Map<string, JobState>();
-/** The tail of the per-kind chain: a new job of a kind runs after the previous one of that kind (M3). */
-const tails: Record<JobState['kind'], Promise<void>> = { export: Promise.resolve(), import: Promise.resolve() };
+/**
+ * The tail of the per-chain queue: a new job runs after the previous one of
+ * its chain (M3). A test restore (U-296) is an import that rolls back, so it
+ * queues with the imports: two long import transactions never overlap.
+ */
+const tails: Record<'export' | 'import', Promise<void>> = { export: Promise.resolve(), import: Promise.resolve() };
+const chainOf = (kind: JobState['kind']): 'export' | 'import' => (kind === 'export' ? 'export' : 'import');
 
 function sweep(): void {
   const cutoff = Date.now() - JOB_RETENTION_MS;
@@ -130,6 +136,9 @@ export function startJob<R>(
       job.status = 'failed';
       if (err instanceof AppError) {
         job.error = { code: err.code ?? 'INTERNAL_ERROR', message: err.message, details: err.details };
+        // A failed restore check names its checks and tables only (no row
+        // data): logged, so a failure seen once can be diagnosed (P34 QA-10).
+        if (err.code === 'ARCHIVE_VERIFY_FAILED') console.warn(`[tenant-archive] ${kind} job ${job.id}: ${verifyFailureSummary(err.details)}`);
       } else {
         // Never echo arbitrary error text (it may carry file paths or SQL params).
         job.error = { code: 'INTERNAL_ERROR', message: 'The job failed. See the engine log.' };
@@ -140,8 +149,25 @@ export function startJob<R>(
     }
   };
   // Runs on the next tick at the earliest so the caller can return the id first.
-  tails[kind] = tails[kind].then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(run);
+  const chain = chainOf(kind);
+  tails[chain] = tails[chain].then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(run);
   return job;
+}
+
+/**
+ * `check(table)` names of an ARCHIVE_VERIFY_FAILED's `details.failures`, for
+ * the log: the check and table names only (they are schema names), never
+ * the counts or anything from a row.
+ */
+export function verifyFailureSummary(details: Record<string, unknown> | undefined): string {
+  const failures = Array.isArray(details?.['failures']) ? (details!['failures'] as Array<Record<string, unknown>>) : [];
+  const safe = (v: unknown): string | null => (typeof v === 'string' && /^[A-Za-z0-9_.]{1,128}$/.test(v) ? v : null);
+  const names = failures.map((f) => {
+    const check = safe(f['check']) ?? '?';
+    const table = safe(f['table']);
+    return table ? `${check}(${table})` : check;
+  });
+  return `restore check failed: ${[...new Set(names)].slice(0, 40).join(', ') || 'no details'}`;
 }
 
 /** The job, or 404 JOB_UNKNOWN. Only the user who started it (or a super admin) may read it. */

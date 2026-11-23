@@ -1956,4 +1956,18 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * company with sensitive accounts, rotates the epoch (every client reloads).
    */
   'changes-v1',
+  /**
+   * U-296 (ClientLedger P34; no migration). POST /api/v1/tenant-archives/test-restore {path, passphrase} (desktop, host
+   * app only; or multipart file) -> 202 {jobId}; job kind test-restore. The archive is imported in one transaction,
+   * verified as a restore is (counts, content, trial balance, references, files, identity, verification totals) and
+   * always rolled back: no tenant, file or upload folder remains. Result {testRestore: {passed, archiveId,
+   * sourceTenantId, archiveCreatedAt, trialBalance: {rowsEqual, totalsEqual, expected, actual: {debitExact, creditExact,
+   * rows}, differenceExact: {debit, credit}} | null, unbalanced: {expected, actual} | null, verificationTotals,
+   * failures: [{check, table?}], warnings}}. A difference is passed: false; an unreadable file, a wrong passphrase, a
+   * newer archive, a transfer file or no disk space fail the job with the import's codes. Permission: the backup
+   * permission (owner/admin) on the archive's source tenant, or a super admin (403 TENANT_OWNER_REQUIRED from the job).
+   * Audited as tenant_archive_test_restore {archiveId, passed} in the workspace. The change feed's horizon skips the
+   * open test-restore transaction (application_name mybooks-test-restore), so workstations keep seeing saves.
+   */
+  'tenant-archive-test-restore-v1',
 ];

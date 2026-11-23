@@ -11,6 +11,13 @@
  * the rows with cursor <= xid < new horizon and never skips a late commit.
  * There is no counter row, so writers never wait on the feed (B4).
  *
+ * One exception (U-296, ClientLedger Q-P34u): the open transaction of a test
+ * restore (a backend whose application_name is TEST_RESTORE_APPLICATION_NAME)
+ * does not hold the horizon back. That transaction always rolls back and
+ * only writes a tenant that never becomes visible, so skipping it loses
+ * nothing, and workstations keep seeing saves during a multi-minute test.
+ * A real import still holds it (it runs under a maintenance hold anyway).
+ *
  * `reset: true` (the client reloads everything): no or a malformed cursor, a
  * different epoch (a file-level restore, an archive import, an engine
  * upgrade), a cursor older than the 7-day retention, or more changes than one
@@ -84,6 +91,25 @@ async function pruneMaybe(): Promise<void> {
 
 const XID = /^\d{1,20}$/;
 
+/** Must equal import.service.ts TEST_RESTORE_APPLICATION_NAME (a test checks it). */
+export const FEED_SKIPPED_APPLICATION_NAME = 'mybooks-test-restore';
+
+/**
+ * The feed horizon: the oldest transaction still running when the snapshot
+ * was taken (pg_snapshot_xmin), except a test restore's (see above).
+ */
+export async function feedHorizon(exec: DbOrTx = db): Promise<string> {
+  const h = await exec.execute(sql`
+    SELECT COALESCE(
+      (SELECT min(x) FROM pg_snapshot_xip(q.s) AS x
+        WHERE xid(x) <> ALL (ARRAY(
+          SELECT a.backend_xid FROM pg_stat_activity a
+          WHERE a.application_name = ${FEED_SKIPPED_APPLICATION_NAME} AND a.backend_xid IS NOT NULL))),
+      pg_snapshot_xmax(q.s))::text AS h
+    FROM (SELECT pg_current_snapshot() AS s) q`);
+  return (h.rows[0] as { h: string }).h;
+}
+
 function cmpXid(a: string, b: string): number {
   const x = BigInt(a);
   const y = BigInt(b);
@@ -97,8 +123,7 @@ function cmpXid(a: string, b: string): number {
 export async function readChanges(tenantId: string, cursor: string | undefined, hidden: readonly string[]): Promise<FeedPage> {
   await pruneMaybe();
   const { epoch, prunedBelow } = await feedEpoch();
-  const h = await db.execute(sql`SELECT pg_snapshot_xmin(pg_current_snapshot())::text AS h`);
-  const horizon = (h.rows[0] as { h: string }).h;
+  const horizon = await feedHorizon();
   const page = (reset: boolean, changes: FeedChange[] = []): FeedPage => ({ cursor: `${epoch}.${horizon}`, feedEpoch: epoch, reset, changes });
 
   const m = typeof cursor === 'string' ? /^([0-9a-z]+)\.(\d{1,20})$/.exec(cursor) : null;
