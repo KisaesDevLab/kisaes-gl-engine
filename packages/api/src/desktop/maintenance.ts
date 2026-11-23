@@ -9,11 +9,14 @@
  * a restore, an import, an undo or a rollback:
  *   - start: the row is written, then in-flight writes drain (at most 30 s;
  *     on timeout the row is removed again and the caller gets 409
- *     MAINTENANCE_BUSY), then every other session ends;
+ *     MAINTENANCE_BUSY), then every other session ends, unless the hold
+ *     was started with keepSessions (a routine hold: payroll, an import;
+ *     maintenance-sessions-v1), when they stay and only wait;
  *   - while on: every request but the holder's gets 503 MAINTENANCE (probes,
  *     GET /desktop/info and the reset excepted); only the holder's user can
  *     sign in and only the holder's chain can refresh;
- *   - end: other sessions are ended and the row removed in one transaction;
+ *   - end: other sessions are ended (not for keepSessions) and the row
+ *     removed in one transaction;
  *   - reset: the host app clears it after a file-level restore (a restored
  *     dump may carry a row with a holder that no longer exists) and at every
  *     host start (any hold then is left over from a crash).
@@ -47,6 +50,13 @@ export interface MaintenanceHold {
 }
 
 let cached: MaintenanceHold | null | undefined; // undefined: not loaded yet
+/**
+ * The holder chain of a hold started with keepSessions (a routine hold:
+ * payroll, an import; ClientLedger PR-8 S6): its start and end leave the
+ * other sessions alone. Kept in memory only: after an engine restart the
+ * hold ends the other sessions as before (the safe side).
+ */
+let keepSessionsFor: string | null = null;
 /** Book writes in flight (the drain waits for them); the request is kept to read its sid at drain time. */
 const inFlight = new Set<Request>();
 let drainMs = 30_000;
@@ -115,6 +125,7 @@ export async function currentHold(): Promise<MaintenanceHold | null> {
   if (await chainIsLive(hold.holderSession)) return hold;
   const r = await db.execute(sql`DELETE FROM desktop_maintenance WHERE id = 1 AND holder_session = ${hold.holderSession} RETURNING id`);
   cached = undefined;
+  keepSessionsFor = null;
   if (r.rows.length > 0) {
     await db.execute(sql`UPDATE change_feed_state SET epoch = gen_random_uuid() WHERE id = 1`);
     await auditMaintenance('maintenance_void', { reason: 'holder_session_ended' });
@@ -137,6 +148,7 @@ export async function followHoldInTx(tx: DbOrTx, fromChain: string | undefined, 
   if (!isDesktop() || !fromChain || fromChain === toChain) return;
   await tx.execute(sql`UPDATE desktop_maintenance SET holder_session = ${toChain} WHERE id = 1 AND holder_session = ${fromChain}`);
   cached = undefined;
+  if (keepSessionsFor === fromChain) keepSessionsFor = toChain;
 }
 
 /** Forgets the cached hold (after a transaction that moved it; tests). */
@@ -230,8 +242,16 @@ async function auditMaintenance(event: string, after: Record<string, unknown>, u
   if (tenantId) await auditLog(tenantId, 'update', 'desktop_maintenance', null, null, { event, ...after }, userId);
 }
 
-/** Starts a hold for the caller's session (super admin, checked by the route). */
-export async function startMaintenance(holder: { sessionChainId: string | undefined; userId: string }): Promise<MaintenanceHold> {
+/**
+ * Starts a hold for the caller's session (super admin, checked by the route).
+ * With keepSessions (a routine hold: payroll, an import) the other sessions
+ * stay signed in and only get 503 MAINTENANCE while it lasts; without it
+ * (a restore: the books are replaced) they end at start and at end.
+ */
+export async function startMaintenance(
+  holder: { sessionChainId: string | undefined; userId: string },
+  opts: { keepSessions?: boolean } = {},
+): Promise<MaintenanceHold> {
   if (!holder.sessionChainId) throw AppError.unauthorized('Sign in again.', 'SESSION_REVOKED');
   const existing = await currentHold();
   if (existing) {
@@ -255,28 +275,41 @@ export async function startMaintenance(holder: { sessionChainId: string | undefi
     cached = null;
     throw AppError.conflict('Other changes are still being saved. Try again in a moment.', 'MAINTENANCE_BUSY');
   }
-  const ended = await db.execute(sql`DELETE FROM sessions WHERE chain_id <> ${holder.sessionChainId} RETURNING id`);
-  await auditMaintenance('maintenance_start', { sessionsEnded: ended.rows.length }, holder.userId);
+  let sessionsEnded = 0;
+  if (opts.keepSessions) {
+    keepSessionsFor = holder.sessionChainId;
+  } else {
+    keepSessionsFor = null;
+    const ended = await db.execute(sql`DELETE FROM sessions WHERE chain_id <> ${holder.sessionChainId} RETURNING id`);
+    sessionsEnded = ended.rows.length;
+  }
+  await auditMaintenance('maintenance_start', { sessionsEnded, keepSessions: !!opts.keepSessions }, holder.userId);
   return cached;
 }
 
-/** Ends the hold (the holder only): other sessions end and the row goes, in one transaction. */
+/**
+ * Ends the hold (the holder only): other sessions end (not for a
+ * keepSessions hold) and the row goes, in one transaction.
+ */
 export async function endMaintenance(holder: { sessionChainId: string | undefined; userId: string }): Promise<void> {
   const hold = await currentHold();
   if (!hold) return;
   if (hold.holderSession !== holder.sessionChainId) throw AppError.forbidden('Only the session that started maintenance can end it.', 'NOT_MAINTENANCE_HOLDER');
+  const keep = keepSessionsFor === hold.holderSession;
   await db.transaction(async (tx) => {
-    await tx.execute(sql`DELETE FROM sessions WHERE chain_id <> ${hold.holderSession}`);
+    if (!keep) await tx.execute(sql`DELETE FROM sessions WHERE chain_id <> ${hold.holderSession}`);
     await tx.execute(sql`DELETE FROM desktop_maintenance WHERE id = 1`);
   });
   cached = null;
-  await auditMaintenance('maintenance_end', {}, holder.userId);
+  keepSessionsFor = null;
+  await auditMaintenance('maintenance_end', { keepSessions: keep }, holder.userId);
 }
 
 /** Clears any hold (the host app, after a file-level restore). */
 export async function resetMaintenance(): Promise<boolean> {
   const r = await db.execute(sql`DELETE FROM desktop_maintenance RETURNING holder_session`);
   cached = null;
+  keepSessionsFor = null;
   // A file-level restore moved the books under every client: they reload (changes-v1).
   await db.execute(sql`UPDATE change_feed_state SET epoch = gen_random_uuid() WHERE id = 1`);
   if (r.rows.length > 0) await auditMaintenance('maintenance_reset', {});

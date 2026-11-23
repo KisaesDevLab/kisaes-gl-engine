@@ -1936,6 +1936,14 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    */
   'maintenance-v1',
   /**
+   * ClientLedger PR-8 S6 (no migration). POST /desktop/maintenance accepts {keepSessions?: boolean}. With true (a
+   * routine hold: payroll post or reverse, an import commit or undo) the start and the end leave the other sessions
+   * signed in; they only get 503 MAINTENANCE while the hold lasts, so their open windows are kept. Without it (a
+   * restore) both still end them. Kept in memory: after an engine restart during such a hold the end ends them (the
+   * safe side). Audited as before, with keepSessions in the event.
+   */
+  'maintenance-sessions-v1',
+  /**
    * U-294 (ClientLedger P33; migration 0289_change_feed, additive + rollback). GET /api/v1/changes?cursor= (desktop
    * only; workstations allowed): {cursor, feedEpoch, reset, changes: [{kind (table name), id, op: upsert | delete |
    * left}]}, ids and kinds only, for the caller's company. Written by desktop-gated triggers on the stale-checked
