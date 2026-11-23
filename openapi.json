@@ -97987,7 +97987,8 @@
                     "kind": {
                       "enum": [
                         "export",
-                        "import"
+                        "import",
+                        "test-restore"
                       ],
                       "type": "string"
                     },
@@ -98043,6 +98044,76 @@
           "tenant-archives"
         ],
         "x-lan": "host"
+      }
+    },
+    "/api/v1/tenant-archives/test-restore": {
+      "post": {
+        "operationId": "post_api_v1_tenant_archives_test_restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "passphrase": {
+                    "maxLength": 1024,
+                    "minLength": 12,
+                    "type": "string"
+                  },
+                  "path": {
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "passphrase"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "jobId": {
+                      "format": "uuid",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "jobId"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Test-restore an archive: import it in one transaction, verify it and roll back (202; job kind test-restore)",
+        "tags": [
+          "tenant-archives"
+        ],
+        "x-lan": "host",
+        "x-stale": "n-a"
       }
     },
     "/api/v1/tenant-archives/{fileName}/download": {

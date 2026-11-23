@@ -47,7 +47,9 @@ import type { JobProgress } from './jobs.js';
 import { NATURAL_KEYS, OMITTABLE_COLUMNS, OMITTABLE_ROW_FILTERS, OMITTABLE_TABLES, getPortabilityPlan, scopeSql, type PortabilityPlan, type TablePlan } from './plan.js';
 import { IdMap, fieldString, pkOfLine, rewriteField } from './remap.js';
 import { applyArchiveSession, withArchiveConnection, xactLockTenantExclusive, type ArchiveClient } from './session.js';
-import { verifyImport, type ReencryptedValue, type VerificationSummary, type WrittenFile } from './verify.js';
+import { sortTb, verifyImport, type ReencryptedValue, type VerificationSummary, type WrittenFile } from './verify.js';
+import { computeTrialBalance, countUnbalancedTransactions } from './fingerprint.js';
+import { auditLog } from '../../middleware/audit.js';
 import {
   changedMoneyFields, computeVerificationTotals, diffTotals, resolveAsOf,
   type TotalsComparison, type TotalsDifference, type VerificationTotals,
@@ -79,7 +81,66 @@ export interface ImportOptions {
    * Online's "Import a ClientLedger transfer file" page always sets it.
    */
   transferOnly?: boolean;
+  /**
+   * Test restore (U-296): import, verify, record the verdict and always roll
+   * back. Set only by runTestRestore.
+   */
+  test?: boolean;
+  /**
+   * Test restore permission (Q-P34v): called with the archive's source
+   * tenant id once the manifest is read, before anything is written; throws
+   * to refuse.
+   */
+  authorizeSource?: (sourceTenantId: string) => Promise<void>;
 }
+
+/**
+ * application_name of a test restore's connection for the length of its
+ * transaction (U-296, Q-P34u). The change feed's horizon skips the open
+ * transaction of a backend with this name: it always rolls back, so a
+ * workstation never waits minutes for it to see another user's save.
+ */
+export const TEST_RESTORE_APPLICATION_NAME = 'mybooks-test-restore';
+
+/** One side of a test restore's trial balance. */
+export interface TrialBalanceSide { debitExact: string; creditExact: string; rows: number }
+
+/** What a test restore found (U-296). Amounts are exact decimal strings. */
+export interface TestRestoreResult {
+  passed: boolean;
+  archiveId: string;
+  sourceTenantId: string;
+  archiveCreatedAt: string;
+  /** null when the restore stopped before the trial balance (see failures). */
+  trialBalance: {
+    rowsEqual: boolean;
+    totalsEqual: boolean;
+    expected: TrialBalanceSide;
+    actual: TrialBalanceSide;
+    /** actual minus expected, in SQL numeric. */
+    differenceExact: { debit: string; credit: string };
+  } | null;
+  unbalanced: { expected: number; actual: number } | null;
+  verificationTotals: TotalsComparison | null;
+  /** Check and table names only. */
+  failures: Array<{ check: string; table?: string }>;
+  warnings: string[];
+}
+
+function failuresOf(err: ArchiveError): Array<{ check: string; table?: string }> {
+  const list = Array.isArray(err.details?.['failures']) ? (err.details!['failures'] as Array<Record<string, unknown>>) : [];
+  const out = list.map((f) => ({ check: String(f['check'] ?? 'verify'), ...(typeof f['table'] === 'string' ? { table: f['table'] } : {}) }));
+  if (out.length > 0) return out;
+  if (err.code === 'ARCHIVE_TOTALS_MISMATCH') return [{ check: 'totals' }];
+  return [{ check: 'verify', ...(typeof err.details?.['table'] === 'string' ? { table: err.details['table'] as string } : {}) }];
+}
+
+/** A difference between the restore and the file (as opposed to a file that cannot be read). */
+function isMismatch(err: unknown): err is ArchiveError {
+  return err instanceof ArchiveError && (err.code === 'ARCHIVE_VERIFY_FAILED' || err.code === 'ARCHIVE_TOTALS_MISMATCH');
+}
+
+const DECIMAL = /^-?\d{1,30}(\.\d{1,10})?$/;
 
 /** The answers to a wrong file (U-284, S7, Q-P32n). */
 export const NOT_A_TRANSFER_FILE_MESSAGE = 'This is a ClientLedger backup. Ask your client for a transfer file from Send to My Accountant.';
@@ -303,13 +364,45 @@ export async function assertTransferOmissionsHold(client: ArchiveClient, plan: P
 
 export async function runImport(options: ImportOptions, progress?: JobProgress): Promise<ImportResult> {
   if (options.scratch) throw new ArchiveError('SCRATCH_NOT_AVAILABLE', 'Scratch (test-restore) imports are not available yet.');
-  return withScrubbedPassphrase(options.passphrase, () => importArchive(options, progress));
+  const { test: _t, ...rest } = options;
+  return withScrubbedPassphrase(options.passphrase, () => importArchive(rest, progress)) as Promise<ImportResult>;
 }
 
-async function importArchive(options: ImportOptions, progress?: JobProgress): Promise<ImportResult> {
+/**
+ * Test restore (U-296): the archive is imported in one transaction exactly
+ * as a restore would, verified (counts, content, trial balance, references,
+ * files, identity, verification totals) and always rolled back, with its
+ * files removed. A difference is `passed: false` with the check names; a
+ * file that cannot be read (wrong passphrase, damaged, too new, a transfer
+ * file on desktop, no disk space) fails the job as an import would. Users
+ * are created as for a super admin (rolled back) so identity is verified in
+ * full. The verdict is recorded in the audit trail of the workspace (or, on
+ * a server, of the source tenant when it exists here).
+ */
+export async function runTestRestore(options: Omit<ImportOptions, 'test' | 'scratch' | 'name' | 'resetIntakeSettings' | 'resetDocumentDrafts' | 'transferOnly'>, progress?: JobProgress): Promise<{ testRestore: TestRestoreResult }> {
+  const result = await withScrubbedPassphrase(options.passphrase, () => importArchive({ ...options, test: true }, progress)) as TestRestoreResult;
+  const workspaceTenantId = await getWorkspaceTenantId();
+  let auditTenant: string | null = workspaceTenantId;
+  if (!auditTenant) {
+    const r = await withArchiveConnection((c) => c.query('SELECT 1 FROM tenants WHERE id = $1', [result.sourceTenantId]));
+    auditTenant = r.rows.length > 0 ? result.sourceTenantId : null;
+  }
+  if (auditTenant) {
+    await auditLog(auditTenant, 'create', 'tenant_archive_test_restore', result.archiveId, null,
+      { archiveId: result.archiveId, sourceTenantId: result.sourceTenantId, passed: result.passed, failures: result.failures.map((f) => f.check) },
+      options.callerUserId);
+  }
+  return { testRestore: result };
+}
+
+async function importArchive(options: ImportOptions, progress?: JobProgress): Promise<ImportResult | TestRestoreResult> {
+  const test = options.test === true;
+  const testFailures: Array<{ check: string; table?: string }> = [];
   const step = (s: string, p: number) => progress?.set(s, p);
   step('verify-archive', 1);
   const reader = await ArchiveReader.open(options.filePath, options.passphrase);
+  // Test restore permission (Q-P34v): decided from the manifest, before the full decrypt pass.
+  if (test) await options.authorizeSource?.(reader.manifest.source.tenantId);
   // Wrong-file refusals (U-284) before anything else is read.
   const isTransfer = reader.manifest.options.transfer === true;
   if (options.transferOnly && !isTransfer) throw new ArchiveError('NOT_A_TRANSFER_FILE', NOT_A_TRANSFER_FILE_MESSAGE);
@@ -330,7 +423,8 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   const callerRow = (await withArchiveConnection((c) => c.query('SELECT is_super_admin, is_active FROM users WHERE id = $1', [options.callerUserId]))).rows[0] as
     { is_super_admin: boolean; is_active: boolean | null } | undefined;
   if (!callerRow || callerRow.is_active === false) throw AppError.forbidden('The importing user is not active.', 'IMPORT_NOT_ALLOWED');
-  const createUsers = callerRow.is_super_admin === true;
+  // A test restore rolls back: users are created as for a super admin so the identity check runs in full.
+  const createUsers = test || callerRow.is_super_admin === true;
 
   // Step 2: id map.
   step('id-map', 17);
@@ -390,6 +484,8 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   return withArchiveConnection(async (client) => {
     try {
       await client.query('BEGIN');
+      // Before the first write (no transaction id yet): the change feed skips this transaction (Q-P34u).
+      if (test) await client.query(`SET LOCAL application_name = '${TEST_RESTORE_APPLICATION_NAME}'`);
       await applyArchiveSession(client);
       // Desktop (U-291): the record-stamp triggers stay off for the import, so
       // restored records keep the stamps they had in the archive.
@@ -472,12 +568,21 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
 
       // Verification (B9).
       step('verify-content', 83);
-      const verification = await verifyImport({
-        client, plan, manifest, compat, idMap, newTenantId,
-        files: written.map((f): WrittenFile => ({ table: f.table, column: f.column, rowId: f.rowId, sha256: f.sha256, readBack: f.readBack })),
-        identity, archivedUsers, archivedAccess, archivedTenant, callerUserId: options.callerUserId, reencrypted,
-      });
-      warnings.push(...verification.warnings);
+      let verification: VerificationSummary | null = null;
+      try {
+        verification = await verifyImport({
+          client, plan, manifest, compat, idMap, newTenantId,
+          files: written.map((f): WrittenFile => ({ table: f.table, column: f.column, rowId: f.rowId, sha256: f.sha256, readBack: f.readBack })),
+          identity, archivedUsers, archivedAccess, archivedTenant, callerUserId: options.callerUserId, reencrypted,
+        });
+        warnings.push(...verification.warnings);
+      } catch (err) {
+        if (!test || !isMismatch(err)) throw err;
+        testFailures.push(...failuresOf(err));
+      }
+      // Test restore: the trial balance as verification saw it, side by side, exact.
+      const testTb = test ? await compareTrialBalance(client, newTenantId, manifest, idMap) : null;
+      const testUnbalanced = test ? { expected: manifest.unbalancedTransactions, actual: await countUnbalancedTransactions(client, newTenantId) } : null;
 
       // Verification totals (U-283, B2). Counts now, before any row of the
       // steps below is written; money after them. Same as-of date and
@@ -567,8 +672,35 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         counts: counted.counts,
         companies: finalMoney.companies.map((c) => ({ ...c, counts: countsOf.get(c.companyId) ?? c.counts })),
       };
-      const totals = judgeTotals(expectedTotals, actualTotals, backfills, rewalkIsUpgrade ? 0 : rewalkChanged);
+      let totals: { comparison: TotalsComparison; warnings: string[] };
+      try {
+        totals = judgeTotals(expectedTotals, actualTotals, backfills, rewalkIsUpgrade ? 0 : rewalkChanged);
+      } catch (err) {
+        if (!test || !isMismatch(err)) throw err;
+        testFailures.push(...failuresOf(err));
+        const d = (err.details ?? {}) as { differences?: TotalsDifference[] };
+        totals = { comparison: { definition: actualTotals.definition, expected: expectedTotals, actual: actualTotals, matches: false, differences: d.differences ?? [], backfills }, warnings: [] };
+      }
       warnings.push(...totals.warnings);
+
+      if (test) {
+        // Always rolled back: nothing of the test stays (rows, files, marker).
+        await client.query('ROLLBACK');
+        await cleanupFiles();
+        fs.rmSync(pendingMarker, { force: true });
+        const failures = dedupeFailures(testFailures);
+        return {
+          passed: failures.length === 0,
+          archiveId: manifest.archiveId,
+          sourceTenantId: manifest.source.tenantId,
+          archiveCreatedAt: manifest.createdAt,
+          trialBalance: testTb,
+          unbalanced: testUnbalanced,
+          verificationTotals: totals.comparison,
+          failures,
+          warnings: [...new Set(warnings)].sort(),
+        } satisfies TestRestoreResult;
+      }
 
       // After verification: audit row, fingerprint, provenance.
       step('commit', 95);
@@ -594,7 +726,7 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
         scratch: false,
         archiveId: manifest.archiveId,
         sourceTenantId: manifest.source.tenantId,
-        verification,
+        verification: verification!,
         verificationTotals: totals.comparison,
         transfer: isTransfer,
         host: manifest.host,
@@ -603,9 +735,61 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       await cleanupFiles();
+      // Test restore: a difference found while inserting (a row count) is a
+      // failed test, not a failed job.
+      if (test && isMismatch(err)) {
+        fs.rmSync(pendingMarker, { force: true });
+        return {
+          passed: false,
+          archiveId: manifest.archiveId,
+          sourceTenantId: manifest.source.tenantId,
+          archiveCreatedAt: manifest.createdAt,
+          trialBalance: null,
+          unbalanced: null,
+          verificationTotals: null,
+          failures: dedupeFailures([...testFailures, ...failuresOf(err)]),
+          warnings: [...new Set(warnings)].sort(),
+        } satisfies TestRestoreResult;
+      }
       throw err;
     }
   });
+}
+
+function dedupeFailures(list: Array<{ check: string; table?: string }>): Array<{ check: string; table?: string }> {
+  const seen = new Set<string>();
+  return list.filter((f) => {
+    const k = `${f.check}\u0000${f.table ?? ''}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/**
+ * The trial balance after the inserts against the archive's, ids mapped
+ * back (as verify.ts compares them), with the totals' difference computed in
+ * SQL numeric (never a JS number).
+ */
+async function compareTrialBalance(client: ArchiveClient, newTenantId: string, manifest: ArchiveManifest, idMap: IdMap): Promise<NonNullable<TestRestoreResult['trialBalance']>> {
+  const tb = await computeTrialBalance(client, newTenantId);
+  const mapped = sortTb(tb.rows.map((r) => ({
+    ...r,
+    companyId: r.companyId ? (idMap.getOld(r.companyId) ?? r.companyId) : null,
+    accountId: idMap.getOld(r.accountId) ?? r.accountId,
+  })));
+  const expectedRows = sortTb(manifest.trialBalance.rows);
+  const exp = manifest.trialBalance.totals;
+  if (!DECIMAL.test(exp.debit) || !DECIMAL.test(exp.credit)) throw new ArchiveError('ARCHIVE_CORRUPT', 'The archive is damaged (trial balance totals).');
+  const diff = (await client.query('SELECT ($1::numeric - $2::numeric)::text AS d, ($3::numeric - $4::numeric)::text AS c',
+    [tb.totals.debit, exp.debit, tb.totals.credit, exp.credit])).rows[0] as { d: string; c: string };
+  return {
+    rowsEqual: JSON.stringify(mapped) === JSON.stringify(expectedRows),
+    totalsEqual: tb.totals.debit === exp.debit && tb.totals.credit === exp.credit,
+    expected: { debitExact: exp.debit, creditExact: exp.credit, rows: expectedRows.length },
+    actual: { debitExact: tb.totals.debit, creditExact: tb.totals.credit, rows: mapped.length },
+    differenceExact: { debit: diff.d, credit: diff.c },
+  };
 }
 
 interface FileRewriteContext {

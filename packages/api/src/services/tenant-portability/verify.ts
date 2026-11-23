@@ -168,7 +168,7 @@ interface Failure {
 
 const FETCH = 1000;
 
-function sortTb(rows: TrialBalanceRow[]): TrialBalanceRow[] {
+export function sortTb(rows: TrialBalanceRow[]): TrialBalanceRow[] {
   return [...rows].sort((a, b) =>
     (a.companyId ?? '').localeCompare(b.companyId ?? '') || a.accountId.localeCompare(b.accountId)
     || a.status.localeCompare(b.status) || a.basis.localeCompare(b.basis));

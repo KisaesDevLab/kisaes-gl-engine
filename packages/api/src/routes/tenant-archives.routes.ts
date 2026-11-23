@@ -10,6 +10,10 @@
  *   POST /import                   multipart upload (field `file`) or, on desktop without LAN,
  *                                  {path} to a local .zip/.clbackup; {passphrase} always;
  *                                  {scratch:true} -> 400 SCRATCH_NOT_AVAILABLE (E5b)
+ *   POST /test-restore             U-296: {path, passphrase} (desktop, host app only) or multipart
+ *                                  ile: import in one transaction, verify, always roll back
+ *                                  (job kind test-restore, result {testRestore}); permission: the
+ *                                  backup permission on the archive's source tenant (Q-P34v)
  *
  * Import permission (H1), checked before any upload byte is accepted:
  * desktop -> super admin only (403 SUPER_ADMIN_REQUIRED); server -> the
@@ -37,7 +41,7 @@ import { errorSummaryForLog } from '../utils/log-safe.js';
 import { isDesktop, desktopProfile } from '../desktop/profile.js';
 import { assertArchiveJobAllowed, getJob, jobView, startJob } from '../services/tenant-portability/jobs.js';
 import { archiveDir } from '../services/tenant-portability/export.service.js';
-import { runImport } from '../services/tenant-portability/import.service.js';
+import { runImport, runTestRestore } from '../services/tenant-portability/import.service.js';
 import { ArchiveError } from '../services/tenant-portability/errors.js';
 import { registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
 import { assertPassphraseAttemptAllowed, clearPassphraseFailures, recordPassphraseFailure } from '../services/tenant-portability/passphrase-limiter.js';
@@ -74,7 +78,7 @@ tenantArchivesRouter.get('/jobs/:jobId', requireSessionAuth, describe({
   params: z.object({ jobId: z.string().uuid() }),
   response: z.object({
     jobId: z.string().uuid(),
-    kind: z.enum(['export', 'import']),
+    kind: z.enum(['export', 'import', 'test-restore']),
     status: z.enum(['queued', 'running', 'succeeded', 'failed']),
     progress: z.number().int().min(0).max(100),
     step: z.string(),
@@ -245,6 +249,85 @@ tenantArchivesRouter.post('/import', requireSessionAuth,  requireMaintenanceInLa
       clearPassphraseFailures(userId);
       // Desktop (U-294): every change-feed client reloads after an import.
       if (isDesktop()) await rotateFeedEpoch();
+      return result;
+    } catch (err) {
+      if (err instanceof ArchiveError && err.code === 'ARCHIVE_PASSPHRASE_INVALID') recordPassphraseFailure(userId);
+      throw err;
+    } finally {
+      if (temporary) fs.rmSync(filePath, { force: true });
+      releasePassphrase(body.passphrase);
+    }
+  }, temporary ? [filePath] : []);
+  res.status(202).json({ jobId: job.id });
+});
+
+export const testRestoreSchema = z.object({
+  passphrase: z.string().min(12).max(1024),
+  /** Desktop only (in LAN mode, the host app only): absolute path of a local .zip / .clbackup, opened read-only. */
+  path: z.string().min(1).max(4096).optional(),
+});
+
+/**
+ * Who may test a backup (U-296, Q-P34v): whoever may make one. Before the
+ * upload, the caller must be a super admin or an owner/admin of some
+ * company; the job then checks the archive's own source tenant (a file
+ * from another install needs a super admin).
+ */
+async function requireTestRestorePermission(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  if (!req.isSuperAdmin) {
+    const { db } = await import('../db/index.js');
+    const { sql } = await import('drizzle-orm');
+    const r = await db.execute(sql`SELECT 1 FROM user_tenant_access WHERE user_id = ${req.userId} AND is_active = true AND role IN ('owner', 'admin') LIMIT 1`);
+    if (r.rows.length === 0) throw AppError.forbidden('Only the company owner can do this.', 'TENANT_OWNER_REQUIRED');
+  }
+  next();
+}
+
+tenantArchivesRouter.post('/test-restore', requireSessionAuth, requireTestRestorePermission, upload.single('file'), validate(testRestoreSchema), describe({
+  summary: 'Test-restore an archive: import it in one transaction, verify it and roll back (202; job kind test-restore)',
+  tags: ['tenant-archives'],
+  response: z.object({ jobId: z.string().uuid() }),
+}), async (req, res) => {
+  const body = req.body as z.infer<typeof testRestoreSchema>;
+  const uploaded = (req as unknown as { file?: { path: string } }).file;
+  let filePath: string;
+  let temporary = false;
+  if (uploaded) {
+    filePath = uploaded.path;
+    temporary = true;
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch { /* best effort */ }
+  } else if (body.path !== undefined) {
+    if (!isDesktop() || (desktopProfile().lan && req.lanClass !== 'host')) {
+      throw AppError.badRequest('Path imports are only available on the desktop app of this computer; upload the file instead.', 'VALIDATION_ERROR');
+    }
+    filePath = resolveImportPath(body.path);
+  } else {
+    throw AppError.badRequest('Upload the archive as `file` or give its `path`.', 'VALIDATION_ERROR');
+  }
+  const { userId } = req;
+  const superAdmin = !!req.isSuperAdmin;
+  try {
+    assertPassphraseAttemptAllowed(userId);
+    assertArchiveJobAllowed(null, false);
+  } catch (err) {
+    if (temporary) fs.rmSync(filePath, { force: true });
+    throw err;
+  }
+  registerPassphrase(body.passphrase);
+  const job = startJob('test-restore', null, userId, async (progress) => {
+    try {
+      const result = await runTestRestore({
+        filePath,
+        passphrase: body.passphrase,
+        callerUserId: userId,
+        authorizeSource: async (sourceTenantId) => {
+          if (superAdmin) return;
+          await assertTenantOwner({ userId, isSuperAdmin: false } as Request, sourceTenantId);
+        },
+      }, progress);
+      clearPassphraseFailures(userId);
       return result;
     } catch (err) {
       if (err instanceof ArchiveError && err.code === 'ARCHIVE_PASSPHRASE_INVALID') recordPassphraseFailure(userId);
