@@ -200,8 +200,27 @@ describe('test restore (U-296)', () => {
 
   it('a trial balance difference is passed:false with exact figures and no leftovers', async () => {
     const before = await tenantCount();
+    const feed = await import('../services/change-feed.service.js');
+    const { withArchiveConnection } = await import('../services/tenant-portability/session.js');
+    let seenApp = '';
+    let savedId = '';
+    let fedDuringTest: Array<{ kind: string; id: string }> = [];
     imp._importTestHooks.beforeVerify = async ({ client, newTenantId }) => {
       await client.query(`UPDATE journal_lines SET debit = debit + 0.0001 WHERE tenant_id = $1 AND debit > 0`, [newTenantId]);
+      // The real test restore runs under the name the feed skips (Q-P34u).
+      seenApp = ((await client.query(`SELECT current_setting('application_name') AS a`)).rows[0] as { a: string }).a;
+      // A workstation's save to the live company while the test restore is open (it holds an xid by now)...
+      const before = await feed.readChanges(companyTenant, undefined, []);
+      await withArchiveConnection(async (other) => {
+        await other.query('BEGIN');
+        await other.query(`SET LOCAL mybooks.desktop = 'on'`);
+        const r = await other.query(`UPDATE accounts SET name = name || ' ', updated_at = clock_timestamp()
+          WHERE id = (SELECT id FROM accounts WHERE tenant_id = $1 ORDER BY id LIMIT 1) RETURNING id`, [companyTenant]);
+        savedId = (r.rows[0] as { id: string }).id;
+        await other.query('COMMIT');
+      });
+      // ...is in the feed before the test restore ends.
+      fedDuringTest = (await feed.readChanges(companyTenant, before.cursor, [])).changes;
     };
     try {
       const t = await call('POST', '/api/v1/tenant-archives/test-restore', { path: archivePath, passphrase: PASS });
@@ -216,6 +235,8 @@ describe('test restore (U-296)', () => {
       expect(tb['totalsEqual']).toBe(false);
       expect(tb['differenceExact']).toEqual({ debit: '0.0001', credit: '0.0000' });
       expect(r['unbalanced']).toEqual({ expected: 0, actual: 1 });
+      expect(seenApp).toBe(imp.TEST_RESTORE_APPLICATION_NAME);
+      expect(fedDuringTest).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'accounts', id: savedId })]));
     } finally {
       delete imp._importTestHooks.beforeVerify;
     }

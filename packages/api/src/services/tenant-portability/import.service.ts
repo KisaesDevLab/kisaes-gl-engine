@@ -401,6 +401,8 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
   const step = (s: string, p: number) => progress?.set(s, p);
   step('verify-archive', 1);
   const reader = await ArchiveReader.open(options.filePath, options.passphrase);
+  // Test restore permission (Q-P34v): decided from the manifest, before the full decrypt pass.
+  if (test) await options.authorizeSource?.(reader.manifest.source.tenantId);
   // Wrong-file refusals (U-284) before anything else is read.
   const isTransfer = reader.manifest.options.transfer === true;
   if (options.transferOnly && !isTransfer) throw new ArchiveError('NOT_A_TRANSFER_FILE', NOT_A_TRANSFER_FILE_MESSAGE);
@@ -411,7 +413,6 @@ async function importArchive(options: ImportOptions, progress?: JobProgress): Pr
     sha256File(options.filePath),
   ]);
   const manifest = reader.manifest;
-  if (test) await options.authorizeSource?.(manifest.source.tenantId);
   const plan = await getPortabilityPlan();
   const schema = await readSchemaInfo();
   const compat: CompatResult = checkSchemaCompatibility(manifest.tables, plan, manifest.schema.version, schema.version);
