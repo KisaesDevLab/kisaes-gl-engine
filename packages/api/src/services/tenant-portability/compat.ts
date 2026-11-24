@@ -87,6 +87,8 @@ export const WIDENED_CHECKS: Record<string, { widenedIn: number }> = {
   'items.items_item_type_ck': { widenedIn: 259 },
   // U-118 / U-119 (0276): report_definitions.kind adds 'builder'.
   'report_definitions.report_definitions_kind_check': { widenedIn: 277 },
+  // U-297 (0291): users.user_type adds 'agent' (an AI connection).
+  'users.users_user_type_check': { widenedIn: 292 },
 };
 
 export interface TableCompat {

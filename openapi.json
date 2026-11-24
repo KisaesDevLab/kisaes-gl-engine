@@ -13106,7 +13106,7 @@
     },
     "/api/v1/audit-log": {
       "get": {
-        "description": "Response {data[], total}, newest first. Rows {id, tenant_id, user_id, userName (display name, else email; null for system rows), action, entity_type, entity_id, before_data, after_data, ip_address, user_agent, created_at}. Filters: entity_type, action, start_date, end_date, search, and (audit-filters-v1) user_id, entity_id and company (\"current\" or a company id: rows of that company plus rows that belong to no company). A malformed id is 400 VALIDATION_ERROR; a company the caller cannot open is 403.",
+        "description": "Response {data[], total}, newest first. Rows {id, tenant_id, user_id, userName (display name, else email; null for system rows), action, entity_type, entity_id, before_data, after_data, ip_address, user_agent, created_at, origin (agent-principal-v1: \"mcp:<connection id>\" for a change an AI connection made, else null), action_id (its agent action, else null)}. Filters: entity_type, action, start_date, end_date, search, and (audit-filters-v1) user_id, entity_id and company (\"current\" or a company id: rows of that company plus rows that belong to no company). A malformed id is 400 VALIDATION_ERROR; a company the caller cannot open is 403.",
         "operationId": "get_api_v1_audit_log",
         "parameters": [
           {
@@ -48694,6 +48694,307 @@
           "ledger-version"
         ],
         "x-lan": "workstation"
+      }
+    },
+    "/api/v1/mcp-connections": {
+      "get": {
+        "operationId": "get_api_v1_mcp_connections",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "connections": {
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "createdAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "id": {
+                            "description": "The connection id: the agent user id (audit origin mcp:<id>).",
+                            "format": "uuid",
+                            "type": "string"
+                          },
+                          "isActive": {
+                            "type": "boolean"
+                          },
+                          "keyPrefix": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastUsedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string"
+                          },
+                          "templateId": {
+                            "anyOf": [
+                              {
+                                "format": "uuid",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "role",
+                          "templateId",
+                          "isActive",
+                          "keyPrefix",
+                          "lastUsedAt",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "connections"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "List the company's AI connections (agent-principal-v1)",
+        "tags": [
+          "mcp-connections"
+        ],
+        "x-lan": "host"
+      },
+      "post": {
+        "description": "Session only, team_management. The key (apiKey) is returned once and never again. The agent cannot sign in; its role is read live on every request. 400 AGENT_TEMPLATE_ROLE when templateId is sent without role bookkeeper.",
+        "operationId": "post_api_v1_mcp_connections",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "role": {
+                    "enum": [
+                      "owner",
+                      "accountant",
+                      "bookkeeper",
+                      "readonly"
+                    ],
+                    "type": "string"
+                  },
+                  "templateId": {
+                    "anyOf": [
+                      {
+                        "format": "uuid",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "A permission template of this company; needs role bookkeeper."
+                  }
+                },
+                "required": [
+                  "name",
+                  "role"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "apiKey": {
+                      "type": "string"
+                    },
+                    "connection": {
+                      "additionalProperties": true,
+                      "properties": {
+                        "createdAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "id": {
+                          "description": "The connection id: the agent user id (audit origin mcp:<id>).",
+                          "format": "uuid",
+                          "type": "string"
+                        },
+                        "isActive": {
+                          "type": "boolean"
+                        },
+                        "keyPrefix": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastUsedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        },
+                        "templateId": {
+                          "anyOf": [
+                            {
+                              "format": "uuid",
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "name",
+                        "role",
+                        "templateId",
+                        "isActive",
+                        "keyPrefix",
+                        "lastUsedAt",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "connection",
+                    "apiKey"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Create an AI connection: an agent user and its API key (agent-principal-v1)",
+        "tags": [
+          "mcp-connections"
+        ],
+        "x-lan": "host",
+        "x-stale": "n-a"
+      }
+    },
+    "/api/v1/mcp-connections/{id}": {
+      "delete": {
+        "operationId": "delete_api_v1_mcp_connections_by_id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "revoked": {
+                      "const": true,
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Success"
+          },
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ],
+        "summary": "Remove an AI connection: its key stops working at once (agent-principal-v1)",
+        "tags": [
+          "mcp-connections"
+        ],
+        "x-lan": "host",
+        "x-stale": "n-a"
       }
     },
     "/api/v1/payment-terms": {
