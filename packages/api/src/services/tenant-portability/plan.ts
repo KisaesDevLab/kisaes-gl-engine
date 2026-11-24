@@ -343,6 +343,9 @@ export const SOFT_REFS: Record<string, SoftRefClass> = {
   'audit_log.user_id': 'identity',
   'audit_log.entity_id': 'polymorphic',
   'audit_log.company_id': 'tenant-ref:companies',
+  // U-297: the agent action a row belongs to; kept as written, like the
+  // text origin 'mcp:<agent user id>' beside it (an audit fact, never joined).
+  'audit_log.action_id': 'opaque',
   'bank_connection_identities.created_by': 'identity',
   'bank_import_batches.account_id': 'tenant-ref:accounts',
   'bank_import_batches.created_by': 'identity',
