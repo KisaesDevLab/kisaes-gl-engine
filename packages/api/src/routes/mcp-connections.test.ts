@@ -227,6 +227,8 @@ describe('agent principals (U-297)', () => {
     expect([undo.status, code(undo)]).toEqual([403, 'AGENT_NOT_ALLOWED']);
     const archive = await call('POST', `/api/v1/tenants/${tenantId}/archives`, { passphrase: 'x' }, asAgent);
     expect(archive.status).toBe(403);
+    const del = await call('DELETE', `/api/v1/company/${companyId}`, undefined, asAgent);
+    expect([del.status, code(del)]).toEqual([403, 'AGENT_NOT_ALLOWED']);
     const keys = await call('GET', '/api/v1/api-keys', undefined, asAgent);
     expect([keys.status, code(keys)]).toEqual([403, 'SESSION_AUTH_REQUIRED']);
     // Nothing above changed: no closing date, no password, no new user.
