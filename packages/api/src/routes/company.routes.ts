@@ -48,6 +48,7 @@ import { desktopOnly } from '../desktop/features.js';
 import * as company1099ThresholdsService from '../services/company-1099-thresholds.service.js';
 import { THRESHOLD_AMOUNT_RE } from '../services/company-1099-thresholds.service.js';
 import { FORM_1099_BOXES, type FormBox } from '../services/portal-1099.boxes.js';
+import { agentNotAllowed, isAgentPrincipal } from '../services/principal-context.js';
 
 // Force the on-disk extension from the claimed MIME, not from the upload
 // filename. An uploader can send `Content-Type: image/png` with an
@@ -774,6 +775,8 @@ companyRouter.delete('/stripe', requirePaymentsAdmin, async (req, res) => {
 // not shadow the named routes above. Owner-only; guarded server-side against
 // deleting the last company or one with real activity.
 companyRouter.delete('/:id', async (req, res) => {
+  // U-297 / Q-332: deleting a company is never an AI connection's.
+  if (isAgentPrincipal(req)) throw agentNotAllowed();
   if (req.userRole !== 'owner' && !req.isSuperAdmin) throw AppError.forbidden('Only owners can delete companies');
   const result = await companyService.deleteCompany(req.tenantId, req.params['id']!, req.userId);
   res.json(result);

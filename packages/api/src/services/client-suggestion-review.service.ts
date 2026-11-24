@@ -556,7 +556,7 @@ export async function notifyStaffOfSuggestions(
         eq(userTenantAccess.isActive, true),
         inArray(users.id, listed),
         eq(users.isActive, true),
-        sql`${users.userType} <> 'client'`,
+        sql`${users.userType} NOT IN ('client', 'agent')`,
       ));
     if (recipients.length === 0) return { sent: 0, skipped: 'no_eligible_recipients' };
     // Only used to word the link (Practice vs Banking), not to pick people.

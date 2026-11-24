@@ -276,7 +276,7 @@ export async function assertNotifyUsersInTenant(tenantId: string, ids: string[])
         eq(userTenantAccess.isActive, true),
         inArray(users.id, unique),
         eq(users.isActive, true),
-        sql`${users.userType} <> 'client'`,
+        sql`${users.userType} NOT IN ('client', 'agent')`,
       ),
     );
   const found = new Set(rows.map((r) => r.id));
@@ -1450,7 +1450,7 @@ export async function notifyStaffOfSubmission(
           eq(userTenantAccess.isActive, true),
           inArray(users.id, ids),
           eq(users.isActive, true),
-          sql`${users.userType} <> 'client'`,
+          sql`${users.userType} NOT IN ('client', 'agent')`,
         ),
       );
     if (recipients.length === 0) return { sent: 0, skipped: 'no_eligible_recipients' };
