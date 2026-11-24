@@ -126,6 +126,10 @@ async function createSession(
   context?: { tenantId?: string | null; role?: string | null; authTime?: Date | null; chainId?: string },
   exec: DbOrTx = db,
 ): Promise<string> {
+  // U-297: an agent user (an AI connection) never holds a session; every
+  // sign-in and refresh path stores its session here.
+  const [principal] = await exec.select({ userType: users.userType }).from(users).where(eq(users.id, userId)).limit(1);
+  if (principal?.userType === 'agent') throw AppError.unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
   const chainId = context?.chainId ?? crypto.randomUUID();
   // 7 days from now, computed as an exact 7-day offset rather than via
   // `setDate(getDate() + 7)` which is TZ-sensitive during DST transitions.
@@ -918,6 +922,9 @@ export async function logout(refreshToken: string): Promise<void> {
 // Shared by the self-service forgot-password flow and the owner/admin
 // "send password reset" actions (Team page, admin user list).
 async function issuePasswordReset(userId: string, email: string): Promise<void> {
+  // U-297: an agent user has no password to reset (forgot-password stays silent).
+  const [target] = await db.select({ userType: users.userType }).from(users).where(eq(users.id, userId)).limit(1);
+  if (target?.userType === 'agent') return;
   const rawToken = crypto.randomBytes(32).toString('hex');
   const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
   const expiresAt = new Date();
@@ -1213,6 +1220,8 @@ export async function listTenantUsers(tenantId: string) {
     displayName: r.display_name,
     role: r.tenant_role || r.user_role,
     userType: r.user_type === 'client' ? 'client' : 'staff',
+    // U-297: an AI connection (agent user); userType stays 'staff' for older clients.
+    isAgent: r.user_type === 'agent',
     isActive: r.tenant_active && r.user_active,
     tenantActive: r.tenant_active,
     isSuperAdmin: r.is_super_admin,
@@ -1288,6 +1297,9 @@ export async function setTemporaryPassword(
   if (!user) throw AppError.forbidden('This person is not on this company\'s team', 'USER_NOT_IN_TENANT');
   if (user.isSuperAdmin) {
     throw AppError.forbidden('The main Admin resets their password with the recovery key', 'SUPER_ADMIN_TARGET');
+  }
+  if (user.userType === 'agent') {
+    throw AppError.badRequest('An AI connection has no password. Remove the connection instead.', 'AGENT_USER');
   }
   const temporaryPassword = crypto.randomBytes(8).toString('hex');
   const passwordHash = await bcrypt.hash(temporaryPassword, env.BCRYPT_ROUNDS);
@@ -1405,6 +1417,7 @@ export async function updateUser(
             AND uta.user_id != ${userId}
             AND uta.is_active = true
             AND u.is_active = true
+            AND u.user_type <> 'agent'
             AND COALESCE(uta.role, u.role) = 'owner'
           LIMIT 1
         `);

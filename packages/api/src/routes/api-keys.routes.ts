@@ -4,7 +4,7 @@
 
 import crypto from 'crypto';
 import { Router } from 'express';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { authenticate, requireSessionAuth } from '../middleware/auth.js';
 import { db } from '../db/index.js';
 import { apiKeys } from '../db/schema/index.js';
@@ -23,6 +23,10 @@ apiKeysRouter.use((req, _res, next) => {
   if (req.userType === 'client') throw AppError.notFound('Not found');
   next();
 });
+
+// U-297: an AI connection's key (owned by an agent user) is managed only
+// through /mcp-connections; this router neither lists nor changes it.
+const notAgentKey = sql`NOT EXISTS (SELECT 1 FROM users u WHERE u.id = ${apiKeys.userId} AND u.user_type = 'agent')`;
 
 function generateApiKey(): string {
   return 'sk_live_' + crypto.randomBytes(32).toString('hex');
@@ -43,7 +47,7 @@ apiKeysRouter.get('/', async (req, res) => {
     lastUsedAt: apiKeys.lastUsedAt,
     expiresAt: apiKeys.expiresAt,
     createdAt: apiKeys.createdAt,
-  }).from(apiKeys).where(eq(apiKeys.tenantId, req.tenantId));
+  }).from(apiKeys).where(and(eq(apiKeys.tenantId, req.tenantId), notAgentKey));
 
   res.json({ keys });
 });
@@ -140,14 +144,14 @@ apiKeysRouter.post('/', async (req, res) => {
 apiKeysRouter.put('/:id', async (req, res) => {
   const { name, isActive } = req.body;
   const before = await db.query.apiKeys.findFirst({
-    where: and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)),
+    where: and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId), notAgentKey),
   });
   const [updated] = await db.update(apiKeys)
     .set({
       ...(name !== undefined ? { name } : {}),
       ...(isActive !== undefined ? { isActive } : {}),
     })
-    .where(and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)))
+    .where(and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId), notAgentKey))
     .returning();
 
   if (!updated) {
@@ -163,11 +167,11 @@ apiKeysRouter.put('/:id', async (req, res) => {
 // Revoke API key
 apiKeysRouter.delete('/:id', async (req, res) => {
   const before = await db.query.apiKeys.findFirst({
-    where: and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)),
+    where: and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId), notAgentKey),
   });
   await db.update(apiKeys)
     .set({ isActive: false })
-    .where(and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId)));
+    .where(and(eq(apiKeys.id, req.params['id']!), eq(apiKeys.tenantId, req.tenantId), notAgentKey));
   if (before) {
     await auditLog(req.tenantId, 'update', 'api_key', req.params['id']!,
       { name: before.name, isActive: before.isActive },

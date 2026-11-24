@@ -1989,4 +1989,23 @@ export const DESKTOP_CAPABILITIES: readonly string[] = [
    * (403 INTEGRITY_ADMIN_REQUIRED). The desktop profile's daily balance auto-repair (balanceValidation) is off.
    */
   'integrity-v1',
+  /**
+   * U-297 (ClientLedger A11; migration 0291_agent_principal, additive + rollback). Agent principals: users.user_type
+   * 'agent' is an AI connection. POST /api/v1/mcp-connections {name, role: owner|accountant|bookkeeper|readonly,
+   * templateId? (bookkeeper only)} -> 201 {connection: {id, name, role, templateId, isActive, keyPrefix, lastUsedAt,
+   * createdAt}, apiKey} mints the agent user and its API key in one transaction (key shown once); GET -> {connections};
+   * DELETE /{id} -> {revoked: true} (keys, access and user off; the next request is 401). Session only (403
+   * SESSION_AUTH_REQUIRED for any API key) and team_management (403 OWNER_REQUIRED); host only in LAN mode. The
+   * connection id is the agent user id. An agent key's role is read live from its access row on every request (never the
+   * key's stored role), so Team role/template changes (PATCH /company/users/{id}, PUT /company/users/{id}/permissions)
+   * apply on its next request; a deactivated access row is 401 AGENT_REVOKED. Agents never sign in, hold a session,
+   * download token or password reset, and never pass the Q-332 powers even as owner: team_management (users, roles,
+   * permissions, sensitive accounts), the closing date and its password (CLOSING_DATE_ADMIN_ONLY /
+   * CLOSING_PASSWORD_OWNER_REQUIRED), TB owner routes, reconciliation undo, backup/restore/export and company archive
+   * routes (403 AGENT_NOT_ALLOWED), and never count as the company's last owner. Audit rows an agent writes carry
+   * origin 'mcp:{id}' (and action_id once U-300 names a validated action); human rows leave both null. GET
+   * /company/users rows add isAgent; /api-keys neither lists nor changes agent keys; the engine's own /mcp server
+   * refuses them.
+   */
+  'agent-principal-v1',
 ];

@@ -6,6 +6,7 @@ import { db, type DbOrTx } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/audit-log.js';
 import { stripSecretKeys } from '../utils/secret-keys.js';
 import { currentLanContext } from '../desktop/lan-context.js';
+import { auditPrincipalColumns } from '../services/principal-context.js';
 
 /**
  * LAN workstation requests (U-289) record the workstation: its address in
@@ -15,6 +16,19 @@ import { currentLanContext } from '../desktop/lan-context.js';
 function lanOrigin(): { ipAddress?: string; userAgent?: string } {
   const ctx = currentLanContext();
   return ctx ? { ipAddress: ctx.peerIp, userAgent: `lan-device:${ctx.device}` } : {};
+}
+
+/**
+ * Agent principals (U-297) stamp origin ('mcp:<agent user id>') and, once
+ * the request names a validated action, action_id. Human rows leave both
+ * NULL, as before. Exported for the few direct audit_log inserts.
+ */
+export function auditOrigin(): { origin?: string; actionId?: string } {
+  const p = auditPrincipalColumns();
+  return {
+    ...(p.origin ? { origin: p.origin } : {}),
+    ...(p.actionId ? { actionId: p.actionId } : {}),
+  };
 }
 
 /**
@@ -50,6 +64,7 @@ export async function auditLog(
     afterData: after ? JSON.stringify(stripSecretKeys(after)) : null,
     userId,
     ...lanOrigin(),
+    ...auditOrigin(),
   });
 }
 
@@ -66,7 +81,7 @@ export async function auditLogMany(
   executor?: DbOrTx,
 ): Promise<void> {
   const exec = executor ?? db;
-  const origin = lanOrigin();
+  const origin = { ...lanOrigin(), ...auditOrigin() };
   for (let i = 0; i < rows.length; i += 500) {
     await exec.insert(auditLogTable).values(rows.slice(i, i + 500).map((r) => ({
       tenantId,

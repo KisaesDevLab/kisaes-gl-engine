@@ -45,6 +45,7 @@ import { closingPasswordLimiter } from '../middleware/closing-password-limiter.j
 import { takeClosingPassword, lockContextMiddleware } from '../services/lock-context.js';
 import { authorizeLockDateChange } from '../services/closing-password.service.js';
 import { fsRouter } from './tb-fs.routes.js';
+import { agentNotAllowed, isAgentPrincipal } from '../services/principal-context.js';
 
 // Trial Balance module router (docs/tb/BUILD_PLAN.md). Firm-side only:
 // client-type users get a 404 (surface hidden, same pattern as
@@ -86,6 +87,11 @@ tbRouter.use(requireResource('trial_balance'));
 // acts. Bookkeeper/accountant staff do TB work but don't reshape the
 // firm's code library.
 function requireTenantOwnerForTb(req: Request, _res: Response, next: NextFunction) {
+  // U-297 / Q-332: an AI connection is never the firm administrator.
+  if (isAgentPrincipal(req)) {
+    next(agentNotAllowed());
+    return;
+  }
   if (req.isSuperAdmin || req.userRole === 'owner') {
     next();
     return;
@@ -524,7 +530,7 @@ tbRouter.put('/closing-date', requireTenantOwnerForTb, closingPasswordLimiter, (
     let newHash: string | null = null;
     if ((before.lockDate ?? null) !== closingDate || password !== undefined) {
       ({ newHash } = await authorizeLockDateChange(tx, req.tenantId, req.companyId!, password, {
-        userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin,
+        userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin, principalKind: req.principalKind,
       }));
     }
     const [row] = await tx.update(companies).set({

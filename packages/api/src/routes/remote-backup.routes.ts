@@ -9,6 +9,7 @@ import { authenticate } from '../middleware/auth.js';
 import { requireResource } from '../middleware/permission.js';
 import * as remoteBackupService from '../services/remote-backup.service.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
+import { refuseAgentPrincipal } from '../services/principal-context.js';
 
 // Any field in `config` lands at whatever provider the user selected,
 // so untyped input flowed straight to ssh2-sftp-client / axios WebDAV /
@@ -76,6 +77,8 @@ const testConnectionSchema = z.object({
 
 export const remoteBackupRouter = Router();
 remoteBackupRouter.use(authenticate);
+// U-297 / Q-332: backup, restore and export are never an AI connection's.
+remoteBackupRouter.use(refuseAgentPrincipal);
 // Backup destinations/policies are a company-settings surface: GETs
 // (config/history) need view, PUT /config + POST /test + POST /trigger
 // need update (owner/accountant by default; tailored via the Team page).

@@ -14,6 +14,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import { auditLog as auditLogTable } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { auditOrigin } from '../middleware/audit.js';
 import { sortDirSql } from '../utils/list-query.js';
 import { bulkUpdateTransactions } from './ledger.service.js';
 import { recordUserDecision } from './ai-categorization.service.js';
@@ -292,6 +293,7 @@ async function auditMarks(
   via: 'mark' | 'approve' | 'recategorize',
 ): Promise<void> {
   if (feedItemIds.length === 0) return;
+  const origin = auditOrigin();
   await db.insert(auditLogTable).values(feedItemIds.map((id) => ({
     tenantId,
     action: 'update',
@@ -300,6 +302,7 @@ async function auditMarks(
     beforeData: null,
     afterData: JSON.stringify({ reviewed, via }),
     userId: userId ?? null,
+    ...origin,
   })));
 }
 

@@ -16,6 +16,11 @@ export const auditLog = pgTable('audit_log', {
   afterData: jsonb('after_data'),
   ipAddress: varchar('ip_address', { length: 45 }),
   userAgent: text('user_agent'),
+  // U-297 (migration 0291): set only for an agent principal's changes —
+  // origin names the connection ('mcp:<agent user id>'), actionId the agent
+  // action the change belongs to. NULL for every human change.
+  origin: varchar('origin', { length: 80 }),
+  actionId: uuid('action_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (table) => ({
   tenantIdx: index('idx_audit_tenant').on(table.tenantId),

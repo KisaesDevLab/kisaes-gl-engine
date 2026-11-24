@@ -29,6 +29,7 @@ import { can } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { AppError } from '../utils/errors.js';
 import { resolvePermissionsForRequest } from '../middleware/permission.js';
+import { runAsPrincipal } from './principal-context.js';
 
 interface ViewerStore {
   req: Request;
@@ -59,7 +60,7 @@ export function currentViewer(): Request | undefined {
  */
 export function reenterViewer(req: Request, _res: Response, next: NextFunction): void {
   if (req.userId && req.tenantId) {
-    runAsViewer(req, next);
+    runAsViewer(req, () => runAsPrincipal(req, next));
     return;
   }
   next();

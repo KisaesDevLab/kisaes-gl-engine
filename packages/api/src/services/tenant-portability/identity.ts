@@ -93,8 +93,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 /** Roles an archived user row or access row may carry (closed list; `users.role` and `user_tenant_access.role`). */
 export const ARCHIVE_USER_ROLES: readonly string[] = TENANT_ACCESS_ROLES;
-/** `users.user_type` values an archive may carry. */
-export const ARCHIVE_USER_TYPES: readonly string[] = ['staff', 'client'];
+/**
+ * `users.user_type` values an archive may carry. 'agent' (U-297): an AI
+ * connection's user travels like any member named by the company's access or
+ * audit rows; its API key never does (api_keys is install-local), so a
+ * restored agent cannot act until a person connects it again.
+ */
+export const ARCHIVE_USER_TYPES: readonly string[] = ['staff', 'client', 'agent'];
 const EMAIL_MAX = 255;
 const DISPLAY_NAME_MAX = 255;
 const PASSWORD_HASH_MAX = 255;

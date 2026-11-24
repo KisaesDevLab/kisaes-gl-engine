@@ -4,11 +4,12 @@
 
 import crypto from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { apiKeys, users } from '../db/schema/index.js';
+import { apiKeys, users, userTenantAccess } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { assertUserUsable } from './principal-check.js';
+import { agentOrigin } from '../services/principal-context.js';
 
 function hashKey(key: string): string {
   return crypto.createHash('sha256').update(key).digest('hex');
@@ -54,13 +55,32 @@ export async function apiKeyAuth(req: Request, _res: Response, next: NextFunctio
   assertUserUsable(req, owner);
   if (!owner) throw AppError.unauthorized('Account is deactivated');
 
+  // U-297 (agent-principal-v1): an agent user's key never replays the role
+  // stored on the key. The role is read live from the agent's access row for
+  // the key's company (falling back to users.role, as refresh() does), so a
+  // role or template change in Team applies on the agent's next request, and
+  // a removed access row ends the key at once.
+  let role = record.role;
+  const isAgent = owner.userType === 'agent';
+  if (isAgent) {
+    const access = await db.query.userTenantAccess.findFirst({
+      where: and(eq(userTenantAccess.userId, owner.id), eq(userTenantAccess.tenantId, record.tenantId)),
+    });
+    if (!access || !access.isActive) throw AppError.unauthorized('This AI connection was removed.', 'AGENT_REVOKED');
+    role = access.role || owner.role;
+  }
+
   // Set request context
   req.userId = record.userId;
   req.tenantId = record.tenantId;
-  req.userRole = record.role;
+  req.userRole = role;
+  req.principalKind = isAgent ? 'agent' : undefined;
+  req.principalOrigin = isAgent ? agentOrigin(owner.id) : undefined;
+  req.principalActionId = undefined;
   // Replay the OWNER's userType, never a blanket 'staff': a key minted
   // (historically) by an external client-type user must keep every
   // client gate (practice/TB/portal-staff routers 404 on 'client').
+  // An agent stays 'staff' here; its kind is req.principalKind.
   req.userType = owner.userType === 'client' ? 'client' : 'staff';
   req.isSuperAdmin = false;
   req.impersonating = undefined;

@@ -52,6 +52,7 @@ import { backfillCheckPayees, backfillFeedItemCheckPayees } from '../services/ch
 // one source of truth. Exposed under /banking so it rides the 'banking'
 // permission the feed already requires (batch's route needs 'batch_entry').
 import { suggestAccountForContact } from '../services/batch.service.js';
+import { agentNotAllowed, isAgentPrincipal } from '../services/principal-context.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -1492,6 +1493,11 @@ bankingRouter.post('/reconciliations/:id/complete', closingPasswordLimiter, lock
 // Undo is a company-admin act (U-190): the tenant role owner, or a super
 // admin (the tb.routes.ts gate).
 function requireReconcileAdmin(req: Request, _res: Response, next: NextFunction) {
+  // U-297 / Q-334: undoing a reconciliation is a human act.
+  if (isAgentPrincipal(req)) {
+    next(agentNotAllowed());
+    return;
+  }
   if (req.isSuperAdmin || req.userRole === 'owner') {
     next();
     return;

@@ -14,6 +14,7 @@ import { getImportProgress } from '../services/tenant-export.service.js';
 import { db } from '../db/index.js';
 import { userTenantAccess } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
+import { refuseAgentPrincipal } from '../services/principal-context.js';
 
 // A merge-import rewrites the target tenant's ledger. Only users with an
 // active access grant on that tenant (and super admins) may initiate it —
@@ -45,6 +46,8 @@ const upload = multer({
 
 export const tenantExportRouter = Router();
 tenantExportRouter.use(authenticate);
+// U-297 / Q-332: backup, restore and export are never an AI connection's.
+tenantExportRouter.use(refuseAgentPrincipal);
 // Whole-book export/backup/restore is a company-administration capability:
 // it hands over the entire ledger, contacts, attachments and audit trail
 // (or deletes/replaces backups). Gate on company_settings:update so

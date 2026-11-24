@@ -228,7 +228,7 @@ companyRouter.put('/settings', requireCompanySettingsWrite, expectStamp('compani
 }), async (req, res) => {
   const company = await markClosingDateAdminRefusal(res, () => companyService.updateCompany(req.tenantId, req.companyId, req.body, req.userId, {
     password: res.locals['closingPassword'] as string | undefined,
-    actor: { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin },
+    actor: { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin, principalKind: req.principalKind },
   }));
   res.json({
     settings: {
@@ -380,7 +380,7 @@ companyRouter.put('/closing-password', requireCompanySettingsWrite, expectStamp(
   const result = await markClosingDateAdminRefusal(res, () => closingPasswordService.setClosingPassword(req.tenantId, req.companyId, {
     currentPassword: req.body.currentPassword,
     newPassword: req.body.newPassword,
-  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin }));
+  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin, principalKind: req.principalKind }));
   res.json(result);
 });
 
@@ -402,7 +402,7 @@ companyRouter.post('/closing-password/reset', requireCompanySettingsWrite, closi
   const result = await closingPasswordService.resetClosingPassword(req.tenantId, req.companyId, {
     accountPassword: req.body.accountPassword,
     newPassword: req.body.newPassword,
-  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin });
+  }, { userId: req.userId, userRole: req.userRole, isSuperAdmin: req.isSuperAdmin, principalKind: req.principalKind });
   res.json(result);
 });
 
@@ -608,6 +608,8 @@ companyRouter.get('/users', async (req, res) => {
     passwordChangeRequired: u.passwordChangeRequired,
     // Peer screen share per-user override (D9); tri-state, null = inherit.
     shareAllowed: u.shareAllowed ?? null,
+    // U-297 (agent-principal-v1): an AI connection; role and Remove only.
+    isAgent: u.isAgent,
   }));
   res.json({ users: sanitized });
 });

@@ -71,6 +71,7 @@ import { downloadsRouter } from './routes/downloads.routes.js';
 import { auditRouter } from './routes/audit.routes.js';
 import { adminRouter } from './routes/admin.routes.js';
 import { apiKeysRouter } from './routes/api-keys.routes.js';
+import { mcpConnectionsRouter } from './routes/mcp-connections.routes.js';
 import { tenantSettingsRouter } from './routes/tenant-settings.routes.js';
 import { tailscaleRouter } from './routes/tailscale.routes.js';
 import { authenticate, requireSuperAdmin } from './middleware/auth.js';
@@ -652,6 +653,8 @@ app.use('/api/v1/sensitive-doors', sensitiveDoorsRouter);
 app.use('/api/v1/admin', adminRouter);
 serverOnly.use('/api/v1/admin/tailscale', authenticate, requireSuperAdmin, tailscaleRouter);
 app.use('/api/v1/api-keys', apiKeysRouter);
+// AI connections: agent users and their keys (U-297, agent-principal-v1).
+app.use('/api/v1/mcp-connections', mcpConnectionsRouter);
 app.use('/api/v1/tenant-settings', tenantSettingsRouter);
 app.use('/api/v1/users/me/tfa', tfaRouter);
 app.use('/api/v1/auth/passkeys', passkeyRouter);

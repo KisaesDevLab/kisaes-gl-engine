@@ -36,12 +36,15 @@ import { runWithoutViewer } from '../services/visibility.js';
 import { assertPassphraseStrong, registerPassphrase, releasePassphrase } from '../services/tenant-portability/archive-crypto.js';
 import { assertArchiveJobAllowed, startJob } from '../services/tenant-portability/jobs.js';
 import { HOST_MAX_BYTES } from '../services/tenant-portability/format.js';
+import { agentNotAllowed, isAgentPrincipal } from '../services/principal-context.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** 403 unless the caller is a super admin or holds an active owner/admin access row on the tenant. */
 export async function assertTenantOwner(req: Request, tenantId: string): Promise<void> {
   if (!UUID_RE.test(tenantId)) throw AppError.notFound('Company not found');
+  // U-297 / Q-332: backup, restore and company changes are never an AI connection's.
+  if (isAgentPrincipal(req)) throw agentNotAllowed();
   if (req.isSuperAdmin) return;
   const row = await db.query.userTenantAccess.findFirst({
     where: and(eq(userTenantAccess.userId, req.userId), eq(userTenantAccess.tenantId, tenantId), eq(userTenantAccess.isActive, true)),

@@ -41,6 +41,9 @@ export const users = pgTable('users', {
   // permission templates/overrides — a supported feature, not gated
   // behind a commercial license. Portal contacts are not users and
   // live elsewhere.
+  // 'agent' (U-297, migration 0291) is a no-login principal the engine
+  // mints for an MCP connection: it owns one API key, never a session or
+  // password, and its role is read live on every request (api-key-auth.ts).
   userType: varchar('user_type', { length: 20 }).notNull().default('staff'),
   isActive: boolean('is_active').default(true),
   isSuperAdmin: boolean('is_super_admin').default(false),

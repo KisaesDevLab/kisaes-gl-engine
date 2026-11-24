@@ -8,6 +8,10 @@ import { AppError } from '../utils/errors.js';
 import { assertAdminSessionFresh } from './auth.js';
 import * as firmCapabilitiesService from '../services/firm-capabilities.service.js';
 import type { AdminScope } from '../services/firm-capabilities.service.js';
+import { isAgentPrincipal } from '../services/principal-context.js';
+
+/** Owner-parity capabilities an agent principal never holds (Q-332). */
+const AGENT_REFUSED_CAPABILITIES: ReadonlySet<FirmCapabilityKey> = new Set<FirmCapabilityKey>(['team_management']);
 
 // Firm member access rights — request guards.
 //
@@ -80,6 +84,10 @@ export function resolveAdminScopeForRequest(req: Request, cap: FirmCapabilityKey
 // Boolean form of the owner-parity rule, for handlers that need to branch
 // rather than gate (e.g. check-signature visibility).
 export async function hasTenantOwnerPower(req: Request, cap: FirmCapabilityKey): Promise<boolean> {
+  // U-297 / Q-332: users, roles and who sees which accounts are never an AI
+  // connection's power, even with the owner role. Checked before the owner
+  // shortcut.
+  if (AGENT_REFUSED_CAPABILITIES.has(cap) && isAgentPrincipal(req)) return false;
   if (req.userRole === 'owner' || req.isSuperAdmin) return true;
   if (!isElevatablePrincipal(req)) return false;
   const caps = await resolveTenantCapabilitiesForRequest(req);

@@ -36,6 +36,9 @@ export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
 
     const user = await db.query.users.findFirst({ where: eq(users.id, key.userId) });
     if (!user || !user.isActive) throw new Error('AUTH_REQUIRED: User account is inactive');
+    // U-297: an agent key works on the REST API only, where its live role and
+    // the agent rules apply; this server would replay the key's scopes.
+    if (user.userType === 'agent') throw new Error('AUTH_REQUIRED: This key is for an AI connection and works with the REST API only');
 
     const scopes = (key.scopes || 'all').split(',').filter(Boolean);
     const allowedCompanies = key.allowedCompanies ? key.allowedCompanies.split(',').filter(Boolean) : null;

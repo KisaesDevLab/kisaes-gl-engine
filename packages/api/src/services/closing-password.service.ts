@@ -18,6 +18,7 @@ import { companies, users } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
+import { isAgentPrincipal, type PrincipalKind } from './principal-context.js';
 
 /** bcrypt reads at most 72 bytes; a longer password would silently truncate. */
 export const CLOSING_PASSWORD_MAX_BYTES = 72;
@@ -147,9 +148,15 @@ export interface ClosingPasswordActor {
   userId?: string;
   userRole?: string;
   isSuperAdmin?: boolean;
+  /** 'agent' for an AI connection (U-297): never a closing-date admin. */
+  principalKind?: PrincipalKind;
 }
 
 function canSetFirstPassword(actor: ClosingPasswordActor): boolean {
+  // U-297 / Q-332: an agent principal never moves the closing date or sets
+  // its password, whatever its role (the request store is checked too, for
+  // callers that build the actor without the kind).
+  if (isAgentPrincipal(actor)) return false;
   return actor.isSuperAdmin === true || actor.userRole === 'owner';
 }
 

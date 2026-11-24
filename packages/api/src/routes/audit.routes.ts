@@ -106,7 +106,8 @@ async function auditConditions(req: Request): Promise<SQL> {
 auditRouter.get('/', describe({
   summary: 'List the audit trail',
   description: 'Response {data[], total}, newest first. Rows {id, tenant_id, user_id, userName (display name, else email; null for '
-    + 'system rows), action, entity_type, entity_id, before_data, after_data, ip_address, user_agent, created_at}. Filters: entity_type, '
+    + 'system rows), action, entity_type, entity_id, before_data, after_data, ip_address, user_agent, created_at, origin (agent-principal-v1: '
+    + '"mcp:<connection id>" for a change an AI connection made, else null), action_id (its agent action, else null)}. Filters: entity_type, '
     + 'action, start_date, end_date, search, and (audit-filters-v1) user_id, entity_id and company ("current" or a company id: rows of '
     + 'that company plus rows that belong to no company). A malformed id is 400 VALIDATION_ERROR; a company the caller cannot open is 403.',
   query: z.object({
@@ -125,7 +126,8 @@ auditRouter.get('/', describe({
     db.execute(sql`
       SELECT a.id, a.tenant_id, a.user_id,
              ${sql.raw(userDisplayNameSql('a.user_id', 'a.tenant_id'))} AS "userName",
-             a.action, a.entity_type, a.entity_id, a.before_data, a.after_data, a.ip_address, a.user_agent, a.created_at
+             a.action, a.entity_type, a.entity_id, a.before_data, a.after_data, a.ip_address, a.user_agent, a.created_at,
+             a.origin, a.action_id
       FROM audit_log a
       WHERE ${where}
       ORDER BY a.created_at DESC

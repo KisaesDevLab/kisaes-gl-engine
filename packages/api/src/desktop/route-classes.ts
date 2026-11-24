@@ -105,6 +105,8 @@ export const LAN_HOST_RULES: readonly string[] = [
   '* /api/v1/company/stripe/**',
   // API keys reach the engine without a session.
   '* /api/v1/api-keys/**',
+  // AI connections (U-297): minted, listed and removed on the host only.
+  '* /api/v1/mcp-connections/**',
   // Public API v2 writes (API-key callers; they send no record stamps).
   'WRITE /api/v2/**',
   // Report packs: a firm tool the desktop app does not offer.

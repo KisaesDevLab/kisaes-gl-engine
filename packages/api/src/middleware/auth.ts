@@ -17,6 +17,7 @@ import { workspaceFence } from '../desktop/workspace.js';
 import { hiddenAccountIdsFor, refuseHiddenIds, refuseUnconvertedReport, runAsViewer } from '../services/visibility.js';
 import { refuseReportOutsideArea } from '../services/report-areas.js';
 import { assertUserUsable } from './principal-check.js';
+import { runAsPrincipal } from '../services/principal-context.js';
 
 declare global {
   namespace Express {
@@ -83,7 +84,8 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
       // Resolve the hidden set now, on the pool, so no service ever needs a
       // second pool connection for it while holding a transaction open.
       .then(() => hiddenAccountIdsFor(req))
-      .then(() => runAsViewer(req, () => next()), next);
+      // An agent principal (U-297) also runs in its own store (audit origin).
+      .then(() => runAsViewer(req, () => runAsPrincipal(req, () => next())), next);
   });
 }
 
@@ -150,7 +152,10 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
     if (!payload) throw AppError.unauthorized('Invalid or expired download token');
     // Security review S3: a token minted before its user was turned off or given a temporary password stops
     // working at once, as the session it came from does.
-    assertUserUsable(req, await db.query.users.findFirst({ where: eq(users.id, payload.userId) }));
+    const dlUser = await db.query.users.findFirst({ where: eq(users.id, payload.userId) });
+    assertUserUsable(req, dlUser);
+    // U-297: an agent user never holds a session, so no download token either.
+    if (dlUser?.userType === 'agent') throw AppError.unauthorized('Invalid or expired download token');
     req.userId = payload.userId;
     req.tenantId = payload.tenantId;
     req.userRole = payload.userRole;
@@ -206,11 +211,14 @@ async function authenticatePrincipal(req: Request, res: Response, next: NextFunc
     // change the password, read /auth/me and sign out until it does.
     assertUserUsable(req, user);
     if (!user) throw AppError.unauthorized('Account is deactivated');
+    // U-297: an agent user (an AI connection) authenticates with its API key
+    // only; a session token naming one is refused whatever minted it.
+    if (user.userType === 'agent') throw AppError.unauthorized('Invalid or expired token');
 
     req.userId = payload.userId;
     req.tenantId = payload.tenantId;
     req.userRole = payload.role;
-    // user.userType is constrained at the DB layer (CHECK IN ('staff','client'))
+    // user.userType is constrained at the DB layer (CHECK IN ('staff','client','agent'); agents refused above)
     // but defaults to 'staff' for any column null/legacy edge.
     req.userType = user.userType === 'client' ? 'client' : 'staff';
     req.isSuperAdmin = !!user.isSuperAdmin;

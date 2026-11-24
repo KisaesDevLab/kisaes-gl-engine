@@ -9,6 +9,7 @@ import { authenticate, requireSuperAdmin } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permission.js';
 import { validatePassphraseStrength } from '../services/portable-encryption.service.js';
 import * as backupService from '../services/backup.service.js';
+import { refuseAgentPrincipal } from '../services/principal-context.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
 
@@ -50,6 +51,8 @@ function encodeContentDisposition(fileName: string, inline = false): string {
 
 export const backupRouter = Router();
 backupRouter.use(authenticate);
+// U-297 / Q-332: backup, restore and export are never an AI connection's.
+backupRouter.use(refuseAgentPrincipal);
 // Whole-book export/backup/restore is a company-administration capability:
 // it hands over the entire ledger, contacts, attachments and audit trail
 // (or deletes/replaces backups). Gate on company_settings:update so
