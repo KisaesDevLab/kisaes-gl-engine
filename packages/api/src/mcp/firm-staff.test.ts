@@ -511,13 +511,13 @@ describe('MCP in a client file with two companies', () => {
     expect(await revenue(file.companyId)).toBe(100);
     expect(await revenue(secondId)).toBe(900);
 
-    const listed = data(await call('list_transactions', { company_id: secondId })).map((t: any) => t.id);
+    const listed = data(await call('list_transactions', { company_id: secondId })).map((t: { id: string }) => t.id);
     expect(listed).toContain(b.id);
     expect(listed).not.toContain(a.id);
     const viaResource = await post(staffKey, {
       jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: `kisbooks://company/${secondId}/recent-transactions` },
     });
-    const rows = JSON.parse(viaResource.body.result.contents[0].text).map((t: any) => t.id);
+    const rows = JSON.parse(viaResource.body.result.contents[0].text).map((t: { id: string }) => t.id);
     expect(rows).toContain(b.id);
     expect(rows).not.toContain(a.id);
   });
@@ -550,7 +550,7 @@ describe('MCP in a client file with two companies', () => {
       tenantId: file.tenantId, bankConnectionId: connection!.id, feedDate: '2026-03-02', amount: '5.0000', description: 'unstamped',
     }).returning();
 
-    const idsIn = async (companyId: string) => data(await call('list_bank_feed_items', { company_id: companyId })).map((f: any) => f.id);
+    const idsIn = async (companyId: string) => data(await call('list_bank_feed_items', { company_id: companyId })).map((f: { id: string }) => f.id);
     expect(await idsIn(file.companyId)).toEqual(expect.arrayContaining([stamped!.id, unstamped!.id]));
     expect(await idsIn(secondId)).toEqual([]);
 

@@ -105,15 +105,15 @@ const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   },
   'bills/payable': {
     name: 'Payable Bills', description: 'Unpaid bills with balance due', scope: 'read', access: view('bills'),
-    read: async (c) => (await import('../services/bill.service.js')).getPayableBills(c.tenantId, { companyId: c.companyId, companyIncludesNull: true }),
+    read: async (c) => (await import('../services/bill.service.js')).getPayableBills(c.tenantId, { companyId: c.readCompanyId, companyIncludesNull: true }),
   },
   'bill-payments': {
     name: 'Bill Payments', description: 'Recent bill payments', scope: 'read', access: view('pay_bills'),
-    read: async (c) => (await import('../services/bill-payment.service.js')).listBillPayments(c.tenantId, { limit: 100, offset: 0, companyId: c.companyId }),
+    read: async (c) => (await import('../services/bill-payment.service.js')).listBillPayments(c.tenantId, { limit: 100, offset: 0, companyId: c.readCompanyId }),
   },
   'vendor-credits': {
     name: 'Vendor Credits', description: 'Vendor credits with remaining balance', scope: 'read', access: view('vendor_credits'),
-    read: async (c) => (await import('../services/vendor-credit.service.js')).listVendorCredits(c.tenantId, { limit: 100, offset: 0 }, c.companyId),
+    read: async (c) => (await import('../services/vendor-credit.service.js')).listVendorCredits(c.tenantId, { limit: 100, offset: 0 }, c.readCompanyId),
   },
   recurring: {
     name: 'Recurring Schedules', description: 'Active recurring transactions', scope: 'read', access: view('recurring'),
@@ -121,11 +121,11 @@ const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   },
   budgets: {
     name: 'Budgets', description: 'Budgets defined for this company', scope: 'read', access: view('budgets'),
-    read: async (c) => (await import('../services/budget.service.js')).list(c.tenantId, { companyId: c.companyId }),
+    read: async (c) => (await import('../services/budget.service.js')).list(c.tenantId, { companyId: c.readCompanyId }),
   },
   'checks/print-queue': {
     name: 'Check Print Queue', description: 'Checks queued for printing', scope: 'read', access: view('checks'),
-    read: async (c) => (await import('../services/check.service.js')).getPrintQueue(c.tenantId, undefined, c.companyId),
+    read: async (c) => (await import('../services/check.service.js')).getPrintQueue(c.tenantId, undefined, c.readCompanyId),
   },
   reconciliations: {
     name: 'Reconciliations', description: 'Reconciliation history', scope: 'read', access: view('banking'),
@@ -134,7 +134,7 @@ const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   },
   items: {
     name: 'Items', description: 'Products / services catalog', scope: 'read', access: view('items'),
-    read: async (c) => (await import('../services/items.service.js')).list(c.tenantId, { limit: 200, offset: 0 }, c.companyId),
+    read: async (c) => (await import('../services/items.service.js')).list(c.tenantId, { limit: 200, offset: 0 }, c.readCompanyId),
   },
   tags: {
     name: 'Tags', description: 'Tag groups and tags', scope: 'read', access: view('tags'),

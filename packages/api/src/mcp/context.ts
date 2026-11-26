@@ -112,11 +112,12 @@ export function getActiveCompany(sessionKey: string): string | undefined {
  * is not offered, as middleware/company.ts skips it. A write is stamped
  * with, and checked against, the company it names, the way the app does it.
  *
- * Reports, transaction, invoice, bill and bank feed lists show the company
- * named and refuse a record stamped with a sibling company (tools.ts). What
- * the app itself keeps for the whole client file stays so here: the chart
- * of accounts and its balances, contacts, tags, recurring schedules and the
- * dashboard figures. So MCP is on for a company only while every company in
+ * In a file with more than one company, reports and the transaction,
+ * invoice, bill and bank feed lists show the company named, and a record
+ * stamped with a sibling company is refused (tools.ts). What the app itself
+ * keeps for the whole client file stays so here: the chart of accounts and
+ * its balances, contacts, tags, the dashboard figures, and reconciliation
+ * (it follows the account, which carries no company). So MCP is on for a company only while every company in
  * its file has it on, and one gap remains: an accountant excluded from one
  * company of a file still sees it inside those file-wide figures when
  * working in a sibling company.
@@ -283,8 +284,10 @@ export async function resolveClient(
   }
 
   const user = await db.query.users.findFirst({ where: eq(users.id, auth.userId), columns: { isSuperAdmin: true } });
+  const inFile = await db.select({ id: companies.id }).from(companies).where(eq(companies.tenantId, company.tenantId)).limit(2);
   return {
     companyId: company.id,
+    readCompanyId: inFile.length > 1 ? company.id : undefined,
     companyName: company.name,
     tenantId: company.tenantId,
     role: company.role,

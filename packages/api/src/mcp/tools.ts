@@ -20,7 +20,7 @@ import {
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
-  accounts, bankConnections, bankFeedItems, companies, contacts, journalLines, reconciliations, transactions,
+  accounts, bankConnections, bankFeedItems, companies, contacts, journalLines, reconciliations, recurringSchedules, transactions,
 } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { escapeLike } from '../utils/sql-like.js';
@@ -43,6 +43,12 @@ const AP_REPORT = ['reports', 'bills'] as const;
 // file's, as the app's screens do, and it refuses to act on a row stamped
 // with a sibling company. What the app itself keeps file-wide stays so
 // here: accounts, contacts, tags, recurring schedules and the dashboard.
+//
+// A read hands the services ctx.readCompanyId, which is set only when the
+// file holds more than one company. In a one-company file nothing is
+// filtered, so rows written before company stamps existed (or by an older
+// MCP build, which did not stamp) still count: the report builders match a
+// company exactly and would otherwise drop them.
 
 /** The selected company's rows, and the file's. */
 const inCompany = (column: AnyColumn, ctx: ToolContext) => or(isNull(column), eq(column, ctx.companyId));
@@ -202,7 +208,7 @@ companyTool('list_contacts', {
   scope: 'read', resource: 'contacts', mode: 'read',
   handler: async (p, ctx) => {
     const { list } = await import('../services/contacts.service.js');
-    return list(ctx.tenantId, { limit: 200, offset: 0, contactType: p.type }, ctx.companyId);
+    return list(ctx.tenantId, { limit: 200, offset: 0, contactType: p.type }, ctx.readCompanyId);
   },
 });
 
@@ -430,7 +436,7 @@ companyTool('list_items', {
   scope: 'read', resource: 'items', mode: 'read',
   handler: async (_p, ctx) => {
     const { list } = await import('../services/items.service.js');
-    return list(ctx.tenantId, { limit: 200, offset: 0 }, ctx.companyId);
+    return list(ctx.tenantId, { limit: 200, offset: 0 }, ctx.readCompanyId);
   },
 });
 
@@ -937,7 +943,7 @@ companyTool('run_profit_loss', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildProfitAndLoss } = await import('../services/report.service.js');
-    return buildProfitAndLoss(ctx.tenantId, p.start_date, p.end_date, p.basis ?? 'accrual', ctx.companyId, p.tag_id ?? null);
+    return buildProfitAndLoss(ctx.tenantId, p.start_date, p.end_date, p.basis ?? 'accrual', ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -948,7 +954,7 @@ companyTool('run_balance_sheet', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildBalanceSheet } = await import('../services/report.service.js');
-    return buildBalanceSheet(ctx.tenantId, p.as_of_date, 'accrual', ctx.companyId, p.tag_id ?? null);
+    return buildBalanceSheet(ctx.tenantId, p.as_of_date, 'accrual', ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -959,7 +965,7 @@ companyTool('run_balance_sheet_basis', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildBalanceSheet } = await import('../services/report.service.js');
-    return buildBalanceSheet(ctx.tenantId, p.as_of_date, p.basis ?? 'accrual', ctx.companyId);
+    return buildBalanceSheet(ctx.tenantId, p.as_of_date, p.basis ?? 'accrual', ctx.readCompanyId);
   },
 });
 
@@ -970,7 +976,7 @@ companyTool('run_trial_balance', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildTrialBalance } = await import('../services/report.service.js');
-    return buildTrialBalance(ctx.tenantId, p.start_date, p.end_date, ctx.companyId, p.tag_id ?? null);
+    return buildTrialBalance(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -981,7 +987,7 @@ companyTool('run_general_ledger', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildGeneralLedger } = await import('../services/report.service.js');
-    return buildGeneralLedger(ctx.tenantId, p.start_date, p.end_date, ctx.companyId, p.tag_id ?? null);
+    return buildGeneralLedger(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -992,7 +998,7 @@ companyTool('run_cash_flow', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildCashFlowStatement } = await import('../services/report.service.js');
-    return buildCashFlowStatement(ctx.tenantId, p.start_date, p.end_date, ctx.companyId, p.tag_id ?? null);
+    return buildCashFlowStatement(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -1003,7 +1009,7 @@ companyTool('run_expense_by_category', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildExpenseByCategory } = await import('../services/report.service.js');
-    return buildExpenseByCategory(ctx.tenantId, p.start_date, p.end_date, ctx.companyId, p.tag_id ?? null);
+    return buildExpenseByCategory(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -1014,7 +1020,7 @@ companyTool('run_expense_by_vendor', {
   scope: 'reports', resource: AP_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildExpenseByVendor } = await import('../services/report.service.js');
-    return buildExpenseByVendor(ctx.tenantId, p.start_date, p.end_date, ctx.companyId, p.tag_id ?? null);
+    return buildExpenseByVendor(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -1025,7 +1031,7 @@ companyTool('run_ar_aging', {
   scope: 'reports', resource: AR_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildARAgingSummary } = await import('../services/report.service.js');
-    return buildARAgingSummary(ctx.tenantId, p.as_of_date, ctx.companyId, p.tag_id ?? null);
+    return buildARAgingSummary(ctx.tenantId, p.as_of_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -1036,7 +1042,7 @@ companyTool('run_customer_balance', {
   scope: 'reports', resource: AR_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildCustomerBalanceSummary } = await import('../services/report.service.js');
-    return buildCustomerBalanceSummary(ctx.tenantId, ctx.companyId, p.tag_id ?? null);
+    return buildCustomerBalanceSummary(ctx.tenantId, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -1047,7 +1053,7 @@ companyTool('run_vendor_balance', {
   scope: 'reports', resource: AP_REPORT, mode: 'read',
   handler: async (_p, ctx) => {
     const { buildVendorBalanceSummary } = await import('../services/report.service.js');
-    return buildVendorBalanceSummary(ctx.tenantId, ctx.companyId);
+    return buildVendorBalanceSummary(ctx.tenantId, ctx.readCompanyId);
   },
 });
 
@@ -1058,7 +1064,7 @@ companyTool('run_1099_vendor_summary', {
   scope: 'reports', resource: AP_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { build1099VendorSummary } = await import('../services/report.service.js');
-    return build1099VendorSummary(ctx.tenantId, p.year, ctx.companyId);
+    return build1099VendorSummary(ctx.tenantId, p.year, ctx.readCompanyId);
   },
 });
 
@@ -1069,7 +1075,7 @@ companyTool('run_sales_tax_liability', {
   scope: 'reports', resource: ['reports', 'sales_tax'], mode: 'read',
   handler: async (p, ctx) => {
     const { buildSalesTaxLiability } = await import('../services/report.service.js');
-    return buildSalesTaxLiability(ctx.tenantId, p.start_date, p.end_date, ctx.companyId);
+    return buildSalesTaxLiability(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId);
   },
 });
 
@@ -1088,7 +1094,7 @@ companyTool('run_check_register', {
       ctx.tenantId,
       p.account_id,
       p.start_date && p.end_date ? { startDate: p.start_date, endDate: p.end_date } : undefined,
-      ctx.companyId,
+      ctx.readCompanyId,
       p.tag_id ?? null,
     );
   },
@@ -1139,7 +1145,7 @@ companyTool('list_bills', {
       billStatus: p.status, contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date,
       overdueOnly: p.overdue_only, limit: p.limit ?? 50, offset: 0,
     });
-    return listBills(ctx.tenantId, filters, ctx.companyId);
+    return listBills(ctx.tenantId, filters, ctx.readCompanyId);
   },
 });
 
@@ -1150,7 +1156,7 @@ companyTool('get_bill', {
   scope: 'read', resource: 'bills', mode: 'read',
   handler: async (p, ctx) => {
     const { getBill } = await import('../services/bill.service.js');
-    return getBill(ctx.tenantId, p.bill_id, ctx.companyId);
+    return getBill(ctx.tenantId, p.bill_id, ctx.readCompanyId);
   },
 });
 
@@ -1200,7 +1206,7 @@ companyTool('get_payable_bills', {
   scope: 'read', resource: 'bills', mode: 'read',
   handler: async (p, ctx) => {
     const { getPayableBills } = await import('../services/bill.service.js');
-    return getPayableBills(ctx.tenantId, { contactId: p.contact_id, dueOnOrBefore: p.due_on_or_before, companyId: ctx.companyId, companyIncludesNull: true });
+    return getPayableBills(ctx.tenantId, { contactId: p.contact_id, dueOnOrBefore: p.due_on_or_before, companyId: ctx.readCompanyId, companyIncludesNull: true });
   },
 });
 
@@ -1217,7 +1223,7 @@ companyTool('list_bill_payments', {
   handler: async (p, ctx) => {
     const { listBillPayments } = await import('../services/bill-payment.service.js');
     return listBillPayments(ctx.tenantId, {
-      contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, limit: p.limit ?? 50, offset: 0, companyId: ctx.companyId,
+      contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, limit: p.limit ?? 50, offset: 0, companyId: ctx.readCompanyId,
     });
   },
 });
@@ -1275,7 +1281,7 @@ companyTool('list_vendor_credits', {
     return listVendorCredits(ctx.tenantId, {
       contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, search: p.search,
       limit: p.limit ?? 50, offset: 0,
-    }, ctx.companyId);
+    }, ctx.readCompanyId);
   },
 });
 
@@ -1307,7 +1313,7 @@ companyTool('get_available_vendor_credits', {
   scope: 'read', resource: 'vendor_credits', mode: 'read',
   handler: async (p, ctx) => {
     const { getAvailableCredits } = await import('../services/vendor-credit.service.js');
-    return getAvailableCredits(ctx.tenantId, p.vendor_id, ctx.companyId);
+    return getAvailableCredits(ctx.tenantId, p.vendor_id, ctx.readCompanyId);
   },
 });
 
@@ -1329,7 +1335,7 @@ companyTool('list_checks', {
     return listChecks(ctx.tenantId, {
       bankAccountId: p.bank_account_id, printStatus: p.print_status,
       startDate: p.start_date, endDate: p.end_date, limit: p.limit ?? 50, offset: 0,
-    }, ctx.companyId);
+    }, ctx.readCompanyId);
   },
 });
 
@@ -1369,7 +1375,7 @@ companyTool('get_check_print_queue', {
   scope: 'read', resource: 'checks', mode: 'read',
   handler: async (p, ctx) => {
     const { getPrintQueue } = await import('../services/check.service.js');
-    return getPrintQueue(ctx.tenantId, p.bank_account_id, ctx.companyId);
+    return getPrintQueue(ctx.tenantId, p.bank_account_id, ctx.readCompanyId);
   },
 });
 
@@ -1392,6 +1398,10 @@ companyTool('post_recurring_now', {
   input: { schedule_id: id('The recurring schedule') },
   scope: 'write', resource: 'recurring', mode: 'write',
   handler: async (p, ctx) => {
+    // A schedule posts into its own company, whichever one was named.
+    const [schedule] = await db.select({ companyId: recurringSchedules.companyId }).from(recurringSchedules)
+      .where(and(eq(recurringSchedules.tenantId, ctx.tenantId), eq(recurringSchedules.id, p.schedule_id))).limit(1);
+    assertSameCompany('recurring schedule', schedule?.companyId, ctx);
     const { postNext } = await import('../services/recurring.service.js');
     return postNext(ctx.tenantId, p.schedule_id);
   },
@@ -1406,7 +1416,7 @@ companyTool('list_budgets', {
   scope: 'read', resource: 'budgets', mode: 'read',
   handler: async (_p, ctx) => {
     const { list } = await import('../services/budget.service.js');
-    return list(ctx.tenantId, { companyId: ctx.companyId });
+    return list(ctx.tenantId, { companyId: ctx.readCompanyId });
   },
 });
 
@@ -1417,8 +1427,8 @@ companyTool('get_budget', {
   scope: 'read', resource: 'budgets', mode: 'read',
   handler: async (p, ctx) => {
     const { getById, getLines } = await import('../services/budget.service.js');
-    const budget = await getById(ctx.tenantId, p.budget_id, ctx.companyId);
-    const budgetLines = await getLines(ctx.tenantId, p.budget_id, ctx.companyId);
+    const budget = await getById(ctx.tenantId, p.budget_id, ctx.readCompanyId);
+    const budgetLines = await getLines(ctx.tenantId, p.budget_id, ctx.readCompanyId);
     return { budget, lines: budgetLines };
   },
 });
@@ -1431,14 +1441,14 @@ companyTool('run_budget_vs_actual', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildBudgetVsActual, runTagScopedBudgetVsActuals, getById } = await import('../services/budget.service.js');
-    const budget = await getById(ctx.tenantId, p.budget_id, ctx.companyId);
+    const budget = await getById(ctx.tenantId, p.budget_id, ctx.readCompanyId);
     const tagId = (budget as { tagId?: string | null }).tagId ?? null;
     // Tag-scoped path is the ADR 0XW semantic and only applies when the
     // budget itself is tag-scoped AND the feature flag is on. Otherwise the
     // period aggregate, so clients of tenants with TAG_BUDGETS_V1 off do
     // not regress.
-    if (tagId && env.TAG_BUDGETS_V1) return runTagScopedBudgetVsActuals(ctx.tenantId, p.budget_id, ctx.companyId);
-    return buildBudgetVsActual(ctx.tenantId, p.budget_id, p.start_date, p.end_date, ctx.companyId);
+    if (tagId && env.TAG_BUDGETS_V1) return runTagScopedBudgetVsActuals(ctx.tenantId, p.budget_id, ctx.readCompanyId);
+    return buildBudgetVsActual(ctx.tenantId, p.budget_id, p.start_date, p.end_date, ctx.readCompanyId);
   },
 });
 

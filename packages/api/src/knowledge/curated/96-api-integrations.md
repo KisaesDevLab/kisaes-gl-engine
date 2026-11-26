@@ -124,10 +124,11 @@ parameters, status, duration) — view under **Admin → MCP Audit Log**.
 
 **A client file with more than one company:** reports and the transaction,
 invoice, bill and bank feed lists show the company named. A transaction,
-bank feed item or reconciliation that belongs to another company of the
-file is refused with `WRONG_COMPANY`, and nothing is changed. The chart of
-accounts, contacts, tags, recurring schedules and the dashboard figures
-cover the whole file, as they do in the app.
+bill, bank feed item or recurring schedule that belongs to another company
+of the file is refused (`WRONG_COMPANY` or not found), and nothing is
+changed. The chart of accounts, contacts, tags and the dashboard figures
+cover the whole file, as they do in the app; so does reconciliation, which
+follows the bank account. A file with one company is not filtered at all.
 
 **send_invoice** marks an invoice as sent. It does not email the invoice;
 email it from the invoice in the app.
