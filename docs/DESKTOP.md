@@ -193,6 +193,7 @@ A static test (`desktop/users-insert-sites.test.ts`) lists every place that inse
 | `/api/peer/pm` | Vibe Practice Management peer API |
 | `/mcp` | MCP server |
 | `/oauth` | OAuth provider for third-party apps |
+| `/.well-known` | OAuth discovery documents for the MCP server |
 | `/api/v1/share` | Peer screen share (needs Redis) |
 | `/api/v1/admin/tailscale` | Tailscale remote access |
 | `/api/v1/admin/security` | Appliance recovery key, recovery file, installation id and credential re-encryption. They write or rotate boot secrets on disk. |

@@ -144,7 +144,8 @@ function mountPaths(app: Express): string[] {
     const suffix = '\\/?(?=\\/|$)';
     const src = l.regexp.source;
     if (!src.startsWith('^') || !src.endsWith(suffix)) throw new Error(`unparsed mount ${src}`);
-    out.add(src.slice(1, -suffix.length).split('\\/').join('/'));
+    // `\/` and `\.` are the only escapes a mount path here produces (/.well-known).
+    out.add(src.slice(1, -suffix.length).split('\\/').join('/').split('\\.').join('.'));
   }
   return [...out];
 }

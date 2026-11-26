@@ -47,6 +47,7 @@ export const DESKTOP_UNMOUNTED: readonly UnmountedFamily[] = [
   { prefix: '/api/peer/pm', reason: 'Vibe Practice Management peer API' },
   { prefix: '/mcp', reason: 'MCP server' },
   { prefix: '/oauth', reason: 'OAuth provider for third-party apps' },
+  { prefix: '/.well-known', reason: 'OAuth discovery documents for the MCP server' },
   { prefix: '/api/v1/share', reason: 'peer screen share (needs Redis)' },
   { prefix: '/api/v1/admin/tailscale', reason: 'Tailscale remote access' },
   // Appliance recovery file, installation id and sentinel: they write or

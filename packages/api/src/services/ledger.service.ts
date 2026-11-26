@@ -8,7 +8,7 @@ const Decimal = DecimalLib.default || DecimalLib;
 import type { JournalLineInput, TxnType, TxnStatus, PaymentMethod, BulkUpdateTransactionsInput, BulkUpdateTransactionsResult } from '@kis-books/shared';
 import { db, type DbOrTx, type Tx } from '../db/index.js';
 import { transactionWithRetry } from '../db/transaction.js';
-import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items } from '../db/schema/index.js';
+import { transactions, journalLines, accounts, companies, contacts, reconciliations, reconciliationLines, bankFeedItems, transactionTags, items, tags } from '../db/schema/index.js';
 import { AppError } from '../utils/errors.js';
 import { auditLog } from '../middleware/audit.js';
 import { env } from '../config/env.js';
@@ -283,6 +283,26 @@ async function releaseBillableLines(executor: DbOrTx, tenantId: string, txnId: s
  */
 // Exported so divergent posting paths (bill payments) can apply the
 // same tenant/company account-scope guard as postTransaction.
+/** 400 when the header contact, a line contact or a line tag is not this tenant's. */
+async function assertRefsInTenant(
+  tx: Tx,
+  tenantId: string,
+  input: { contactId?: string | null; lines: Array<{ contactId?: string | null; tagId?: string | null }> },
+): Promise<void> {
+  const contactIds = [...new Set([input.contactId, ...input.lines.map((l) => l.contactId)].filter((v): v is string => !!v))];
+  if (contactIds.length > 0) {
+    const found = await tx.select({ id: contacts.id }).from(contacts)
+      .where(and(eq(contacts.tenantId, tenantId), inArray(contacts.id, contactIds)));
+    if (found.length !== contactIds.length) throw AppError.badRequest('A contact on this entry was not found', 'VALIDATION_ERROR');
+  }
+  const tagIds = [...new Set(input.lines.map((l) => l.tagId).filter((v): v is string => !!v))];
+  if (tagIds.length > 0) {
+    const found = await tx.select({ id: tags.id }).from(tags)
+      .where(and(eq(tags.tenantId, tenantId), inArray(tags.id, tagIds)));
+    if (found.length !== tagIds.length) throw AppError.badRequest('A tag on this entry was not found', 'VALIDATION_ERROR');
+  }
+}
+
 export async function assertAccountsInScope(
   executor: DbOrTx,
   tenantId: string,
@@ -680,6 +700,11 @@ export async function postTransaction(
       companyId ?? null,
       input.lines.map((l) => l.accountId),
     );
+    // Every contact and tag an entry names must be this tenant's. The
+    // document services check their own lines; this is the last gate for
+    // the header contact and for callers that post here directly, so no
+    // entry can carry another tenant's id.
+    await assertRefsInTenant(tx, tenantId, input);
 
     // Insert transaction header
     const [txn] = await tx.insert(transactions).values({

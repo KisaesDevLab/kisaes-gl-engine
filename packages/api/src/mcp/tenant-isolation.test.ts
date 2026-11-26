@@ -45,16 +45,24 @@ async function cleanDb() {
 }
 
 function mockReq(body: any, apiKey: string) {
-  const captured: any = { status: 0, body: null };
+  const captured: any = { status: 0, body: null, headers: {} };
   const req: any = {
     headers: { authorization: `Bearer ${apiKey}` },
-    body, ip: '127.0.0.1',
+    method: 'POST', body, ip: '127.0.0.1',
   };
   const res: any = {
     status(s: number) { captured.status = s; return this; },
-    json(b: any) { captured.body = b; return this; },
+    json(b: any) { captured.body = b; if (!captured.status) captured.status = 200; return this; },
+    setHeader(name: string, value: string) { captured.headers[name.toLowerCase()] = value; return this; },
+    end() { return this; },
   };
   return { req, res, captured };
+}
+
+/** The failure a call reported: a tool error result, or a JSON-RPC error. */
+function failure(resp: any): string | undefined {
+  if (resp?.result?.isError) return resp.result.content[0].text;
+  return resp?.error?.message;
 }
 
 async function rpc(apiKey: string, method: string, params?: any): Promise<any> {
@@ -128,9 +136,9 @@ describe('MCP tenant isolation — A\'s key cannot observe or mutate B\'s data',
     const resp = await rpc(A.apiKey, 'tools/call', {
       name: 'list_bills', arguments: { company_id: B.companyId },
     });
-    expect(resp.error).toBeDefined();
-    // Specific code from context.ts validateCompanyAccess
-    expect(resp.error.message).toMatch(/ACCESS_DENIED/);
+    expect(failure(resp)).toBeDefined();
+    // Specific code from context.ts resolveClient
+    expect(failure(resp)).toMatch(/ACCESS_DENIED/);
   });
 
   it('A\'s list_bills never returns B\'s bill id', async () => {
@@ -144,23 +152,23 @@ describe('MCP tenant isolation — A\'s key cannot observe or mutate B\'s data',
     const resp = await rpc(A.apiKey, 'tools/call', {
       name: 'get_bill', arguments: { bill_id: B.billId },
     });
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toMatch(/NOT_FOUND|not found/i);
+    expect(failure(resp)).toBeDefined();
+    expect(failure(resp)).toMatch(/NOT_FOUND|not found/i);
   });
 
   it('A cannot get_transaction for B\'s transaction', async () => {
     const resp = await rpc(A.apiKey, 'tools/call', {
       name: 'get_transaction', arguments: { transaction_id: B.txnId },
     });
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toMatch(/NOT_FOUND|not found/i);
+    expect(failure(resp)).toBeDefined();
+    expect(failure(resp)).toMatch(/NOT_FOUND|not found/i);
   });
 
   it('A cannot void_transaction B\'s transaction', async () => {
     const resp = await rpc(A.apiKey, 'tools/call', {
       name: 'void_transaction', arguments: { transaction_id: B.txnId, reason: 'hostile' },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toBeDefined();
     // Confirm B's txn is still posted
     const b = await db.query.transactions.findFirst({ where: eq(transactions.id, B.txnId) });
     expect(b?.status).toBe('posted');
@@ -170,7 +178,7 @@ describe('MCP tenant isolation — A\'s key cannot observe or mutate B\'s data',
     const resp = await rpc(A.apiKey, 'tools/call', {
       name: 'void_bill', arguments: { bill_id: B.billId, reason: 'hostile' },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toBeDefined();
     const b = await db.query.transactions.findFirst({ where: eq(transactions.id, B.billId) });
     expect(b?.status).toBe('posted');
   });
@@ -187,7 +195,7 @@ describe('MCP tenant isolation — A\'s key cannot observe or mutate B\'s data',
       name: 'tag_transaction',
       arguments: { transaction_id: B.txnId, tag_ids: JSON.stringify([atag!.id]) },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toBeDefined();
 
     // No transaction_tags row should reference B's txn with A's tenant_id
     const rows = await db.execute(sql`
@@ -201,7 +209,7 @@ describe('MCP tenant isolation — A\'s key cannot observe or mutate B\'s data',
     const resp = await rpc(A.apiKey, 'tools/call', {
       name: 'get_contact', arguments: { contact_id: B.vendorId },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toBeDefined();
   });
 
   it('A\'s run_profit_loss never references B\'s ids', async () => {
@@ -218,29 +226,31 @@ describe('MCP tenant isolation — A\'s key cannot observe or mutate B\'s data',
     const resp = await rpc(A.apiKey, 'resources/read', {
       uri: `kisbooks://company/${B.companyId}/bills/payable`,
     });
-    expect(resp.error).toBeDefined();
-    expect(resp.error.message).toMatch(/ACCESS_DENIED|SCOPE_DENIED/);
+    expect(failure(resp)).toBeDefined();
+    expect(failure(resp)).toMatch(/ACCESS_DENIED|SCOPE_DENIED/);
   });
 
   it('A\'s resources/read recent-transactions with B\'s company_id is denied', async () => {
     const resp = await rpc(A.apiKey, 'resources/read', {
       uri: `kisbooks://company/${B.companyId}/recent-transactions`,
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toBeDefined();
   });
 
   it('A\'s resources/list is not filtered by B (just the URI templates)', async () => {
     const resp = await rpc(A.apiKey, 'resources/list');
     expect(resp.result).toBeDefined();
-    // Templates contain {id} placeholder — they are not per-tenant
-    const uris = resp.result.resources.map((r: any) => r.uri);
-    expect(uris.every((u: string) => u.includes('{id}') || u === 'kisbooks://companies')).toBe(true);
+    // Only the companies list is a concrete resource; the per-company ones
+    // are templates (resources/templates/list), the same for every caller.
+    expect(resp.result.resources.map((r: any) => r.uri)).toEqual(['kisbooks://companies']);
+    const templates = await rpc(A.apiKey, 'resources/templates/list');
+    expect(templates.result.resourceTemplates.every((t: any) => t.uriTemplate.includes('{company_id}'))).toBe(true);
   });
 
   it('B\'s key cannot see A\'s data either (symmetry check)', async () => {
     const resp = await rpc(B.apiKey, 'tools/call', {
       name: 'get_bill', arguments: { bill_id: A.billId },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toBeDefined();
   });
 });
