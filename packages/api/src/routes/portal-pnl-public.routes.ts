@@ -6,7 +6,7 @@ import { Router } from 'express';
 import { portalAuthenticate } from '../middleware/portal-auth.js';
 import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
-import * as flags from '../services/feature-flags.service.js';
+import { auditLog } from '../middleware/audit.js';
 import * as svc from '../services/portal-pnl.service.js';
 
 // Portal live Profit & Loss. Mounted at /api/portal/profit-loss.
@@ -43,19 +43,20 @@ function intParam(raw: unknown, name: string, def: number, max: number): number 
 portalPnlPublicRouter.get('/', async (req, res) => {
   const companyId = requireCompanyId(req);
   const { tenantId, contactId } = req.portalContact!;
-  const { bankingAccess } = await svc.assertProfitLossAccess(tenantId, contactId, companyId);
+  await svc.assertProfitLossAccess(tenantId, contactId, companyId);
   const { startDate, endDate } = svc.validateRange(
     dateParam(req.query['start_date']),
     dateParam(req.query['end_date']),
   );
-  // The unposted bank feed memo is bank activity, so it is sent on the
-  // same two conditions as the portal banking pages: the firm has portal
-  // banking switched on, and this contact has banking access for the
-  // company. P&L access alone does not carry it.
-  const includeUnpostedBankFeed = bankingAccess && await flags.isEnabled(tenantId, 'PORTAL_BANKING_V1');
-  res.json(await svc.getPortalProfitAndLoss(tenantId, companyId, startDate, endDate, {
-    includeUnpostedBankFeed,
-  }));
+  const statement = await svc.getPortalProfitAndLoss(tenantId, companyId, startDate, endDate);
+  // Every read of the statement is audited on the contact's tenant, keyed
+  // to the company: who looked, at which range, and whether it was staff
+  // previewing as the client. No figures are stored.
+  const pc = req.portalContact!;
+  await auditLog(tenantId, 'view', 'portal_profit_loss', companyId, null, {
+    portalContactId: contactId, startDate, endDate, preview: pc.isPreview === true,
+  }, pc.isPreview ? pc.previewInitiatorId : undefined);
+  res.json(statement);
 });
 
 // GET /api/portal/profit-loss/accounts/:accountId/transactions

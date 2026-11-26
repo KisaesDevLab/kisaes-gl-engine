@@ -40,18 +40,14 @@ export function parseUuid(raw: unknown): string | null {
  * Throws unless the contact is linked to this company with profit_loss_access.
  * The innerJoin on companies scoped to the session's tenant is what blocks a
  * cross-tenant probe — do not simplify it away.
- *
- * Returns the contact's banking_access for the same company, read from the
- * same row: the unposted bank feed memo is bank data, so it goes only to a
- * contact the firm has also given the banking pages.
  */
 export async function assertProfitLossAccess(
   tenantId: string,
   contactId: string,
   companyId: string,
-): Promise<{ bankingAccess: boolean }> {
+): Promise<void> {
   const link = await db
-    .select({ on: portalContactCompanies.profitLossAccess, bankingAccess: portalContactCompanies.bankingAccess })
+    .select({ on: portalContactCompanies.profitLossAccess })
     .from(portalContactCompanies)
     .innerJoin(companies, eq(companies.id, portalContactCompanies.companyId))
     .where(and(
@@ -60,11 +56,9 @@ export async function assertProfitLossAccess(
       eq(companies.tenantId, tenantId),
     ))
     .limit(1);
-  const row = link[0];
-  if (!row?.on) {
+  if (!link[0]?.on) {
     throw AppError.forbidden('Profit & Loss is not enabled for your account', 'PROFIT_LOSS_NOT_ENABLED');
   }
-  return { bankingAccess: row.bankingAccess === true };
 }
 
 export function validateRange(
@@ -108,8 +102,13 @@ async function companyBasis(tenantId: string, companyId: string): Promise<'cash'
  * look-alikes of a line already in the feed, waiting for staff to keep or
  * remove them, and counting them would show the client the same money twice.
  *
- * Scoped by feed_date to the report's inclusive range, and to what the
- * contact can see on the portal's banking pages:
+ * Who gets it: every contact with P&L access for the company (owner
+ * decision, 2026-11-26). It does not depend on banking access or on the
+ * PORTAL_BANKING_V1 flag — it is totals only, never a line a client could
+ * read a payee or an account off.
+ *
+ * Scoped by feed_date to the report's inclusive range, and to the accounts
+ * the portal's banking pages would list for the company:
  *  - the item's bank connection must be on an account those pages list
  *    (eligibleAccountConditions: an active bank or card account of the
  *    company), so a retired account's leftovers do not show up here alone;
@@ -169,17 +168,15 @@ export async function getPortalProfitAndLoss(
   companyId: string,
   startDate: string,
   endDate: string,
-  options: { includeUnpostedBankFeed?: boolean } = {},
 ) {
   const basis = await companyBasis(tenantId, companyId);
-  const pl = await reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId);
-  // The memo is bank data: left off entirely (not zeroed) unless the caller
-  // says this contact may see the company's bank activity.
-  if (!options.includeUnpostedBankFeed) return pl;
+  const [pl, unpostedBankFeed] = await Promise.all([
+    reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId),
+    getUnpostedBankFeed(tenantId, companyId, startDate, endDate),
+  ]);
   // Additive: the P&L itself is untouched so it still equals the staff
   // builder to the cent. The unposted line is a memo beneath it, never
   // folded into net income.
-  const unpostedBankFeed = await getUnpostedBankFeed(tenantId, companyId, startDate, endDate);
   return { ...pl, unpostedBankFeed };
 }
 

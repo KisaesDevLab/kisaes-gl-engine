@@ -16,12 +16,12 @@ import http from 'http';
 import crypto from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, companies, accounts, transactions, journalLines,
   portalContacts, portalContactCompanies, portalContactSessions, portalQuestions,
-  bankConnections, bankFeedItems, tenantFeatureFlags,
+  bankConnections, bankFeedItems, tenantFeatureFlags, auditLog,
 } from '../db/schema/index.js';
 import { portalPnlPublicRouter } from './portal-pnl-public.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -194,6 +194,7 @@ async function cleanDb() {
   for (const tenantId of [tenantAId, tenantBId]) {
     if (!tenantId) continue;
     await db.delete(portalQuestions).where(eq(portalQuestions.tenantId, tenantId));
+    await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
     await db.delete(tenantFeatureFlags).where(eq(tenantFeatureFlags.tenantId, tenantId));
     await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
     await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
@@ -285,20 +286,36 @@ describe('portal profit & loss router', () => {
     expect(narrow.json.unpostedBankFeed).toEqual({ count: 4, moneyIn: 0, moneyOut: 765, amount: 765 });
   });
 
-  it('leaves the bank feed memo off for a contact without banking access', async () => {
+  it('sends the bank feed memo to a contact with P&L access and no banking access', async () => {
     const r = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cNoBanking']);
     expect(r.status).toBe(200);
-    // Same statement as everyone else, and no bank figures at all.
     expect(r.json.netIncome).toBe(150);
-    expect('unpostedBankFeed' in r.json).toBe(false);
+    expect(r.json.unpostedBankFeed).toEqual({ count: 5, moneyIn: 80, moneyOut: 765, amount: 845 });
   });
 
-  it('leaves the bank feed memo off when the firm has portal banking switched off', async () => {
+  it('audits each read of the statement, and nothing when access is refused', async () => {
+    const reads = () => db.select().from(auditLog).where(and(
+      eq(auditLog.tenantId, tenantAId), eq(auditLog.entityType, 'portal_profit_loss'),
+    ));
+    const denied = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cDenied']);
+    expect(denied.status).toBe(403);
+    expect(await reads()).toHaveLength(0);
+
+    const ok = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cGranted']);
+    expect(ok.status).toBe(200);
+    const rows = await reads();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe('view');
+    expect(rows[0]!.entityId).toBe(ids['a1']);
+    const after = typeof rows[0]!.afterData === 'string' ? JSON.parse(rows[0]!.afterData) : rows[0]!.afterData;
+    expect(after).toEqual({ portalContactId: ids['cGranted'], startDate: START, endDate: END, preview: false });
+  });
+
+  it('sends the bank feed memo whether or not the firm has portal banking switched on', async () => {
     await setBankingFlag(tenantAId, false);
     const r = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cGranted']);
     expect(r.status).toBe(200);
-    expect(r.json.netIncome).toBe(150);
-    expect('unpostedBankFeed' in r.json).toBe(false);
+    expect(r.json.unpostedBankFeed).toEqual({ count: 5, moneyIn: 80, moneyOut: 765, amount: 845 });
   });
 
   it('rejects a companyId or account id that is not a UUID, and repeated date parameters', async () => {

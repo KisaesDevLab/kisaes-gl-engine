@@ -8,8 +8,8 @@
  * not profit or loss — transfers, card payments and owner draws are in it
  * too — so it is never folded into the statement's totals.
  *
- * Present on the portal P&L response only when the contact has banking
- * access for the company; a contact given the P&L alone does not get it.
+ * Sent to every contact who can open the P&L (owner decision, 2026-11-26):
+ * it is totals only, with no descriptions, payees or account names.
  */
 export interface PortalUnpostedBankFeed {
   /** Open (pending or assigned) feed items dated inside the report range. */
