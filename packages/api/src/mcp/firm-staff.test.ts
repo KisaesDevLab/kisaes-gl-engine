@@ -17,7 +17,7 @@ import crypto from 'crypto';
 import { sql, eq, and } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
 import {
-  accounts, apiKeys, auditLog, bankConnections, bankFeedItems, companies, contacts, mcpConfig, mcpRequestLog, reconciliations, transactions,
+  accounts, apiKeys, auditLog, bankConnections, bankFeedItems, companies, contacts, journalLines, mcpConfig, mcpRequestLog, reconciliations, transactions,
   userTenantAccess, users,
 } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
@@ -583,5 +583,31 @@ describe('MCP in a client file with two companies', () => {
     expect(await status()).toBe('paid');
     expect(failure(await call('send_invoice', { company_id: file.companyId, invoice_id: invoice.id }))).toBeUndefined();
     expect(await status()).toBe('paid');
+  });
+});
+
+// The report builders match a company exactly. A file with one company must
+// not be filtered at all, or every row written before company stamps existed
+// (and everything an MCP build before 0.9.242 wrote) drops out of its reports.
+describe('MCP in a client file with one company', () => {
+  it('counts rows that carry no company stamp', async () => {
+    const all = await db.query.accounts.findMany({ where: eq(accounts.tenantId, full.tenantId) });
+    const revenueId = all.find((a) => a.accountType === 'revenue')!.id;
+    const revenue = async () => Number(
+      data(await call('run_profit_loss', { company_id: full.companyId, start_date: '2026-01-01', end_date: '2026-12-31' })).totalRevenue,
+    );
+    const before = await revenue();
+    const sale = data(await call('create_cash_sale', {
+      company_id: full.companyId, date: '2026-05-01', payment_account_id: full.bankAccountId,
+      lines: [{ accountId: revenueId, quantity: '1', unitPrice: '250.00' }],
+    }));
+    expect(await revenue()).toBe(before + 250);
+
+    await db.update(transactions).set({ companyId: null }).where(eq(transactions.id, sale.id));
+    await db.update(journalLines).set({ companyId: null }).where(eq(journalLines.transactionId, sale.id));
+    expect(await revenue()).toBe(before + 250);
+    const listed = data(await call('list_transactions', { company_id: full.companyId, limit: 1000 })).map((t: { id: string }) => t.id);
+    expect(listed).toContain(sale.id);
+    expect(failure(await call('get_transaction', { company_id: full.companyId, transaction_id: sale.id }))).toBeUndefined();
   });
 });
