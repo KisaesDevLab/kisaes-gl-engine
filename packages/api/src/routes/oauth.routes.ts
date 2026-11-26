@@ -126,6 +126,14 @@ oauthRouter.get('/authorize/details', requireOAuth, async (req, res) => {
 // POST /oauth/authorize — the signed-in user approves or declines.
 oauthRouter.post('/authorize', requireOAuth, authenticate, async (req, res) => {
   try {
+    // Only a person signed in to the app can grant a connector access. An
+    // API key must not: a key limited to some scopes or companies could
+    // otherwise approve its own request and come away with a 30-day grant
+    // that has neither limit. Nor may a super admin acting as someone else
+    // hand out that person's access.
+    if (req.authKind !== 'session' || req.impersonating) {
+      throw new OAuthError('access_denied', 'Sign in to the app as yourself to approve a connection', 403);
+    }
     const request = oauthService.readAuthorizationRequest(req.body?.request);
     if (req.body?.approve === false) {
       res.json({

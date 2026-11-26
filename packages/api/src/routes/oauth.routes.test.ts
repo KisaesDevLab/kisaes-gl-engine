@@ -167,8 +167,11 @@ describe('Connecting an MCP client with OAuth', () => {
       expect(refused.status, JSON.stringify(bad)).toBe(400);
       expect(refused.json.error).toBe('invalid_redirect_uri');
     }
-    // A client that asks for a secret is not what this endpoint issues.
-    expect((await register([CLAUDE_CALLBACK], { token_endpoint_auth_method: 'client_secret_post' })).json.error).toBe('invalid_client_metadata');
+    // A client that asks for a secret is registered as a public client and told so; no secret is issued.
+    const wantsSecret = await register([CLAUDE_CALLBACK], { token_endpoint_auth_method: 'client_secret_post' });
+    expect(wantsSecret.status).toBe(201);
+    expect(wantsSecret.json.token_endpoint_auth_method).toBe('none');
+    expect(wantsSecret.json.client_secret).toBeUndefined();
     // A name is shown on the consent screen: markup never survives.
     const named = await register([CLAUDE_CALLBACK], { client_name: '<img src=x onerror=alert(1)>Claude' });
     expect(named.json.client_name).toBe('img srcx onerroralert(1)Claude');
@@ -267,6 +270,33 @@ describe('Connecting an MCP client with OAuth', () => {
     await db.update(mcpConfig).set({ oauthEnabled: false });
     expect((await mcp(refreshed.json.access_token, { jsonrpc: '2.0', id: 8, method: 'ping' })).status).toBe(401);
     await db.update(mcpConfig).set({ oauthEnabled: true });
+  });
+
+  it('only a person signed in to the app can approve: an API key cannot grant itself a connection', async () => {
+    // A read-only key limited to one company. If it could approve, it would
+    // leave with a grant that has every scope and no company limit.
+    const key = 'sk_live_' + crypto.randomBytes(32).toString('hex');
+    const company = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
+    const owner = await db.query.users.findFirst({ where: eq(users.tenantId, company!.tenantId) });
+    await db.insert(apiKeys).values({
+      tenantId: company!.tenantId, userId: owner!.id, name: 'narrow', keyPrefix: key.slice(0, 12),
+      keyHash: crypto.createHash('sha256').update(key).digest('hex'), role: 'readonly', scopes: 'read', allowedCompanies: companyId,
+    });
+    const { json: client } = await register(['http://localhost/callback']);
+    const query = new URLSearchParams({
+      response_type: 'code', client_id: client.client_id, redirect_uri: 'http://localhost:5000/callback',
+      code_challenge: pkce().challenge, code_challenge_method: 'S256',
+    });
+    const start = await http('GET', `/oauth/authorize?${query}`);
+    const request = new URL(start.headers.get('location')!).searchParams.get('request')!;
+    const codesBefore = (await db.execute(sql`SELECT count(*)::int AS n FROM oauth_authorization_codes`)).rows[0] as { n: number };
+
+    const viaKey = await http('POST', '/oauth/authorize', { json: { request }, headers: { 'x-api-key': key } });
+    expect(viaKey.status).toBe(403);
+    expect(viaKey.json.error).toBe('access_denied');
+    expect(viaKey.json.code).toBeUndefined();
+    const codesAfter = (await db.execute(sql`SELECT count(*)::int AS n FROM oauth_authorization_codes`)).rows[0] as { n: number };
+    expect(codesAfter.n).toBe(codesBefore.n);
   });
 
   it('a loopback client (mcp-remote, Claude Code) may come back on any port', async () => {

@@ -254,6 +254,28 @@ describe('MCP for firm staff: one sign-in, the clients they have access to', () 
     });
     expect(data(await call('list_companies', {}, {}, limitedKey)).map((c: any) => c.id)).toEqual([full.companyId]);
     expect(failure(await call('list_accounts', { company_id: readOnly.companyId }, {}, limitedKey))).toMatch(/^ACCESS_DENIED/);
+    // With one company allowed, that is the one it works in when none is named.
+    const unnamed = await call('list_accounts', {}, {}, limitedKey);
+    expect(failure(unnamed)).toBeUndefined();
+    expect(unnamed.result.content[1].text).toContain('Alpha Co');
+
+    // A key limited to two: asked which, it is told about those two and no others.
+    const twoKey = 'sk_live_' + crypto.randomBytes(32).toString('hex');
+    await db.insert(apiKeys).values({
+      tenantId: firm.tenantId, userId: staffId, name: 'two clients', keyPrefix: twoKey.slice(0, 12),
+      keyHash: crypto.createHash('sha256').update(twoKey).digest('hex'), role: 'accountant',
+      scopes: 'read', allowedCompanies: `${full.companyId},${readOnly.companyId}`,
+    });
+    const which = failure(await call('list_accounts', {}, {}, twoKey))!;
+    expect(which).toMatch(/^COMPANY_REQUIRED/);
+    expect(which).toContain(full.companyId);
+    expect(which).toContain(readOnly.companyId);
+    expect(which).not.toContain(firm.companyId);
+    expect(which).not.toContain('Firm Co');
+    expect(which).not.toContain('Delta Co');
+    expect(which).toContain('"total_companies":2');
+    // Its remembered choice cannot be a company outside the key either.
+    expect(failure(await call('set_active_company', { company_id: firm.companyId }, {}, twoKey))).toMatch(/^ACCESS_DENIED/);
     // And a read-only key cannot write even where the person could.
     expect(failure(await call('create_contact', { company_id: full.companyId, display_name: 'Nope', type: 'vendor' }, {}, limitedKey)))
       .toMatch(/^SCOPE_DENIED/);

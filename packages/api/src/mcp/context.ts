@@ -33,7 +33,10 @@ const activeSessions = new Map<string, string>();
 
 export function sessionKeyFor(auth: McpAuthContext, mcpSessionId?: string): string {
   const principal = auth.keyId ? `key:${auth.keyId}` : `oauth:${auth.oauthClientId ?? '-'}:${auth.userId}`;
-  return mcpSessionId ? `${principal}:${mcpSessionId}` : principal;
+  // The id is whatever the client sends back: bounded and plain before it
+  // becomes part of a map key.
+  const session = mcpSessionId && /^[\x21-\x7e]{1,128}$/.test(mcpSessionId) ? mcpSessionId : undefined;
+  return session ? `${principal}:${session}` : principal;
 }
 
 export function setActiveCompany(sessionKey: string, companyId: string): void {
@@ -119,12 +122,22 @@ export async function resolveClient(
   sessionKey: string,
   explicitCompanyId: string | undefined,
 ): Promise<McpClientContext> {
-  const all = await getUserCompanies(auth.userId);
+  const everything = await getUserCompanies(auth.userId);
+  // A key limited to some companies sees only those: when choosing a
+  // default, and in the list a COMPANY_REQUIRED answer names.
+  const all = auth.allowedCompanies
+    ? everything.filter((c) => auth.allowedCompanies!.includes(c.id))
+    : everything;
   const find = (companyId: string) => all.find((c) => c.id === companyId);
 
   let company = explicitCompanyId ? find(explicitCompanyId) : undefined;
   if (explicitCompanyId && !company) {
-    throw new McpToolError('ACCESS_DENIED', 'You do not have access to this company');
+    throw new McpToolError(
+      'ACCESS_DENIED',
+      everything.some((c) => c.id === explicitCompanyId)
+        ? 'This API key is not authorized for this company'
+        : 'You do not have access to this company',
+    );
   }
   if (!company) {
     const active = getActiveCompany(sessionKey);
@@ -143,9 +156,6 @@ export async function resolveClient(
     );
   }
 
-  if (auth.allowedCompanies && !auth.allowedCompanies.includes(company.id)) {
-    throw new McpToolError('ACCESS_DENIED', 'This API key is not authorized for this company');
-  }
   if (!company.mcpEnabled) {
     throw new McpToolError(
       'MCP_DISABLED',

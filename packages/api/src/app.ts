@@ -758,9 +758,23 @@ serverOnly.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
 serverOnly.use('/api/peer/pm', peerPmRouter);
 
 // MCP Server endpoint. Outside /api/v1, so it takes the staff IP allowlist
-// and the global limiter here: an office that fences staff to its own
-// addresses must not have that fence open at /mcp.
-serverOnly.use('/mcp', globalLimiter, staffIpAllowlist());
+// here: an office that fences staff to its own addresses must not have that
+// fence open at /mcp.
+//
+// Its own per-address ceiling, well above the global 300/min: a connector
+// service calls for every one of a firm's staff from the same few addresses,
+// so the global budget would throttle a busy office as one client. Each
+// caller is still held to 60/min by the handler; this one only bounds
+// traffic that has not authenticated yet.
+const mcpLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 1200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: getRateLimitStore('mcp'),
+  message: { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Too many requests, please try again later', data: { code: 'RATE_LIMITED' } } },
+});
+serverOnly.use('/mcp', mcpLimiter, staffIpAllowlist());
 serverOnly.post('/mcp', async (req, res) => {
   const { handleMcpRequest } = await import('./mcp/server.js');
   await handleMcpRequest(req, res);

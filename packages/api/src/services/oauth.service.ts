@@ -43,6 +43,8 @@ const REQUEST_SECONDS = 15 * 60;
 /** Self-registered clients that never got a token are removed after this long. */
 const UNUSED_CLIENT_HOURS = 24;
 const MAX_DYNAMIC_CLIENTS = 5000;
+/** Tokens and codes this long past their last possible use are deleted. */
+const DEAD_ROW_DAYS = 7;
 
 export function publicBaseUrl(): string {
   return env.PUBLIC_URL.replace(/\/+$/, '');
@@ -208,16 +210,24 @@ export async function registerClient(input: ClientRegistrationInput): Promise<Re
       );
     }
   }
-  const method = input.token_endpoint_auth_method;
-  if (method !== undefined && method !== 'none') {
-    throw new OAuthError('invalid_client_metadata', 'Only token_endpoint_auth_method "none" (a public client using PKCE) can be registered');
-  }
+  // Whatever token_endpoint_auth_method the client asked for, it is
+  // registered as a public client ("none") and told so in the reply: RFC 7591
+  // §3.2.1 lets the server substitute, and no secret is ever issued here.
   const rawName = typeof input.client_name === 'string' ? input.client_name : '';
   // Shown on the consent screen: printable characters only, bounded.
   const name = rawName.replace(/[^\p{L}\p{N} .,_()'&+-]/gu, '').trim().slice(0, 100) || 'MCP client';
 
+  // Housekeeping rides on registration (the one call every new connection
+  // makes). Refresh rotation leaves a dead row per hour per connection, and
+  // spent codes stay behind: remove what can never be used again.
+  await db.execute(sql`
+    DELETE FROM oauth_tokens
+    WHERE COALESCE(refresh_token_expires_at, access_token_expires_at) < now() - make_interval(days => ${DEAD_ROW_DAYS})`);
+  await db.execute(sql`
+    DELETE FROM oauth_authorization_codes WHERE expires_at < now() - make_interval(days => ${DEAD_ROW_DAYS})`);
   // Clients register on every fresh connection. Drop the ones that never
-  // finished signing in, then refuse to grow without bound.
+  // finished signing in (or whose every token is gone), then refuse to grow
+  // without bound.
   await db.execute(sql`
     DELETE FROM oauth_clients c
     WHERE c.is_dynamic = true

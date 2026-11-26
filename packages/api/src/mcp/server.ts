@@ -273,6 +273,12 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
   }
 
   if (Array.isArray(body) || !method) {
+    // A client's reply to a server request (this server sends none) is
+    // acknowledged like a notification; anything else is not a message.
+    if (!Array.isArray(body) && ('result' in message || 'error' in message)) {
+      res.status(202).end();
+      return;
+    }
     rpcError(res, 400, id, -32600, 'Send one JSON-RPC request object per POST');
     return;
   }
