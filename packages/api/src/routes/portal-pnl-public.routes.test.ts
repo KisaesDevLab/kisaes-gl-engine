@@ -141,7 +141,7 @@ async function seed() {
   await mkFeed(ids['a2']!, 'pending', '777.0000', '2026-03-14');     // other company
   await mkFeed(null, 'pending', '555.0000', '2026-03-15');           // no company, multi-company tenant
 
-  const mkContact = async (key: string, tenantId: string, companyId: string, flags: { profitLossAccess: boolean; questionsForUsAccess: boolean }) => {
+  const mkContact = async (key: string, tenantId: string, companyId: string, flags: { profitLossAccess: boolean; questionsForUsAccess: boolean; bankingAccess?: boolean }) => {
     const [c] = await db.insert(portalContacts).values({
       tenantId, email: `${key}-${suffix()}@ex.com`, status: 'active',
     }).returning();
@@ -149,10 +149,12 @@ async function seed() {
     ids[key] = c!.id;
     await mkSession(key, tenantId, c!.id);
   };
-  await mkContact('cGranted', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: true });
+  await mkContact('cGranted', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: true, bankingAccess: true });
+  // The P&L alone: the firm has not given this contact the banking pages.
+  await mkContact('cNoBanking', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: true });
   await mkContact('cDenied', tenantAId, ids['a1']!, { profitLossAccess: false, questionsForUsAccess: true });
   await mkContact('cNoQuestions', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: false });
-  await mkContact('cTenantB', tenantBId, ids['b1']!, { profitLossAccess: true, questionsForUsAccess: true });
+  await mkContact('cTenantB', tenantBId, ids['b1']!, { profitLossAccess: true, questionsForUsAccess: true, bankingAccess: true });
 }
 
 async function cleanDb() {
@@ -237,13 +239,21 @@ describe('portal profit & loss router', () => {
     expect(r.status).toBe(200);
     // pending 120 + assigned |-80|; categorized/matched/excluded, out-of-range,
     // other-company and NULL-company items all stay out.
-    expect(r.json.unpostedBankFeed).toEqual({ count: 2, amount: 200 });
+    expect(r.json.unpostedBankFeed).toEqual({ count: 2, moneyIn: 80, moneyOut: 120, amount: 200 });
     expect(r.json.netIncome).toBe(150);
 
     const narrow = await request(
       'GET', `/api/portal/profit-loss?companyId=${ids['a1']}&start_date=2026-03-01&end_date=2026-03-31`, cookies['cGranted'],
     );
-    expect(narrow.json.unpostedBankFeed).toEqual({ count: 1, amount: 120 });
+    expect(narrow.json.unpostedBankFeed).toEqual({ count: 1, moneyIn: 0, moneyOut: 120, amount: 120 });
+  });
+
+  it('leaves the bank feed memo off for a contact without banking access', async () => {
+    const r = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cNoBanking']);
+    expect(r.status).toBe(200);
+    // Same statement as everyone else, and no bank figures at all.
+    expect(r.json.netIncome).toBe(150);
+    expect('unpostedBankFeed' in r.json).toBe(false);
   });
 
   it('counts NULL-company feed items when the tenant has a single company', async () => {
@@ -258,7 +268,7 @@ describe('portal profit & loss router', () => {
     });
     const r = await request('GET', `/api/portal/profit-loss?${qs(ids['b1']!)}`, cookies['cTenantB']);
     expect(r.status).toBe(200);
-    expect(r.json.unpostedBankFeed).toEqual({ count: 1, amount: 42.5 });
+    expect(r.json.unpostedBankFeed).toEqual({ count: 1, moneyIn: 0, moneyOut: 42.5, amount: 42.5 });
   });
 
   it('drill-down lists posted lines for the company and sums to the P&L row', async () => {

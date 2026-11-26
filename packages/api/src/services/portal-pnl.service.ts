@@ -3,8 +3,10 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { and, eq, sql, type SQL } from 'drizzle-orm';
+import DecimalLib from 'decimal.js';
 import { db } from '../db/index.js';
 import { accounts, companies, portalContactCompanies } from '../db/schema/index.js';
+import type { PortalUnpostedBankFeed } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import * as reportSvc from './report.service.js';
 import { tenantHasSingleCompany } from './portal-banking.service.js';
@@ -15,6 +17,8 @@ import { tenantHasSingleCompany } from './portal-banking.service.js';
 // the plain journal for accrual companies, the virtual cash-basis ledger
 // for cash companies — so a row's transactions always sum to its amount.
 
+const Decimal = DecimalLib.default || DecimalLib;
+
 const PL_ACCOUNT_TYPES = ['revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'] as const;
 const INCOME_TYPES = new Set<string>(['revenue', 'other_revenue']);
 const MAX_RANGE_DAYS = 3 * 366;
@@ -24,14 +28,18 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * Throws unless the contact is linked to this company with profit_loss_access.
  * The innerJoin on companies scoped to the session's tenant is what blocks a
  * cross-tenant probe — do not simplify it away.
+ *
+ * Returns the contact's banking_access for the same company, read from the
+ * same row: the unposted bank feed memo is bank data, so it goes only to a
+ * contact the firm has also given the banking pages.
  */
 export async function assertProfitLossAccess(
   tenantId: string,
   contactId: string,
   companyId: string,
-): Promise<void> {
+): Promise<{ bankingAccess: boolean }> {
   const link = await db
-    .select({ on: portalContactCompanies.profitLossAccess })
+    .select({ on: portalContactCompanies.profitLossAccess, bankingAccess: portalContactCompanies.bankingAccess })
     .from(portalContactCompanies)
     .innerJoin(companies, eq(companies.id, portalContactCompanies.companyId))
     .where(and(
@@ -40,9 +48,11 @@ export async function assertProfitLossAccess(
       eq(companies.tenantId, tenantId),
     ))
     .limit(1);
-  if (link.length === 0 || !link[0]?.on) {
+  const row = link[0];
+  if (!row?.on) {
     throw AppError.forbidden('Profit & Loss is not enabled for your account', 'PROFIT_LOSS_NOT_ENABLED');
   }
+  return { bankingAccess: row.bankingAccess === true };
 }
 
 export function validateRange(
@@ -69,13 +79,6 @@ async function companyBasis(tenantId: string, companyId: string): Promise<'cash'
   return row[0]?.method === 'cash' ? 'cash' : 'accrual';
 }
 
-export interface PortalUnpostedBankFeed {
-  /** Open (pending or assigned) feed items dated inside the report range. */
-  count: number;
-  /** Sum of their absolute amounts — gross activity, never netted. */
-  amount: number;
-}
-
 /**
  * Bank feed activity the P&L does not yet include. Items are "unposted"
  * while status is pending or assigned (assigned = a category chosen but
@@ -89,10 +92,11 @@ export interface PortalUnpostedBankFeed {
  * item belongs to the company when company_id matches, or when
  * company_id is NULL and the tenant has exactly one company.
  *
- * Amounts are summed as absolute values. Feed amounts are signed
- * (positive = money out), and a net figure could read $0 when a deposit
- * and a payment offset — which is exactly the activity this line exists
- * to surface.
+ * Feed amounts are signed (positive = money out). Money in and money out
+ * are reported separately and `amount` is their sum, never a net: a net
+ * figure could read $0 when a deposit and a payment offset, which is
+ * exactly the activity this line exists to surface. None of it is profit
+ * or loss yet — transfers, card payments and owner draws are in here too.
  */
 export async function getUnpostedBankFeed(
   tenantId: string,
@@ -102,15 +106,24 @@ export async function getUnpostedBankFeed(
 ): Promise<PortalUnpostedBankFeed> {
   const singleCompany = await tenantHasSingleCompany(tenantId);
   const res = await db.execute(sql`
-    SELECT COUNT(*)::int AS count, COALESCE(SUM(ABS(amount)), 0) AS sum
+    SELECT COUNT(*)::int AS count,
+           COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS money_in,
+           COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS money_out
     FROM bank_feed_items
     WHERE tenant_id = ${tenantId}
       AND (company_id = ${companyId} OR (company_id IS NULL AND ${singleCompany}))
       AND status IN ('pending', 'assigned')
       AND feed_date >= ${startDate}::date AND feed_date <= ${endDate}::date
   `);
-  const row = (res.rows as unknown as Array<{ count: number; sum: string }>)[0];
-  return { count: row?.count ?? 0, amount: Number(row?.sum ?? 0) };
+  const row = (res.rows as unknown as Array<{ count: number; money_in: string; money_out: string }>)[0];
+  const moneyIn = new Decimal(row?.money_in ?? 0);
+  const moneyOut = new Decimal(row?.money_out ?? 0);
+  return {
+    count: row?.count ?? 0,
+    moneyIn: moneyIn.toNumber(),
+    moneyOut: moneyOut.toNumber(),
+    amount: moneyIn.plus(moneyOut).toNumber(),
+  };
 }
 
 export async function getPortalProfitAndLoss(
@@ -118,15 +131,17 @@ export async function getPortalProfitAndLoss(
   companyId: string,
   startDate: string,
   endDate: string,
+  options: { includeUnpostedBankFeed?: boolean } = {},
 ) {
   const basis = await companyBasis(tenantId, companyId);
-  const [pl, unpostedBankFeed] = await Promise.all([
-    reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId),
-    getUnpostedBankFeed(tenantId, companyId, startDate, endDate),
-  ]);
+  const pl = await reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId);
+  // The memo is bank data: left off entirely (not zeroed) unless the caller
+  // says this contact may see the company's bank activity.
+  if (!options.includeUnpostedBankFeed) return pl;
   // Additive: the P&L itself is untouched so it still equals the staff
   // builder to the cent. The unposted line is a memo beneath it, never
   // folded into net income.
+  const unpostedBankFeed = await getUnpostedBankFeed(tenantId, companyId, startDate, endDate);
   return { ...pl, unpostedBankFeed };
 }
 

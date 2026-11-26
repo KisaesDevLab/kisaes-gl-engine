@@ -39,12 +39,16 @@ function intParam(raw: unknown, name: string, def: number, max: number): number 
 portalPnlPublicRouter.get('/', async (req, res) => {
   const companyId = requireCompanyId(req);
   const { tenantId, contactId } = req.portalContact!;
-  await svc.assertProfitLossAccess(tenantId, contactId, companyId);
+  const { bankingAccess } = await svc.assertProfitLossAccess(tenantId, contactId, companyId);
   const { startDate, endDate } = svc.validateRange(
     req.query['start_date'] as string | undefined,
     req.query['end_date'] as string | undefined,
   );
-  res.json(await svc.getPortalProfitAndLoss(tenantId, companyId, startDate, endDate));
+  // The unposted bank feed memo is bank activity, so it follows the
+  // contact's banking access, not their P&L access.
+  res.json(await svc.getPortalProfitAndLoss(tenantId, companyId, startDate, endDate, {
+    includeUnpostedBankFeed: bankingAccess,
+  }));
 });
 
 // GET /api/portal/profit-loss/accounts/:accountId/transactions
