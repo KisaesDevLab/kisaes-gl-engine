@@ -4,8 +4,10 @@
 
 // Portal live Profit & Loss — the router must enforce session cookie →
 // per-contact profit_loss_access → tenant/company scoping, the P&L must
-// equal the staff builder, the drill-down must sum to its P&L row, and
-// asking about a transaction must reject a transaction from another company.
+// equal the staff builder, the drill-down must sum to its P&L row, the
+// unposted-bank-feed memo must count only open items in range for the
+// company, and asking about a transaction must reject a transaction from
+// another company.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import 'express-async-errors';
@@ -14,11 +16,12 @@ import http from 'http';
 import crypto from 'crypto';
 import type { AddressInfo } from 'net';
 import type { Server } from 'http';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db/index.js';
 import {
   tenants, companies, accounts, transactions, journalLines,
   portalContacts, portalContactCompanies, portalContactSessions, portalQuestions,
+  bankConnections, bankFeedItems, tenantFeatureFlags, auditLog,
 } from '../db/schema/index.js';
 import { portalPnlPublicRouter } from './portal-pnl-public.routes.js';
 import { errorHandler } from '../middleware/error-handler.js';
@@ -82,6 +85,16 @@ async function mkSession(key: string, tenantId: string, contactId: string) {
   cookies[key] = token;
 }
 
+async function setBankingFlag(tenantId: string, enabled: boolean) {
+  await db
+    .insert(tenantFeatureFlags)
+    .values({ tenantId, flagKey: 'PORTAL_BANKING_V1', enabled, rolloutPercent: enabled ? 100 : 0 })
+    .onConflictDoUpdate({
+      target: [tenantFeatureFlags.tenantId, tenantFeatureFlags.flagKey],
+      set: { enabled, rolloutPercent: enabled ? 100 : 0 },
+    });
+}
+
 async function seed() {
   const suffix = () => Date.now() + '-' + Math.random().toString(36).slice(2, 6);
   const [tA] = await db.insert(tenants).values({ name: 'PnL T A', slug: 'ppnl-a-' + suffix() }).returning();
@@ -98,9 +111,12 @@ async function seed() {
     tenantId: tenantAId, name: 'Sales', accountType: 'revenue', detailType: 'service_fee_income',
   }).returning();
   const [asset] = await db.insert(accounts).values({
-    tenantId: tenantAId, name: 'Checking', accountType: 'asset', detailType: 'bank',
+    tenantId: tenantAId, companyId: a1!.id, name: 'Checking', accountType: 'asset', detailType: 'bank',
   }).returning();
   ids['revenue'] = rev!.id; ids['asset'] = asset!.id;
+  // Portal banking is on for both tenants; one test switches it off.
+  await setBankingFlag(tenantAId, true);
+  await setBankingFlag(tenantBId, true);
 
   const mkTxn = async (key: string, companyId: string, status: string, credit: string, date = '2026-03-15') => {
     const [txn] = await db.insert(transactions).values({
@@ -117,7 +133,48 @@ async function seed() {
   await mkTxn('otherCompany', ids['a2']!, 'posted', '777.0000');
   await mkTxn('outOfRange', ids['a1']!, 'posted', '5.0000', '2025-06-01');
 
-  const mkContact = async (key: string, tenantId: string, companyId: string, flags: { profitLossAccess: boolean; questionsForUsAccess: boolean }) => {
+  // Bank feed items behind the "unposted" memo line. Tenant A has two
+  // companies, so a NULL-company item must NOT count toward A One.
+  const [conn] = await db.insert(bankConnections).values({
+    tenantId: tenantAId, companyId: ids['a1']!, accountId: ids['asset']!, provider: 'manual',
+  }).returning();
+  ids['conn'] = conn!.id;
+  // A connection with no company of its own, in a tenant with two: its
+  // NULL-company items belong to nobody in particular.
+  const [shared] = await db.insert(bankConnections).values({
+    tenantId: tenantAId, accountId: ids['asset']!, provider: 'manual',
+  }).returning();
+  // A retired account: the banking pages no longer list it.
+  const [retired] = await db.insert(accounts).values({
+    tenantId: tenantAId, companyId: ids['a1']!, name: 'Old Checking', accountType: 'asset', detailType: 'bank', isActive: false,
+  }).returning();
+  const [retiredConn] = await db.insert(bankConnections).values({
+    tenantId: tenantAId, companyId: ids['a1']!, accountId: retired!.id, provider: 'manual',
+  }).returning();
+  const mkFeed = async (
+    companyId: string | null, status: string, amount: string, feedDate: string,
+    extra: { bankConnectionId?: string; possibleDuplicate?: boolean; entryVoidedAt?: Date } = {},
+  ) => {
+    await db.insert(bankFeedItems).values({
+      tenantId: tenantAId, companyId, bankConnectionId: ids['conn']!, feedDate, amount, status,
+      description: `${status} ${amount}`, ...extra,
+    });
+  };
+  await mkFeed(ids['a1']!, 'pending', '120.0000', '2026-03-10');     // money out, counts
+  await mkFeed(ids['a1']!, 'assigned', '-80.0000', '2026-05-01');    // money in, counts (abs)
+  await mkFeed(ids['a1']!, 'categorized', '500.0000', '2026-03-11'); // already posted
+  await mkFeed(ids['a1']!, 'matched', '400.0000', '2026-03-12');     // already posted
+  await mkFeed(ids['a1']!, 'excluded', '300.0000', '2026-03-13');    // deliberately out
+  await mkFeed(ids['a1']!, 'pending', '999.0000', '2025-12-31');     // out of range
+  await mkFeed(ids['a2']!, 'pending', '777.0000', '2026-03-14');     // other company
+  await mkFeed(null, 'pending', '555.0000', '2026-03-15');           // no company: takes its connection's (A One), counts
+  await mkFeed(null, 'pending', '444.0000', '2026-03-16', { bankConnectionId: shared!.id }); // no company anywhere, two companies
+  await mkFeed(ids['a1']!, 'categorizing', '30.0000', '2026-03-21'); // being posted, not in the P&L yet, counts
+  await mkFeed(ids['a1']!, 'categorized', '60.0000', '2026-03-20', { entryVoidedAt: new Date() }); // entry voided, counts
+  await mkFeed(ids['a1']!, 'pending', '222.0000', '2026-03-22', { possibleDuplicate: true });      // look-alike awaiting staff
+  await mkFeed(ids['a1']!, 'pending', '111.0000', '2026-03-23', { bankConnectionId: retiredConn!.id }); // retired account
+
+  const mkContact = async (key: string, tenantId: string, companyId: string, flags: { profitLossAccess: boolean; questionsForUsAccess: boolean; bankingAccess?: boolean }) => {
     const [c] = await db.insert(portalContacts).values({
       tenantId, email: `${key}-${suffix()}@ex.com`, status: 'active',
     }).returning();
@@ -125,16 +182,22 @@ async function seed() {
     ids[key] = c!.id;
     await mkSession(key, tenantId, c!.id);
   };
-  await mkContact('cGranted', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: true });
+  await mkContact('cGranted', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: true, bankingAccess: true });
+  // The P&L alone: the firm has not given this contact the banking pages.
+  await mkContact('cNoBanking', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: true });
   await mkContact('cDenied', tenantAId, ids['a1']!, { profitLossAccess: false, questionsForUsAccess: true });
   await mkContact('cNoQuestions', tenantAId, ids['a1']!, { profitLossAccess: true, questionsForUsAccess: false });
-  await mkContact('cTenantB', tenantBId, ids['b1']!, { profitLossAccess: true, questionsForUsAccess: true });
+  await mkContact('cTenantB', tenantBId, ids['b1']!, { profitLossAccess: true, questionsForUsAccess: true, bankingAccess: true });
 }
 
 async function cleanDb() {
   for (const tenantId of [tenantAId, tenantBId]) {
     if (!tenantId) continue;
     await db.delete(portalQuestions).where(eq(portalQuestions.tenantId, tenantId));
+    await db.delete(auditLog).where(eq(auditLog.tenantId, tenantId));
+    await db.delete(tenantFeatureFlags).where(eq(tenantFeatureFlags.tenantId, tenantId));
+    await db.delete(bankFeedItems).where(eq(bankFeedItems.tenantId, tenantId));
+    await db.delete(bankConnections).where(eq(bankConnections.tenantId, tenantId));
     await db.delete(journalLines).where(eq(journalLines.tenantId, tenantId));
     await db.delete(transactions).where(eq(transactions.tenantId, tenantId));
     await db.delete(portalContactSessions).where(eq(portalContactSessions.tenantId, tenantId));
@@ -204,6 +267,81 @@ describe('portal profit & loss router', () => {
     expect(r.json.netIncome).toBe(staff.netIncome);
     expect(r.json.totalRevenue).toBe(150);
     expect(r.json.revenue.find((e: { accountId: string }) => e.accountId === ids['revenue']).amount).toBe(150);
+  });
+
+  it('reports unposted bank feed activity in range without changing the P&L', async () => {
+    const r = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cGranted']);
+    expect(r.status).toBe(200);
+    // Out: pending 120, the NULL-company 555 on A One's connection, the
+    // voided-entry 60 and the mid-posting 30. In: assigned |-80|.
+    // Categorized/matched/excluded, out-of-range, other-company, the item
+    // with no company anywhere, the possible duplicate and the retired
+    // account's item all stay out.
+    expect(r.json.unpostedBankFeed).toEqual({ count: 5, moneyIn: 80, moneyOut: 765, amount: 845 });
+    expect(r.json.netIncome).toBe(150);
+
+    const narrow = await request(
+      'GET', `/api/portal/profit-loss?companyId=${ids['a1']}&start_date=2026-03-01&end_date=2026-03-31`, cookies['cGranted'],
+    );
+    expect(narrow.json.unpostedBankFeed).toEqual({ count: 4, moneyIn: 0, moneyOut: 765, amount: 765 });
+  });
+
+  it('sends the bank feed memo to a contact with P&L access and no banking access', async () => {
+    const r = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cNoBanking']);
+    expect(r.status).toBe(200);
+    expect(r.json.netIncome).toBe(150);
+    expect(r.json.unpostedBankFeed).toEqual({ count: 5, moneyIn: 80, moneyOut: 765, amount: 845 });
+  });
+
+  it('audits each read of the statement, and nothing when access is refused', async () => {
+    const reads = () => db.select().from(auditLog).where(and(
+      eq(auditLog.tenantId, tenantAId), eq(auditLog.entityType, 'portal_profit_loss'),
+    ));
+    const denied = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cDenied']);
+    expect(denied.status).toBe(403);
+    expect(await reads()).toHaveLength(0);
+
+    const ok = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cGranted']);
+    expect(ok.status).toBe(200);
+    const rows = await reads();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.action).toBe('view');
+    expect(rows[0]!.entityId).toBe(ids['a1']);
+    const after = typeof rows[0]!.afterData === 'string' ? JSON.parse(rows[0]!.afterData) : rows[0]!.afterData;
+    expect(after).toEqual({ portalContactId: ids['cGranted'], startDate: START, endDate: END, preview: false });
+  });
+
+  it('sends the bank feed memo whether or not the firm has portal banking switched on', async () => {
+    await setBankingFlag(tenantAId, false);
+    const r = await request('GET', `/api/portal/profit-loss?${qs(ids['a1']!)}`, cookies['cGranted']);
+    expect(r.status).toBe(200);
+    expect(r.json.unpostedBankFeed).toEqual({ count: 5, moneyIn: 80, moneyOut: 765, amount: 845 });
+  });
+
+  it('rejects a companyId or account id that is not a UUID, and repeated date parameters', async () => {
+    const badCompany = await request('GET', `/api/portal/profit-loss?companyId=nope&start_date=${START}&end_date=${END}`, cookies['cGranted']);
+    expect(badCompany.status).toBe(400);
+    const badAccount = await request('GET', `/api/portal/profit-loss/accounts/nope/transactions?${qs(ids['a1']!)}`, cookies['cGranted']);
+    expect(badAccount.status).toBe(400);
+    const repeated = await request(
+      'GET', `/api/portal/profit-loss?companyId=${ids['a1']}&start_date=${START}&start_date=${START}&end_date=${END}`, cookies['cGranted'],
+    );
+    expect(repeated.status).toBe(400);
+  });
+
+  it('counts NULL-company feed items when the tenant has a single company', async () => {
+    const [bAsset] = await db.insert(accounts).values({
+      tenantId: tenantBId, name: 'B Checking', accountType: 'asset', detailType: 'bank',
+    }).returning();
+    const [b] = await db.insert(bankConnections).values({
+      tenantId: tenantBId, accountId: bAsset!.id, provider: 'manual',
+    }).returning();
+    await db.insert(bankFeedItems).values({
+      tenantId: tenantBId, companyId: null, bankConnectionId: b!.id, feedDate: '2026-02-02', amount: '42.5000', status: 'pending',
+    });
+    const r = await request('GET', `/api/portal/profit-loss?${qs(ids['b1']!)}`, cookies['cTenantB']);
+    expect(r.status).toBe(200);
+    expect(r.json.unpostedBankFeed).toEqual({ count: 1, moneyIn: 0, moneyOut: 42.5, amount: 42.5 });
   });
 
   it('drill-down lists posted lines for the company and sums to the P&L row', async () => {
