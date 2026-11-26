@@ -28,7 +28,8 @@ export async function auditLog(
   // 'signoff' + 'override' added by the TB module (leadsheet sign-offs,
   // closing-date overrides) — QUESTIONS.md #5.
   // 'unsign' + 'invalidate' added by reconciliation sign-offs (migration 0214).
-  action: 'create' | 'update' | 'delete' | 'void' | 'login' | 'download' | 'signoff' | 'override' | 'unsign' | 'invalidate',
+  // 'view' added for the portal Profit & Loss read (a client opening the statement).
+  action: 'create' | 'update' | 'delete' | 'void' | 'login' | 'download' | 'signoff' | 'override' | 'unsign' | 'invalidate' | 'view',
   entityType: string,
   entityId: string | null,
   before: unknown | null,

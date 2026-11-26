@@ -3,10 +3,14 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { z } from 'zod';
+import DecimalLib from 'decimal.js';
 import { db } from '../db/index.js';
 import { accounts, companies, portalContactCompanies } from '../db/schema/index.js';
+import type { PortalUnpostedBankFeed } from '@kis-books/shared';
 import { AppError } from '../utils/errors.js';
 import * as reportSvc from './report.service.js';
+import { eligibleAccountConditions, tenantHasSingleCompany } from './portal-banking.service.js';
 
 // Portal live Profit & Loss. Read-only: the P&L itself is the staff
 // builder (so the numbers match to the cent) and the drill-down lists the
@@ -14,10 +18,23 @@ import * as reportSvc from './report.service.js';
 // the plain journal for accrual companies, the virtual cash-basis ledger
 // for cash companies — so a row's transactions always sum to its amount.
 
+const Decimal = DecimalLib.default || DecimalLib;
+
 const PL_ACCOUNT_TYPES = ['revenue', 'cogs', 'expense', 'other_revenue', 'other_expense'] as const;
 const INCOME_TYPES = new Set<string>(['revenue', 'other_revenue']);
 const MAX_RANGE_DAYS = 3 * 366;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const rangeSchema = z.object({
+  startDate: z.string().regex(DATE_RE),
+  endDate: z.string().regex(DATE_RE),
+});
+
+/** An id a portal request names (company, account). Null when it is missing or not a UUID. */
+export function parseUuid(raw: unknown): string | null {
+  const parsed = z.string().uuid().safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
 
 /**
  * Throws unless the contact is linked to this company with profit_loss_access.
@@ -39,7 +56,7 @@ export async function assertProfitLossAccess(
       eq(companies.tenantId, tenantId),
     ))
     .limit(1);
-  if (link.length === 0 || !link[0]?.on) {
+  if (!link[0]?.on) {
     throw AppError.forbidden('Profit & Loss is not enabled for your account', 'PROFIT_LOSS_NOT_ENABLED');
   }
 }
@@ -48,7 +65,8 @@ export function validateRange(
   startDate: string | undefined,
   endDate: string | undefined,
 ): { startDate: string; endDate: string } {
-  if (!startDate || !endDate || !DATE_RE.test(startDate) || !DATE_RE.test(endDate)) {
+  const parsed = rangeSchema.safeParse({ startDate, endDate });
+  if (!parsed.success) {
     throw AppError.badRequest('start_date and end_date are required (YYYY-MM-DD)');
   }
   const start = Date.parse(`${startDate}T00:00:00Z`);
@@ -56,7 +74,7 @@ export function validateRange(
   if (Number.isNaN(start) || Number.isNaN(end)) throw AppError.badRequest('Invalid date');
   if (start > end) throw AppError.badRequest('start_date must be on or before end_date');
   if ((end - start) / 86_400_000 > MAX_RANGE_DAYS) throw AppError.badRequest('Date range is too long');
-  return { startDate, endDate };
+  return parsed.data;
 }
 
 async function companyBasis(tenantId: string, companyId: string): Promise<'cash' | 'accrual'> {
@@ -68,6 +86,83 @@ async function companyBasis(tenantId: string, companyId: string): Promise<'cash'
   return row[0]?.method === 'cash' ? 'cash' : 'accrual';
 }
 
+/**
+ * Bank feed activity the P&L does not yet include.
+ *
+ * Which items count:
+ *  - pending and assigned (assigned = a category chosen but not yet
+ *    approved and posted) — the staff feed's "waiting" rows;
+ *  - categorizing — claimed for posting, entry not written yet;
+ *  - categorized or matched rows whose posted entry was later voided
+ *    (entry_voided_at set): the void took the entry out of the P&L and the
+ *    item keeps its status until staff deal with it, so it is unposted again.
+ * Other categorized and matched items point at posted transactions that ARE
+ * in the P&L, so counting them would double up; excluded items are out on
+ * purpose. Rows flagged possible_duplicate are left out too: they are
+ * look-alikes of a line already in the feed, waiting for staff to keep or
+ * remove them, and counting them would show the client the same money twice.
+ *
+ * Who gets it: every contact with P&L access for the company (owner
+ * decision, 2026-11-26). It does not depend on banking access or on the
+ * PORTAL_BANKING_V1 flag — it is totals only, never a line a client could
+ * read a payee or an account off.
+ *
+ * Scoped by feed_date to the report's inclusive range, and to the accounts
+ * the portal's banking pages would list for the company:
+ *  - the item's bank connection must be on an account those pages list
+ *    (eligibleAccountConditions: an active bank or card account of the
+ *    company), so a retired account's leftovers do not show up here alone;
+ *  - the item belongs to the company when its company_id matches. Older
+ *    items were stored with no company; those take their connection's
+ *    company, and failing that the tenant's only company.
+ *
+ * Feed amounts are signed (positive = money out). Money in and money out
+ * are reported separately and `amount` is their sum, never a net: a net
+ * figure could read $0 when a deposit and a payment offset, which is
+ * exactly the activity this line exists to surface. None of it is profit
+ * or loss yet — transfers, card payments and owner draws are in here too.
+ */
+export async function getUnpostedBankFeed(
+  tenantId: string,
+  companyId: string,
+  startDate: string,
+  endDate: string,
+): Promise<PortalUnpostedBankFeed> {
+  const singleCompany = await tenantHasSingleCompany(tenantId);
+  const res = await db.execute(sql`
+    SELECT COUNT(*)::int AS count,
+           COALESCE(SUM(CASE WHEN bfi.amount < 0 THEN -bfi.amount ELSE 0 END), 0) AS money_in,
+           COALESCE(SUM(CASE WHEN bfi.amount > 0 THEN bfi.amount ELSE 0 END), 0) AS money_out
+    FROM bank_feed_items bfi
+    JOIN bank_connections bc ON bc.id = bfi.bank_connection_id AND bc.tenant_id = ${tenantId}
+    JOIN accounts a ON a.id = bc.account_id
+    WHERE bfi.tenant_id = ${tenantId}
+      AND ${eligibleAccountConditions(tenantId, companyId, singleCompany)}
+      AND (
+        bfi.company_id = ${companyId}
+        OR (bfi.company_id IS NULL AND (
+          bc.company_id = ${companyId}
+          OR (bc.company_id IS NULL AND ${singleCompany})
+        ))
+      )
+      AND (
+        bfi.status IN ('pending', 'assigned', 'categorizing')
+        OR (bfi.status IN ('categorized', 'matched') AND bfi.entry_voided_at IS NOT NULL)
+      )
+      AND NOT bfi.possible_duplicate
+      AND bfi.feed_date >= ${startDate}::date AND bfi.feed_date <= ${endDate}::date
+  `);
+  const row = (res.rows as unknown as Array<{ count: number; money_in: string; money_out: string }>)[0];
+  const moneyIn = new Decimal(row?.money_in ?? 0);
+  const moneyOut = new Decimal(row?.money_out ?? 0);
+  return {
+    count: row?.count ?? 0,
+    moneyIn: moneyIn.toNumber(),
+    moneyOut: moneyOut.toNumber(),
+    amount: moneyIn.plus(moneyOut).toNumber(),
+  };
+}
+
 export async function getPortalProfitAndLoss(
   tenantId: string,
   companyId: string,
@@ -75,7 +170,14 @@ export async function getPortalProfitAndLoss(
   endDate: string,
 ) {
   const basis = await companyBasis(tenantId, companyId);
-  return reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId);
+  const [pl, unpostedBankFeed] = await Promise.all([
+    reportSvc.buildProfitAndLoss(tenantId, startDate, endDate, basis, companyId),
+    getUnpostedBankFeed(tenantId, companyId, startDate, endDate),
+  ]);
+  // Additive: the P&L itself is untouched so it still equals the staff
+  // builder to the cent. The unposted line is a memo beneath it, never
+  // folded into net income.
+  return { ...pl, unpostedBankFeed };
 }
 
 export interface PortalPlTransactionLine {
