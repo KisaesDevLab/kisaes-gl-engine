@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { portalAuthenticate } from '../middleware/portal-auth.js';
 import { scopedCompanyId } from '../middleware/peer-auth.js';
 import { AppError } from '../utils/errors.js';
+import * as flags from '../services/feature-flags.service.js';
 import * as svc from '../services/portal-pnl.service.js';
 
 // Portal live Profit & Loss. Mounted at /api/portal/profit-loss.
@@ -15,17 +16,20 @@ import * as svc from '../services/portal-pnl.service.js';
 export const portalPnlPublicRouter = Router();
 portalPnlPublicRouter.use(portalAuthenticate);
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 function requireCompanyId(req: import('express').Request): string {
   if (!req.portalContact) throw AppError.unauthorized('No portal session');
-  const companyId = scopedCompanyId(req, req.query['companyId'] as string | undefined);
-  if (!companyId || !UUID_RE.test(companyId)) throw AppError.badRequest('companyId required');
+  const queried = req.query['companyId'];
+  const companyId = svc.parseUuid(scopedCompanyId(req, typeof queried === 'string' ? queried : undefined));
+  if (!companyId) throw AppError.badRequest('companyId required');
   const pc = req.portalContact;
   if (pc.isPreview && pc.previewCompanyId && pc.previewCompanyId !== companyId) {
     throw AppError.forbidden('Preview is scoped to one company');
   }
   return companyId;
+}
+
+function dateParam(raw: unknown): string | undefined {
+  return typeof raw === 'string' ? raw : undefined;
 }
 
 function intParam(raw: unknown, name: string, def: number, max: number): number {
@@ -41,13 +45,16 @@ portalPnlPublicRouter.get('/', async (req, res) => {
   const { tenantId, contactId } = req.portalContact!;
   const { bankingAccess } = await svc.assertProfitLossAccess(tenantId, contactId, companyId);
   const { startDate, endDate } = svc.validateRange(
-    req.query['start_date'] as string | undefined,
-    req.query['end_date'] as string | undefined,
+    dateParam(req.query['start_date']),
+    dateParam(req.query['end_date']),
   );
-  // The unposted bank feed memo is bank activity, so it follows the
-  // contact's banking access, not their P&L access.
+  // The unposted bank feed memo is bank activity, so it is sent on the
+  // same two conditions as the portal banking pages: the firm has portal
+  // banking switched on, and this contact has banking access for the
+  // company. P&L access alone does not carry it.
+  const includeUnpostedBankFeed = bankingAccess && await flags.isEnabled(tenantId, 'PORTAL_BANKING_V1');
   res.json(await svc.getPortalProfitAndLoss(tenantId, companyId, startDate, endDate, {
-    includeUnpostedBankFeed: bankingAccess,
+    includeUnpostedBankFeed,
   }));
 });
 
@@ -57,11 +64,11 @@ portalPnlPublicRouter.get('/accounts/:accountId/transactions', async (req, res) 
   const companyId = requireCompanyId(req);
   const { tenantId, contactId } = req.portalContact!;
   await svc.assertProfitLossAccess(tenantId, contactId, companyId);
-  const accountId = req.params['accountId']!;
-  if (!UUID_RE.test(accountId)) throw AppError.badRequest('Invalid account id');
+  const accountId = svc.parseUuid(req.params['accountId']);
+  if (!accountId) throw AppError.badRequest('Invalid account id');
   const { startDate, endDate } = svc.validateRange(
-    req.query['start_date'] as string | undefined,
-    req.query['end_date'] as string | undefined,
+    dateParam(req.query['start_date']),
+    dateParam(req.query['end_date']),
   );
   res.json(await svc.getPortalAccountTransactions(
     tenantId, companyId, accountId, startDate, endDate,
