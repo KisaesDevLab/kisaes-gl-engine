@@ -90,7 +90,12 @@ and permission template allow in the app: read-only in a client is
 read-only through MCP, whatever the key or sign-in was granted. Revoking a
 person's access to a client takes effect on their next call. Each connection
 keeps its own active client (`set_active_company`), and every result names
-the client it ran in. A client with accounts hidden from the caller
+the client it ran in. A call that changes data uses the remembered client
+only on a connection that sends back the session id the server issued;
+otherwise it must name the client (`company_id`) or it is refused, so a
+choice made in another chat can never decide where an entry posts. Every
+entry is stamped with the company it was made in, and an id that belongs
+to another client is refused. A client with accounts hidden from the caller
 (sensitive accounts) cannot be opened through MCP by that caller.
 
 **Tool groups (89 tools):** clients, chart of accounts, contacts,

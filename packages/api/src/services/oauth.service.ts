@@ -111,6 +111,19 @@ export function grantableScopes(requested: string | undefined | null): string[] 
   return known.length > 0 ? known : [...OAUTH_SCOPES];
 }
 
+/**
+ * A client an admin created with a narrower scope list never gets more than
+ * that, whatever it asks for. 'all' (the default, and every self-registered
+ * client) places no limit of its own.
+ */
+export function withinClientScopes(granted: string[], clientScopes: string | null | undefined): string[] {
+  const allowed = String(clientScopes ?? 'all').split(/[\s,]+/).filter(Boolean);
+  if (allowed.length === 0 || allowed.includes('all')) return granted;
+  const kept = granted.filter((s) => allowed.includes(s));
+  if (kept.length === 0) throw new OAuthError('invalid_scope', 'This client is not allowed any of the requested scopes');
+  return kept;
+}
+
 // ─── Redirect URIs ──────────────────────────────────────────────
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -354,7 +367,7 @@ export async function validateAuthorizationRequest(q: AuthorizationQuery): Promi
   return {
     clientId: client.clientId,
     redirectUri,
-    scopes: grantableScopes(str(q.scope)),
+    scopes: withinClientScopes(grantableScopes(str(q.scope)), client.scopes),
     state,
     codeChallenge,
     resource: resource ? mcpResourceUrl() : null,
@@ -558,6 +571,14 @@ export async function refreshAccessToken(req: TokenRequest) {
         where: and(eq(oauthTokens.refreshTokenHash, hash(refreshToken)), eq(oauthTokens.clientId, client.id)),
       })
     : undefined;
+  if (token?.revokedAt) {
+    // A refresh token that was already rotated is being used again: either
+    // it was copied, or the client lost the reply. We cannot tell which, so
+    // every live token of this sign-in for this client stops working and
+    // the user signs in again (OAuth 2.1, refresh token replay).
+    await db.update(oauthTokens).set({ revokedAt: new Date() })
+      .where(and(eq(oauthTokens.clientId, client.id), eq(oauthTokens.userId, token.userId), sql`${oauthTokens.revokedAt} IS NULL`));
+  }
   if (!token || token.revokedAt) throw new OAuthError('invalid_grant', 'Invalid refresh token');
   if (token.refreshTokenExpiresAt && new Date() > token.refreshTokenExpiresAt) throw new OAuthError('invalid_grant', 'Refresh token expired');
   const resource = typeof req.resource === 'string' && req.resource ? req.resource : null;

@@ -68,7 +68,7 @@ export interface McpAuthContext {
   oauthClientId?: string;
 }
 
-/** A client's books as an MCP caller sees them: one entry per tenant the caller can open. */
+/** A client company as an MCP caller sees it: one entry per company the caller can open. */
 export interface McpClientCompany {
   /** The company id tools take as `company_id`. */
   id: string;
@@ -76,6 +76,12 @@ export interface McpClientCompany {
   tenantId: string;
   /** The caller's role in this client (owner, accountant, bookkeeper, readonly, ...). */
   role: string;
-  /** False until MCP is turned on in the company's settings; tools refuse it until then. */
+  /**
+   * False until MCP is turned on in the company's settings; tools refuse it
+   * until then. Tools read the whole client file, so it is also false while
+   * any other company in the same file has MCP off (see mcpOffIn).
+   */
   mcpEnabled: boolean;
+  /** Set when this company has MCP on but another company in the same file does not: that company's name. */
+  mcpOffIn?: string;
 }

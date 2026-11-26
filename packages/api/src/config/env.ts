@@ -228,7 +228,7 @@ export const envSchema = z.object({
   // so only addresses of connector services you trust belong here. Loopback
   // redirects (mcp-remote, Claude Code on the user's own machine) are always
   // allowed and need no entry. Default: Claude's connector callback.
-  MCP_OAUTH_REDIRECT_ALLOWLIST: z.string().default('https://claude.ai/api/mcp/auth_callback'),
+  MCP_OAUTH_REDIRECT_ALLOWLIST: z.string().default('https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback'),
   // COOKIE_PATH narrows the Path attribute on every cookie this app
   // sets. Default '/' matches single-app mode. Multi-app mode sets
   // it to '/mybooks' so cookies don't leak into sibling apps on the

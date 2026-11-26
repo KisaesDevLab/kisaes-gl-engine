@@ -24,7 +24,7 @@ import { AppError } from '../utils/errors.js';
 import { buildOriginAllowlist } from '../utils/cors-allowlist.js';
 import { mcpResourceUrl, protectedResourceMetadataUrl } from '../services/oauth.service.js';
 import { McpAuthError, checkScope, resolveMcpAuth } from './auth.js';
-import { assertAccess, getUserCompanies, resolveClient, sessionKeyFor } from './context.js';
+import { assertAccess, getUserCompanies, issueSessionId, resolveClient, sessionFor, type McpSession } from './context.js';
 import { logMcpRequest } from './audit.js';
 import { checkRateLimit } from './rate-limiter.js';
 import {
@@ -38,7 +38,7 @@ export const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03
 
 const INSTRUCTIONS = [
   'Bookkeeping for one or more client companies.',
-  'Start with list_companies. If it returns more than one, ask the user which client they mean, then call set_active_company (or pass company_id on every call).',
+  'Start with list_companies. If it returns more than one, ask the user which client they mean, then pass its id as company_id. set_active_company can remember it for this connection, but pass company_id on every call that changes data: without it such a call may be refused.',
   'Every result ends with the client it ran in: check it matches the client the user asked about before you make another change.',
   'Before a tool that posts, voids, pays, sends or completes something, tell the user what you are about to do and in which client.',
   'Amounts are decimal strings ("125.00"); dates are YYYY-MM-DD; ids are UUIDs taken from earlier results, never invented.',
@@ -294,7 +294,7 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
     return;
   }
 
-  const sessionKey = sessionKeyFor(auth, headerValue(req, 'mcp-session-id'));
+  const session = sessionFor(auth, headerValue(req, 'mcp-session-id'));
 
   try {
     switch (method) {
@@ -304,8 +304,9 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
           ? requested
           : SUPPORTED_PROTOCOL_VERSIONS[0];
         // Names the connection so two chats on one key each keep their own
-        // active client (context.ts). Nothing else is held for it.
-        res.setHeader('Mcp-Session-Id', crypto.randomUUID());
+        // active client (context.ts). Signed, so only an id issued here to
+        // this caller counts. Nothing else is held for it.
+        res.setHeader('Mcp-Session-Id', issueSessionId(auth));
         rpcResult(res, id, {
           protocolVersion,
           serverInfo: SERVER_INFO,
@@ -329,7 +330,7 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
         return;
 
       case 'tools/call':
-        await callTool(req, res, { id, auth, sessionKey, params: message.params ?? {}, start, ip, userAgent });
+        await callTool(req, res, { id, auth, session, params: message.params ?? {}, start, ip, userAgent });
         return;
 
       case 'resources/list':
@@ -347,7 +348,7 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
         return;
 
       case 'resources/read':
-        await readResource(res, { id, auth, sessionKey, params: message.params ?? {}, start, ip, userAgent });
+        await readResource(res, { id, auth, session, params: message.params ?? {}, start, ip, userAgent });
         return;
 
       default:
@@ -364,15 +365,24 @@ export async function handleMcpRequest(req: Request, res: Response): Promise<voi
 interface CallEnv {
   id: RpcId;
   auth: McpAuthContext;
-  sessionKey: string;
+  session: McpSession;
   params: Record<string, unknown>;
   start: number;
   ip: string | undefined;
   userAgent: string | undefined;
 }
 
+/** The result as JSON text. A value that cannot be serialized still reports that the call ran. */
+function safeJson(result: unknown): string {
+  try {
+    return JSON.stringify(result ?? null);
+  } catch {
+    return JSON.stringify({ done: true, note: 'The call completed, but its result could not be shown.' });
+  }
+}
+
 async function callTool(_req: Request, res: Response, call: CallEnv): Promise<void> {
-  const { id, auth, sessionKey } = call;
+  const { id, auth, session } = call;
   const toolName = typeof call.params['name'] === 'string' ? call.params['name'] : '';
   const tool = getTool(toolName);
   if (!tool) {
@@ -387,23 +397,28 @@ async function callTool(_req: Request, res: Response, call: CallEnv): Promise<vo
 
     let result: unknown;
     if (tool.kind === 'session') {
-      result = await tool.handler(args, { auth, sessionKey });
+      result = await tool.handler(args, { auth, session });
     } else if (tool.kind === 'user') {
       checkScope(auth, tool.scope);
-      result = await tool.handler(args, { auth, sessionKey });
+      result = await tool.handler(args, { auth, session });
     } else {
       checkScope(auth, tool.scope);
-      client = await resolveClient(auth, sessionKey, args['company_id'] as string | undefined);
+      client = await resolveClient(auth, session, args['company_id'] as string | undefined, {
+        write: tool.access.action !== 'read',
+      });
       assertAccess(client, tool.access);
       const ctx: ToolContext = { ...client, auth, userId: auth.userId };
       result = await tool.handler(args, ctx);
     }
 
-    const text = JSON.stringify(result ?? null);
+    const text = safeJson(result);
+    // The call has already done its work. A log row that fails to write
+    // must not turn it into a reported failure: the caller would be told
+    // nothing changed, and would post the same thing again.
     await logMcpRequest({
       auth, toolName, companyId: client?.companyId, parameters: args, status: 'success',
       responseSummary: text.slice(0, 200), durationMs: Date.now() - call.start, ipAddress: call.ip, userAgent: call.userAgent,
-    });
+    }).catch((logErr: unknown) => { console.error('[mcp] request log failed after a successful call', toolName, logErr); });
     rpcResult(res, id, {
       content: [
         { type: 'text', text },
@@ -429,7 +444,7 @@ async function callTool(_req: Request, res: Response, call: CallEnv): Promise<vo
 }
 
 async function readResource(res: Response, call: CallEnv): Promise<void> {
-  const { id, auth, sessionKey } = call;
+  const { id, auth, session } = call;
   const uri = typeof call.params['uri'] === 'string' ? call.params['uri'] : '';
   if (!uri) {
     rpcError(res, 200, id, -32602, 'URI required');
@@ -452,7 +467,7 @@ async function readResource(res: Response, call: CallEnv): Promise<void> {
         return;
       }
       checkScope(auth, def.scope);
-      client = await resolveClient(auth, sessionKey, match[1]!);
+      client = await resolveClient(auth, session, match[1]!);
       assertAccess(client, def.access);
       data = await def.read(client);
     }

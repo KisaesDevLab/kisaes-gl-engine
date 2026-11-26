@@ -14,7 +14,7 @@ import crypto from 'crypto';
 import { sql, eq, and } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
 import {
-  accounts, apiKeys, auditLog, companies, contacts, mcpConfig, mcpRequestLog, reconciliations, userTenantAccess, users,
+  accounts, apiKeys, auditLog, companies, contacts, mcpConfig, mcpRequestLog, reconciliations, transactions, userTenantAccess, users,
 } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
 import * as expenseService from '../services/expense.service.js';
@@ -197,24 +197,129 @@ describe('MCP for firm staff: one sign-in, the clients they have access to', () 
     expect(failure(resp)).toContain('Delta Co');
   });
 
+  /** A connection as a real client makes one: initialize, then send the id back. */
+  async function openSession(key = staffKey): Promise<Record<string, string>> {
+    const init = await post(key, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+    return { 'mcp-session-id': init.headers['mcp-session-id']! };
+  }
+
   it('each connection keeps its own active client', async () => {
-    const one = { 'mcp-session-id': 'chat-one' };
-    const two = { 'mcp-session-id': 'chat-two' };
-    expect(data(await call('set_active_company', { company_id: full.companyId }, one))).toMatchObject({ name: 'Alpha Co' });
+    const one = await openSession();
+    const two = await openSession();
+    expect(one['mcp-session-id']).not.toBe(two['mcp-session-id']);
+    expect(data(await call('set_active_company', { company_id: full.companyId }, one))).toMatchObject({ name: 'Alpha Co', used_for_changes: true });
     expect(data(await call('set_active_company', { company_id: readOnly.companyId }, two))).toMatchObject({ name: 'Bravo Co' });
     expect(data(await call('get_active_company', {}, one)).active_company_id).toBe(full.companyId);
     expect(data(await call('get_active_company', {}, two)).active_company_id).toBe(readOnly.companyId);
     // A write on chat one lands in chat one's client even after chat two chose another.
     const created = await call('create_contact', { display_name: 'From chat one', type: 'customer' }, one);
     expect(created.result.content[1].text).toContain('Alpha Co');
+    const row = await db.query.contacts.findFirst({ where: eq(contacts.displayName, 'From chat one') });
+    expect(row?.tenantId).toBe(full.tenantId);
     expect(failure(await call('create_contact', { display_name: 'From chat two', type: 'customer' }, two))).toMatch(/^PERMISSION_DENIED/);
     // A connection that never chose still has to.
-    expect(failure(await call('list_accounts', {}, { 'mcp-session-id': 'chat-three' }))).toMatch(/^COMPANY_REQUIRED/);
+    expect(failure(await call('list_accounts', {}, await openSession()))).toMatch(/^COMPANY_REQUIRED/);
   });
 
-  it('initialize hands the connection an id to keep its active client under', async () => {
+  it('without a session of its own, a remembered client is for reading only: a change must name the client', async () => {
+    // No Mcp-Session-Id at all: every chat on this key shares one choice.
+    const chosen = data(await call('set_active_company', { company_id: full.companyId }));
+    expect(chosen).toMatchObject({ name: 'Alpha Co', used_for_changes: false });
+    expect((await call('list_accounts')).result.isError).toBeFalsy();
+
+    const refused = await call('create_contact', { display_name: 'No session, no client named', type: 'customer' });
+    expect(failure(refused)).toMatch(/^COMPANY_REQUIRED/);
+    expect(failure(refused)).toContain('pass company_id');
+    expect(await db.query.contacts.findFirst({ where: eq(contacts.displayName, 'No session, no client named') })).toBeUndefined();
+
+    // Naming the client works, and lands there.
+    const named = await call('create_contact', { company_id: full.companyId, display_name: 'No session, client named', type: 'customer' });
+    expect(named.result.isError).toBeFalsy();
+    expect((await db.query.contacts.findFirst({ where: eq(contacts.displayName, 'No session, client named') }))?.tenantId).toBe(full.tenantId);
+  });
+
+  it('a session id this server did not issue to this caller does not count as a session', async () => {
+    const madeUp = { 'mcp-session-id': 'chat-one' };
+    expect(data(await call('set_active_company', { company_id: full.companyId }, madeUp)).used_for_changes).toBe(false);
+    expect(failure(await call('create_contact', { display_name: 'Made-up session', type: 'customer' }, madeUp))).toMatch(/^COMPANY_REQUIRED/);
+
+    // Another key's session id, replayed with this key.
+    const otherKey = 'sk_live_' + crypto.randomBytes(32).toString('hex');
+    await db.insert(apiKeys).values({
+      tenantId: firm.tenantId, userId: staffId, name: 'second key', keyPrefix: otherKey.slice(0, 12),
+      keyHash: crypto.createHash('sha256').update(otherKey).digest('hex'), role: 'accountant', scopes: 'read,write',
+    });
+    const theirs = await openSession(otherKey);
+    expect(data(await call('set_active_company', { company_id: full.companyId }, theirs)).used_for_changes).toBe(false);
+    expect(data(await call('set_active_company', { company_id: full.companyId }, theirs, otherKey)).used_for_changes).toBe(true);
+  });
+
+  it('a switch that fails leaves no client selected', async () => {
+    const chat = await openSession();
+    await call('set_active_company', { company_id: full.companyId }, chat);
+    expect(failure(await call('set_active_company', { company_id: mcpOff.companyId }, chat))).toMatch(/^MCP_DISABLED/);
+    expect(data(await call('get_active_company', {}, chat)).active_company_id).toBeNull();
+    expect(failure(await call('create_contact', { display_name: 'After a failed switch', type: 'customer' }, chat))).toMatch(/^COMPANY_REQUIRED/);
+  });
+
+  it('every change is stamped with the client company it was made in', async () => {
+    const expense = await call('create_expense', {
+      company_id: full.companyId, date: '2026-02-03', bank_account_id: full.bankAccountId,
+      lines: [{ expenseAccountId: full.expenseAccountId, amount: '12.50', description: 'stamped' }],
+    });
+    expect(expense.result.isError).toBeFalsy();
+    const made = data(expense);
+    const txn = await db.query.transactions.findFirst({ where: eq(transactions.id, made.id ?? made.transaction?.id) });
+    expect(txn?.tenantId).toBe(full.tenantId);
+    expect(txn?.companyId).toBe(full.companyId);
+
+    const contact = data(await call('create_contact', { company_id: full.companyId, display_name: 'Stamped contact', type: 'vendor' }));
+    expect((await db.query.contacts.findFirst({ where: eq(contacts.id, contact.id) }))?.companyId).toBe(full.companyId);
+  });
+
+  it('an id from another client cannot be used in the selected one', async () => {
+    const [foreignVendor] = await db.insert(contacts).values({
+      tenantId: readOnly.tenantId, displayName: 'Bravo Vendor', contactType: 'vendor',
+    }).returning();
+    const before = await db.select({ id: transactions.id }).from(transactions);
+
+    // Another client's account, and another client's contact as the payee.
+    const wrongAccount = await call('create_expense', {
+      company_id: full.companyId, date: '2026-02-04', bank_account_id: readOnly.bankAccountId,
+      lines: [{ expenseAccountId: full.expenseAccountId, amount: '5.00' }],
+    });
+    expect(wrongAccount.result.isError).toBe(true);
+    const wrongPayee = await call('create_expense', {
+      company_id: full.companyId, date: '2026-02-04', bank_account_id: full.bankAccountId, payee_id: foreignVendor!.id,
+      lines: [{ expenseAccountId: full.expenseAccountId, amount: '5.00' }],
+    });
+    expect(wrongPayee.result.isError).toBe(true);
+
+    // Another client's transaction cannot be voided from here.
+    const theirs = await expenseService.createExpense(readOnly.tenantId, {
+      txnDate: '2026-02-05', payFromAccountId: readOnly.bankAccountId, memo: '',
+      lines: [{ expenseAccountId: readOnly.expenseAccountId, amount: '9.00' }],
+    } as Parameters<typeof expenseService.createExpense>[1], readOnly.ownerId, readOnly.companyId);
+    const voided = await call('void_transaction', { company_id: full.companyId, transaction_id: theirs.id });
+    expect(voided.result.isError).toBe(true);
+    expect((await db.query.transactions.findFirst({ where: eq(transactions.id, theirs.id) }))?.status).toBe('posted');
+
+    const after = await db.select({ id: transactions.id }).from(transactions);
+    expect(after.length).toBe(before.length + 1); // only the one made directly in Bravo
+  });
+
+  it('get_company_info returns the profile and no credential', async () => {
+    await db.update(companies).set({ ein: '12-3456789' }).where(eq(companies.id, full.companyId));
+    const info = data(await call('get_company_info', { company_id: full.companyId }));
+    expect(info.businessName).toBe('Alpha Co');
+    for (const key of Object.keys(info)) expect(key).not.toMatch(/secret|password|token|encrypted|hash/i);
+    expect(info.ein).toBeUndefined();
+    expect(info.intakeSettings).toBeUndefined();
+  });
+
+  it('initialize hands the connection a signed id to keep its active client under', async () => {
     const init = await post(staffKey, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
-    expect(init.headers['mcp-session-id']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(init.headers['mcp-session-id']).toMatch(/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{32}$/);
     expect(init.body.result.instructions).toContain('list_companies');
   });
 

@@ -24,7 +24,7 @@ import {
 } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { escapeLike } from '../utils/sql-like.js';
-import { getActiveCompany, getUserCompanies, resolveClient, setActiveCompany } from './context.js';
+import { getActiveCompany, getUserCompanies, resolveClient, setActiveCompany, clearActiveCompany } from './context.js';
 import {
   McpToolError, companyTool, date, id, jsonArray, money, optBool, optDate, optId, optInt, optText,
   sessionTool, text, userTool,
@@ -57,7 +57,8 @@ const tagFilter = optId('Only count lines (or transactions) carrying this tag');
 sessionTool('list_companies', {
   title: 'List clients',
   description: 'The client companies you can work in, with your role in each and whether MCP is turned on for it. '
-    + 'Firm staff see every client they have been given access to. Pass an id as company_id to any other tool, or set it once with set_active_company.',
+    + 'Firm staff see every client they have been given access to. Pass an id as company_id to any other tool. '
+    + 'set_active_company can remember one for this connection; a tool that changes data may still ask for company_id.',
   input: {
     search: optText('Only clients whose name contains this text'),
   },
@@ -75,13 +76,27 @@ sessionTool('list_companies', {
 sessionTool('set_active_company', {
   title: 'Choose the client to work in',
   description: 'Sets the client company the following calls on this connection act on when they do not pass company_id. '
-    + 'Returns its name; say it back to the user before making changes.',
+    + 'Returns its name; say it back to the user before making changes. '
+    + 'If used_for_changes is false, every call that changes data must pass company_id itself.',
   input: { company_id: id('The client company (an id from list_companies)') },
   readOnly: false,
-  handler: async (p, { auth, sessionKey }) => {
-    const client = await resolveClient(auth, sessionKey, p.company_id);
-    setActiveCompany(sessionKey, client.companyId);
-    return { active_company_id: client.companyId, name: client.companyName, role: client.role };
+  handler: async (p, { auth, session }) => {
+    let client;
+    try {
+      client = await resolveClient(auth, session, p.company_id);
+    } catch (err) {
+      // A switch that failed must not leave the earlier client in place:
+      // the caller asked to stop working there.
+      clearActiveCompany(session.key);
+      throw err;
+    }
+    setActiveCompany(session.key, client.companyId);
+    return {
+      active_company_id: client.companyId, name: client.companyName, role: client.role,
+      // Without a session of its own the choice is shared by every chat on
+      // this key or sign-in, so it is not trusted for changes.
+      used_for_changes: session.own,
+    };
   },
 });
 
@@ -90,8 +105,8 @@ sessionTool('get_active_company', {
   description: 'The client company this connection currently acts on, if one was set.',
   input: {},
   readOnly: true,
-  handler: async (_p, { auth, sessionKey }) => {
-    const active = getActiveCompany(sessionKey);
+  handler: async (_p, { auth, session }) => {
+    const active = getActiveCompany(session.key);
     const company = active ? (await getUserCompanies(auth.userId)).find((c) => c.id === active) : undefined;
     return { active_company_id: company?.id ?? null, name: company?.name ?? null };
   },
@@ -161,7 +176,7 @@ companyTool('create_contact', {
     const { createContactSchema } = await import('@kis-books/shared');
     const { create } = await import('../services/contacts.service.js');
     const input = createContactSchema.parse({ displayName: p.display_name, contactType: p.type, email: p.email, phone: p.phone });
-    return create(ctx.tenantId, input, ctx.userId);
+    return create(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -211,7 +226,7 @@ companyTool('create_expense', {
     const input = createExpenseSchema.parse({
       txnDate: p.date, contactId: p.payee_id, payFromAccountId: p.bank_account_id, lines: p.lines, memo: p.memo ?? '',
     });
-    return createExpense(ctx.tenantId, input, ctx.userId);
+    return createExpense(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -227,7 +242,7 @@ companyTool('create_journal_entry', {
   handler: async (p, ctx) => {
     const { createJournalEntry } = await import('../services/journal-entry.service.js');
     const input = createJournalEntrySchema.parse({ txnDate: p.date, lines: p.lines, memo: p.memo ?? '' });
-    return createJournalEntry(ctx.tenantId, input, ctx.userId);
+    return createJournalEntry(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -241,7 +256,7 @@ companyTool('void_transaction', {
   scope: 'write', resource: 'transactions', mode: 'write', destructive: true,
   handler: async (p, ctx) => {
     const { voidTransaction } = await import('../services/ledger.service.js');
-    await voidTransaction(ctx.tenantId, p.transaction_id, p.reason || 'Voided via MCP', ctx.userId);
+    await voidTransaction(ctx.tenantId, p.transaction_id, p.reason || 'Voided via MCP', ctx.userId, { companyId: ctx.companyId });
     return { voided: true };
   },
 });
@@ -262,7 +277,7 @@ companyTool('create_transfer', {
     const input = createTransferSchema.parse({
       txnDate: p.date, fromAccountId: p.from_account_id, toAccountId: p.to_account_id, amount: p.amount, memo: p.memo ?? '',
     });
-    return createTransfer(ctx.tenantId, input, ctx.userId);
+    return createTransfer(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -375,7 +390,7 @@ companyTool('create_item', {
     const input = createItemSchema.parse({
       name: p.name, unitPrice: p.unit_price, incomeAccountId: p.income_account_id, description: p.description ?? '',
     });
-    return create(ctx.tenantId, input, ctx.userId);
+    return create(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -422,7 +437,7 @@ companyTool('send_invoice', {
   scope: 'invoicing', resource: 'invoices', mode: 'write', openWorld: true,
   handler: async (p, ctx) => {
     const { sendInvoice } = await import('../services/invoice.service.js');
-    return sendInvoice(ctx.tenantId, p.invoice_id, ctx.userId);
+    return sendInvoice(ctx.tenantId, p.invoice_id, ctx.userId, ctx.companyId);
   },
 });
 
@@ -494,34 +509,36 @@ companyTool('create_deposit', {
   handler: async (p, ctx) => {
     const { createDeposit } = await import('../services/deposit.service.js');
     const input = createDepositSchema.parse({ txnDate: p.date, depositToAccountId: p.account_id, lines: p.lines, memo: p.memo ?? '' });
-    return createDeposit(ctx.tenantId, input, ctx.userId);
+    return createDeposit(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
-// ─── Bank connections (the caller's own, across clients) ────────
+// ─── Bank connections ───────────────────────────────────────────
 
-userTool('get_bank_connections', {
+companyTool('get_bank_connections', {
   title: 'List bank connections',
-  description: 'The Plaid bank connections you can see.',
+  description: 'The client\'s Plaid bank connections that you can see.',
   input: {},
-  scope: 'banking', readOnly: true,
-  handler: async (_p, { auth }) => {
+  scope: 'banking', resource: 'banking', mode: 'read',
+  handler: async (_p, ctx) => {
     const { getItemsForUser } = await import('../services/plaid-connection.service.js');
-    return getItemsForUser(auth.userId);
+    return getItemsForUser(ctx.userId, ctx.tenantId);
   },
 });
 
-userTool('sync_bank_connection', {
+companyTool('sync_bank_connection', {
   title: 'Sync a bank connection',
-  description: 'Pulls new transactions from the bank for one connection.',
+  description: 'Pulls new transactions from the bank for one of the client\'s connections.',
   input: { connection_id: id('The bank connection (an id from get_bank_connections)') },
-  scope: 'banking', readOnly: false, openWorld: true,
-  handler: async (p, { auth }) => {
-    // Same ownership gate as the HTTP route (/items/:id/sync): an arbitrary
-    // connection id must not let a banking-scoped token sync another
-    // client's item.
-    const { assertCanAccessItem } = await import('../services/plaid-connection.service.js');
-    await assertCanAccessItem(auth.userId, p.connection_id);
+  scope: 'banking', resource: 'banking', mode: 'write', openWorld: true,
+  handler: async (p, ctx) => {
+    // The connection must be one of THIS client's, and one the caller may
+    // operate (the HTTP route's gate, /items/:id/sync): an arbitrary id
+    // must not let a banking-scoped token sync another client's item.
+    const { getItemsForUser, assertCanAccessItem } = await import('../services/plaid-connection.service.js');
+    const mine = await getItemsForUser(ctx.userId, ctx.tenantId);
+    if (!mine.some((item) => item.id === p.connection_id)) throw new McpToolError('NOT_FOUND', 'Connection not found');
+    await assertCanAccessItem(ctx.userId, p.connection_id);
     const { syncItem } = await import('../services/plaid-sync.service.js');
     return syncItem(p.connection_id);
   },
@@ -567,7 +584,7 @@ companyTool('categorize_feed_item', {
       ctx.tenantId,
       p.feed_item_id,
       { accountId: p.account_id, contactId: p.contact_id, memo: p.memo, ...(p.tag_id !== undefined ? { tagId: p.tag_id } : {}) },
-      ctx.userId, undefined, { ownerChoice: true },
+      ctx.userId, ctx.companyId, { ownerChoice: true },
     );
   },
 });
@@ -606,7 +623,7 @@ companyTool('bulk_approve_feed_items', {
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
     const { bulkApprove } = await import('../services/bank-feed.service.js');
-    return bulkApprove(ctx.tenantId, p.feed_item_ids, ctx.userId);
+    return bulkApprove(ctx.tenantId, p.feed_item_ids, ctx.userId, ctx.companyId);
   },
 });
 
@@ -995,9 +1012,16 @@ companyTool('get_company_info', {
   handler: async (_p, ctx) => {
     const company = await db.query.companies.findFirst({ where: eq(companies.id, ctx.companyId) });
     if (!company) throw new McpToolError('NOT_FOUND', 'Company not found');
-    // Never hand the closing-date password hash (U-15) to an MCP client.
-    // Nor the intake folder paths (U-93): owner data from one computer.
-    const { closingPasswordHash: _closingPasswordHash, intakeSettings: _intakeSettings, ...info } = company;
+    // Any role can call this, so it returns the profile and nothing that
+    // is a credential: no closing-date password hash (U-15), no payment
+    // processor keys or webhook secrets, no tax id, and not the intake
+    // folder paths (U-93), which are owner data from one computer.
+    const SECRET = /secret|password|token|encrypted|hash|apikey|api_key|privatekey/i;
+    const info: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(company)) {
+      if (SECRET.test(key) || key === 'ein' || key === 'intakeSettings') continue;
+      info[key] = value;
+    }
     return info;
   },
 });
@@ -1058,7 +1082,7 @@ companyTool('create_bill', {
       paymentTerms: p.payment_terms, vendorInvoiceNumber: p.vendor_invoice_number,
       memo: p.memo, lines: p.lines,
     });
-    return createBill(ctx.tenantId, input, ctx.userId);
+    return createBill(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -1069,7 +1093,7 @@ companyTool('void_bill', {
   scope: 'write', resource: 'bills', mode: 'write', destructive: true,
   handler: async (p, ctx) => {
     const { voidBill } = await import('../services/bill.service.js');
-    await voidBill(ctx.tenantId, p.bill_id, p.reason, ctx.userId);
+    await voidBill(ctx.tenantId, p.bill_id, p.reason, ctx.userId, { companyId: ctx.companyId });
     return { voided: true };
   },
 });
@@ -1125,7 +1149,7 @@ companyTool('pay_bills', {
       bankAccountId: p.bank_account_id, txnDate: p.date, method: p.method,
       printLater: p.print_later, memo: p.memo, bills: p.bills, credits: p.credits,
     });
-    return payBills(ctx.tenantId, input, ctx.userId);
+    return payBills(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -1136,7 +1160,7 @@ companyTool('void_bill_payment', {
   scope: 'write', resource: 'pay_bills', mode: 'write', destructive: true,
   handler: async (p, ctx) => {
     const { voidBillPayment } = await import('../services/bill-payment.service.js');
-    await voidBillPayment(ctx.tenantId, p.payment_id, p.reason, ctx.userId);
+    await voidBillPayment(ctx.tenantId, p.payment_id, p.reason, ctx.userId, { companyId: ctx.companyId });
     return { voided: true };
   },
 });
@@ -1180,7 +1204,7 @@ companyTool('create_vendor_credit', {
       contactId: p.vendor_id, txnDate: p.date, vendorInvoiceNumber: p.vendor_invoice_number,
       memo: p.memo, lines: p.lines,
     });
-    return createVendorCredit(ctx.tenantId, input, ctx.userId);
+    return createVendorCredit(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 
@@ -1242,7 +1266,7 @@ companyTool('write_check', {
       memo: p.memo, printedMemo: p.printed_memo,
       printLater: p.print_later ?? false, lines: p.lines,
     });
-    return createCheck(ctx.tenantId, input, ctx.userId);
+    return createCheck(ctx.tenantId, input, ctx.userId, ctx.companyId);
   },
 });
 

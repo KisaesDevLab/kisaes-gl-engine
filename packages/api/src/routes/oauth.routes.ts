@@ -166,7 +166,12 @@ function basicCredentials(req: Request): { clientId?: string; clientSecret?: str
   const decoded = Buffer.from(header.replace(/^Basic\s+/i, ''), 'base64').toString('utf8');
   const colon = decoded.indexOf(':');
   if (colon < 0) return {};
-  return { clientId: decodeURIComponent(decoded.slice(0, colon)), clientSecret: decodeURIComponent(decoded.slice(colon + 1)) };
+  try {
+    return { clientId: decodeURIComponent(decoded.slice(0, colon)), clientSecret: decodeURIComponent(decoded.slice(colon + 1)) };
+  } catch {
+    // A stray "%" is not valid form encoding: bad credentials, not a server error.
+    throw new OAuthError('invalid_client', 'Malformed client credentials', 401);
+  }
 }
 
 // POST /oauth/token — exchange a code, or refresh. Form-encoded per RFC 6749; JSON is accepted too.

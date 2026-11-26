@@ -8,6 +8,7 @@
 // dispatcher in server.ts enforces all three before a handler runs, so a
 // handler never checks access itself and a new tool cannot forget to.
 
+import type { McpSession } from './context.js';
 import { z, type ZodRawShape, type ZodTypeAny } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type {
@@ -44,8 +45,8 @@ export interface ToolContext extends McpClientContext {
 
 export interface SessionContext {
   auth: McpAuthContext;
-  /** Keys the connection's active company (see context.ts). */
-  sessionKey: string;
+  /** The connection, which keys its remembered client (see context.ts). */
+  session: McpSession;
 }
 
 /** The permission a tool needs in the client's books; every listed resource is required. */
@@ -139,7 +140,7 @@ export function jsonArray<T extends ZodTypeAny>(inner: z.ZodArray<T> | z.ZodEffe
 }
 
 const COMPANY_ID = optId(
-  'The client company to act on (an id from list_companies). Omit to use the active company set with set_active_company.',
+  'The client company to act on (an id from list_companies). Omit to use the company set with set_active_company; a call that changes data should always pass it.',
 );
 
 function toInputSchema(schema: z.ZodObject<ZodRawShape>): Record<string, unknown> {
