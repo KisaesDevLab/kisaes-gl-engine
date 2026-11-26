@@ -64,4 +64,18 @@ export interface McpAuthContext {
   scopes: string[];
   allowedCompanies: string[] | null;
   activeCompanyId?: string;
+  /** OAuth only: the client (oauth_clients.id) the token was issued to. */
+  oauthClientId?: string;
+}
+
+/** A client's books as an MCP caller sees them: one entry per tenant the caller can open. */
+export interface McpClientCompany {
+  /** The company id tools take as `company_id`. */
+  id: string;
+  name: string;
+  tenantId: string;
+  /** The caller's role in this client (owner, accountant, bookkeeper, readonly, ...). */
+  role: string;
+  /** False until MCP is turned on in the company's settings; tools refuse it until then. */
+  mcpEnabled: boolean;
 }

@@ -16,6 +16,11 @@ export const oauthClients = pgTable('oauth_clients', {
   isActive: boolean('is_active').default(true),
   createdBy: uuid('created_by'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // 'none' = a public client (PKCE, no secret): an MCP connector that
+  // registered itself. 'client_secret_post' = a client an admin created.
+  tokenEndpointAuthMethod: varchar('token_endpoint_auth_method', { length: 40 }).notNull().default('client_secret_post'),
+  // Registered itself through POST /oauth/register (RFC 7591).
+  isDynamic: boolean('is_dynamic').notNull().default(false),
 });
 
 // OAuth Tokens
@@ -30,6 +35,8 @@ export const oauthTokens = pgTable('oauth_tokens', {
   refreshTokenExpiresAt: timestamp('refresh_token_expires_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  // The resource (RFC 8707) the token was issued for: this install's /mcp URL.
+  resource: text('resource'),
 }, (table) => ({
   accessIdx: index('idx_ot_access').on(table.accessTokenHash),
   userIdx: index('idx_ot_user').on(table.userId),
@@ -46,6 +53,10 @@ export const oauthAuthorizationCodes = pgTable('oauth_authorization_codes', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   used: boolean('used').default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  // PKCE (RFC 7636): the S256 challenge the token request must answer.
+  codeChallenge: varchar('code_challenge', { length: 128 }),
+  codeChallengeMethod: varchar('code_challenge_method', { length: 10 }),
+  resource: text('resource'),
 });
 
 // MCP Request Log

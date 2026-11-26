@@ -40,6 +40,7 @@ export async function logMcpRequest(opts: {
     userId: opts.auth.userId,
     authMethod: opts.auth.source,
     apiKeyId: opts.auth.keyId || null,
+    oauthClientId: opts.auth.oauthClientId || null,
     toolName: opts.toolName || null,
     resourceUri: opts.resourceUri || null,
     companyId: opts.companyId || null,

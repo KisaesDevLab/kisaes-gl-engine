@@ -29,6 +29,62 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "operationId": "get__well_known_oauth_authorization_server",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "tags": [
+          ".well-known"
+        ],
+        "x-lan": "host"
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "operationId": "get__well_known_oauth_protected_resource",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "tags": [
+          ".well-known"
+        ],
+        "x-lan": "host"
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "operationId": "get__well_known_oauth_protected_resource_mcp",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "tags": [
+          ".well-known"
+        ],
+        "x-lan": "host"
+      }
+    },
+    "/.well-known/openid-configuration": {
+      "get": {
+        "operationId": "get__well_known_openid_configuration",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "tags": [
+          ".well-known"
+        ],
+        "x-lan": "host"
+      }
+    },
     "/api/bank-connect/{token}": {
       "get": {
         "operationId": "get_api_bank_connect_by_token",
@@ -105531,6 +105587,35 @@
             "ApiKeyAuth": []
           }
         ],
+        "tags": [
+          "oauth"
+        ],
+        "x-lan": "host",
+        "x-stale": "n-a"
+      }
+    },
+    "/oauth/authorize/details": {
+      "get": {
+        "operationId": "get_oauth_authorize_details",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
+        "tags": [
+          "oauth"
+        ],
+        "x-lan": "host"
+      }
+    },
+    "/oauth/register": {
+      "post": {
+        "operationId": "post_oauth_register",
+        "responses": {
+          "default": {
+            "description": "Response not yet documented in this specification."
+          }
+        },
         "tags": [
           "oauth"
         ],

@@ -28,16 +28,24 @@ async function cleanDb() {
 }
 
 function mockReq(body: any, authHeader?: string) {
-  const captured: any = { status: 0, body: null };
+  const captured: any = { status: 0, body: null, headers: {} };
   const req: any = {
     headers: { ...(authHeader ? { authorization: authHeader } : {}) },
-    body, ip: '127.0.0.1',
+    method: 'POST', body, ip: '127.0.0.1',
   };
   const res: any = {
     status(s: number) { captured.status = s; return this; },
-    json(b: any) { captured.body = b; return this; },
+    json(b: any) { captured.body = b; if (!captured.status) captured.status = 200; return this; },
+    setHeader(name: string, value: string) { captured.headers[name.toLowerCase()] = value; return this; },
+    end() { return this; },
   };
   return { req, res, captured };
+}
+
+/** The failure a call reported: a tool error result, or a JSON-RPC error. */
+function failure(resp: any): string | undefined {
+  if (resp?.result?.isError) return resp.result.content[0].text;
+  return resp?.error?.message;
 }
 
 async function rpc(method: string, params?: any): Promise<any> {
@@ -79,6 +87,7 @@ describe('MCP server integration', () => {
 
   it('tools/list returns all registered tools', async () => {
     const resp = await rpc('tools/list');
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
     expect(Array.isArray(resp.result.tools)).toBe(true);
     // Verify key new tools are present
@@ -104,23 +113,28 @@ describe('MCP server integration', () => {
     expect(names).toContain('run_check_register');
   });
 
-  it('resources/list returns new resource URIs', async () => {
-    const resp = await rpc('resources/list');
-    expect(resp.result).toBeDefined();
-    const uris = resp.result.resources.map((r: any) => r.uri);
-    expect(uris).toContain('kisbooks://company/{id}/bills/payable');
-    expect(uris).toContain('kisbooks://company/{id}/bill-payments');
-    expect(uris).toContain('kisbooks://company/{id}/vendor-credits');
-    expect(uris).toContain('kisbooks://company/{id}/recurring');
-    expect(uris).toContain('kisbooks://company/{id}/budgets');
-    expect(uris).toContain('kisbooks://company/{id}/checks/print-queue');
-    expect(uris).toContain('kisbooks://company/{id}/reconciliations');
+  it('resources/templates/list returns the per-company resources', async () => {
+    const list = await rpc('resources/list');
+    expect(list.result.resources.map((r: any) => r.uri)).toEqual(['kisbooks://companies']);
+    const resp = await rpc('resources/templates/list');
+    const uris = resp.result.resourceTemplates.map((r: any) => r.uriTemplate);
+    expect(uris).toContain('kisbooks://company/{company_id}/bills/payable');
+    expect(uris).toContain('kisbooks://company/{company_id}/bill-payments');
+    expect(uris).toContain('kisbooks://company/{company_id}/vendor-credits');
+    expect(uris).toContain('kisbooks://company/{company_id}/recurring');
+    expect(uris).toContain('kisbooks://company/{company_id}/budgets');
+    expect(uris).toContain('kisbooks://company/{company_id}/checks/print-queue');
+    expect(uris).toContain('kisbooks://company/{company_id}/reconciliations');
   });
 
   it('initialize reports protocol and capabilities', async () => {
-    const resp = await rpc('initialize');
-    expect(resp.result.protocolVersion).toBeDefined();
-    expect(resp.result.capabilities).toBeDefined();
+    const resp = await rpc('initialize', { protocolVersion: '2025-06-18' });
+    expect(resp.result.protocolVersion).toBe('2025-06-18');
+    expect(resp.result.capabilities.tools).toBeDefined();
+    expect(resp.result.capabilities.resources).toBeDefined();
+    // A version this server does not speak is answered with its newest.
+    const newer = await rpc('initialize', { protocolVersion: '2099-01-01' });
+    expect(newer.result.protocolVersion).toBe('2025-11-25');
   });
 
   it('tools/call create_invoice posts in the company: company_id set, tax rows = Sales Tax Payable (U-147)', async () => {
@@ -141,6 +155,7 @@ describe('MCP server integration', () => {
 
   it('tools/call list_bills runs', async () => {
     const resp = await rpc('tools/call', { name: 'list_bills', arguments: {} });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
     const data = JSON.parse(resp.result.content[0].text);
     expect(data).toHaveProperty('data');
@@ -149,31 +164,37 @@ describe('MCP server integration', () => {
 
   it('tools/call get_dashboard_snapshot runs', async () => {
     const resp = await rpc('tools/call', { name: 'get_dashboard_snapshot', arguments: {} });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
   it('tools/call list_recurring runs', async () => {
     const resp = await rpc('tools/call', { name: 'list_recurring', arguments: {} });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
   it('tools/call list_budgets runs', async () => {
     const resp = await rpc('tools/call', { name: 'list_budgets', arguments: {} });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
   it('tools/call list_checks runs', async () => {
     const resp = await rpc('tools/call', { name: 'list_checks', arguments: {} });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
   it('tools/call run_1099_vendor_summary runs', async () => {
     const resp = await rpc('tools/call', { name: 'run_1099_vendor_summary', arguments: { year: '2026' } });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
   it('tools/call run_expense_by_category runs', async () => {
     const resp = await rpc('tools/call', { name: 'run_expense_by_category', arguments: { start_date: '2026-01-01', end_date: '2026-04-30' } });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
@@ -184,6 +205,7 @@ describe('MCP server integration', () => {
     const companyId = companies[0].id;
 
     const resp = await rpc('resources/read', { uri: `kisbooks://company/${companyId}/bills/payable` });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
     expect(resp.result.contents[0].uri).toContain('/bills/payable');
   });
@@ -194,6 +216,7 @@ describe('MCP server integration', () => {
     const companyId = companies[0].id;
 
     const resp = await rpc('resources/read', { uri: `kisbooks://company/${companyId}/recurring` });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
@@ -203,13 +226,14 @@ describe('MCP server integration', () => {
     const companyId = companies[0].id;
 
     const resp = await rpc('resources/read', { uri: `kisbooks://company/${companyId}/reconciliations` });
+    expect(failure(resp), failure(resp)).toBeUndefined();
     expect(resp.result).toBeDefined();
   });
 
-  it('tools/call unknown tool returns -32601', async () => {
+  it('tools/call unknown tool returns -32602', async () => {
     const resp = await rpc('tools/call', { name: 'no_such_tool', arguments: {} });
     expect(resp.error).toBeDefined();
-    expect(resp.error.code).toBe(-32601);
+    expect(resp.error.code).toBe(-32602);
   });
 
   it('tools/call pay_bills with invalid method is rejected', async () => {
@@ -222,7 +246,7 @@ describe('MCP server integration', () => {
         bills: JSON.stringify([{ billId: '00000000-0000-0000-0000-000000000000', amount: '1.00' }]),
       },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toMatch(/INVALID_PARAMS/);
   });
 
   it('tools/call write_check without required payee_name is rejected', async () => {
@@ -235,7 +259,7 @@ describe('MCP server integration', () => {
         lines: JSON.stringify([{ accountId: '00000000-0000-0000-0000-000000000000', amount: '100.00' }]),
       },
     });
-    expect(resp.error).toBeDefined();
+    expect(failure(resp)).toMatch(/INVALID_PARAMS/);
   });
 
   // ─── ADR 0XX — split-level tags over MCP ─────────────────────────

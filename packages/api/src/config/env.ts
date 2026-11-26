@@ -222,6 +222,13 @@ export const envSchema = z.object({
       message: 'PUBLIC_URL must use http:// or https://',
     })
     .default('http://localhost:5173'),
+  // MCP connectors (OAuth). Web redirect URIs a client that registers
+  // itself (POST /oauth/register) may use, comma-separated, exact match.
+  // Whoever holds a client's redirect URI receives the user's sign-in code,
+  // so only addresses of connector services you trust belong here. Loopback
+  // redirects (mcp-remote, Claude Code on the user's own machine) are always
+  // allowed and need no entry. Default: Claude's connector callback.
+  MCP_OAUTH_REDIRECT_ALLOWLIST: z.string().default('https://claude.ai/api/mcp/auth_callback'),
   // COOKIE_PATH narrows the Path attribute on every cookie this app
   // sets. Default '/' matches single-app mode. Multi-app mode sets
   // it to '/mybooks' so cookies don't leak into sibling apps on the

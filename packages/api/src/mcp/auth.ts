@@ -5,11 +5,39 @@
 import crypto from 'crypto';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { apiKeys, oauthTokens, users } from '../db/schema/index.js';
+import { apiKeys, oauthClients, oauthTokens, users } from '../db/schema/index.js';
 import type { McpAuthContext } from '@kis-books/shared';
+import { sameResource } from '../services/oauth.service.js';
 
-export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
-  if (!token) throw new Error('AUTH_REQUIRED: No bearer token provided');
+/** The bearer token was missing, unknown, expired or may not be used: HTTP 401 (403 for `forbidden`). */
+export class McpAuthError extends Error {
+  constructor(public readonly code: string, message: string, public readonly forbidden = false) {
+    super(`${code}: ${message}`);
+    this.name = 'McpAuthError';
+  }
+}
+
+export interface McpAuthOptions {
+  /** Admin > MCP / API > OAuth sign-in. Off: only API keys authenticate. */
+  oauthEnabled: boolean;
+  /** This install's MCP URL; an OAuth token issued for another resource is refused (RFC 8707). */
+  resource: string;
+}
+
+/**
+ * The user behind every credential must still be usable, as on every other
+ * way in (middleware/principal-check.ts): active, and not waiting to choose
+ * a new password after a temporary one.
+ */
+function assertUserUsable(user: typeof users.$inferSelect | undefined): asserts user is typeof users.$inferSelect {
+  if (!user || !user.isActive) throw new McpAuthError('AUTH_REQUIRED', 'User account is inactive');
+  if (user.passwordChangeRequired) {
+    throw new McpAuthError('PASSWORD_CHANGE_REQUIRED', 'Choose a new password in the app to continue', true);
+  }
+}
+
+export async function resolveMcpAuth(token: string, opts: McpAuthOptions): Promise<McpAuthContext> {
+  if (!token) throw new McpAuthError('AUTH_REQUIRED', 'No bearer token provided');
 
   const hash = crypto.createHash('sha256').update(token).digest('hex');
 
@@ -24,18 +52,18 @@ export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
     const key = await db.query.apiKeys.findFirst({
       where: and(eq(apiKeys.keyHash, hash), eq(apiKeys.isActive, true)),
     });
-    if (!key) throw new Error('AUTH_REQUIRED: Invalid API key');
-    if (key.revokedAt) throw new Error('AUTH_REQUIRED: API key has been revoked');
-    if (key.expiresAt && new Date(key.expiresAt) < new Date()) throw new Error('AUTH_EXPIRED: API key has expired');
+    if (!key) throw new McpAuthError('AUTH_REQUIRED', 'Invalid API key');
+    if (key.revokedAt) throw new McpAuthError('AUTH_REQUIRED', 'API key has been revoked');
+    if (key.expiresAt && new Date(key.expiresAt) < new Date()) throw new McpAuthError('AUTH_EXPIRED', 'API key has expired');
+
+    const user = await db.query.users.findFirst({ where: eq(users.id, key.userId) });
+    assertUserUsable(user);
 
     // Update usage stats
     await db.update(apiKeys).set({
       lastUsedAt: new Date(),
       totalRequests: (key.totalRequests || 0) + 1,
     }).where(eq(apiKeys.id, key.id));
-
-    const user = await db.query.users.findFirst({ where: eq(users.id, key.userId) });
-    if (!user || !user.isActive) throw new Error('AUTH_REQUIRED: User account is inactive');
 
     const scopes = (key.scopes || 'all').split(',').filter(Boolean);
     const allowedCompanies = key.allowedCompanies ? key.allowedCompanies.split(',').filter(Boolean) : null;
@@ -51,15 +79,23 @@ export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
   }
 
   if (isOauth) {
+    if (!opts.oauthEnabled) throw new McpAuthError('AUTH_REQUIRED', 'OAuth sign-in is turned off on this server');
     const oauthToken = await db.query.oauthTokens.findFirst({
       where: and(eq(oauthTokens.accessTokenHash, hash)),
     });
-    if (!oauthToken) throw new Error('AUTH_REQUIRED: Invalid token');
-    if (oauthToken.revokedAt) throw new Error('AUTH_REQUIRED: Token has been revoked');
-    if (new Date(oauthToken.accessTokenExpiresAt) < new Date()) throw new Error('AUTH_EXPIRED: Token has expired');
+    if (!oauthToken) throw new McpAuthError('AUTH_REQUIRED', 'Invalid token');
+    if (oauthToken.revokedAt) throw new McpAuthError('AUTH_REQUIRED', 'Token has been revoked');
+    if (new Date(oauthToken.accessTokenExpiresAt) < new Date()) throw new McpAuthError('AUTH_EXPIRED', 'Token has expired');
+    // A token issued for another resource is not ours to accept. Tokens
+    // from before resources were recorded carry none and stay valid.
+    if (oauthToken.resource && !sameResource(oauthToken.resource, opts.resource)) {
+      throw new McpAuthError('AUTH_REQUIRED', 'Token was not issued for this server');
+    }
+    const client = await db.query.oauthClients.findFirst({ where: eq(oauthClients.id, oauthToken.clientId) });
+    if (!client || !client.isActive) throw new McpAuthError('AUTH_REQUIRED', 'The app this token belongs to is no longer allowed');
 
     const user = await db.query.users.findFirst({ where: eq(users.id, oauthToken.userId) });
-    if (!user || !user.isActive) throw new Error('AUTH_REQUIRED: User account is inactive');
+    assertUserUsable(user);
 
     return {
       userId: user.id,
@@ -67,10 +103,11 @@ export async function resolveMcpAuth(token: string): Promise<McpAuthContext> {
       source: 'oauth',
       scopes: (oauthToken.scopes || 'all').split(',').filter(Boolean),
       allowedCompanies: null,
+      oauthClientId: client.id,
     };
   }
 
-  throw new Error('AUTH_REQUIRED: Unrecognized token format');
+  throw new McpAuthError('AUTH_REQUIRED', 'Unrecognized token format');
 }
 
 export function checkScope(auth: McpAuthContext, requiredScope: string): void {

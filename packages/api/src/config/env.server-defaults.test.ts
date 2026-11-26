@@ -12,7 +12,8 @@ import { parseEnv } from './env.js';
 // desktop profile existed. The fixture was produced by the PRE-change
 // env.ts (engine 13ebd2ba) from SERVER_INPUT below, so any changed default
 // or newly-required variable fails this test. The only allowed difference
-// are the new QUEUE_BACKEND and MAX_SESSIONS_PER_USER keys with their server defaults.
+// are the new QUEUE_BACKEND, MAX_SESSIONS_PER_USER and MCP_OAUTH_REDIRECT_ALLOWLIST
+// keys with their server defaults.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const baseline = JSON.parse(
@@ -36,10 +37,13 @@ describe('env.ts server defaults (CL_MODE unset)', () => {
     const r = parseEnv({ ...SERVER_INPUT });
     expect(r.success).toBe(true);
     if (!r.success) return;
-    const { QUEUE_BACKEND, MAX_SESSIONS_PER_USER, ...rest } = r.data as Record<string, unknown>;
+    const { QUEUE_BACKEND, MAX_SESSIONS_PER_USER, MCP_OAUTH_REDIRECT_ALLOWLIST, ...rest } = r.data as Record<string, unknown>;
     expect(QUEUE_BACKEND).toBe('bullmq');
     // U-290: the session cap became configurable; the server keeps the old constant, 3.
     expect(MAX_SESSIONS_PER_USER).toBe(3);
+    // MCP connectors: a new key. Nothing reads it until an admin turns OAuth
+    // sign-in on, so an existing server behaves as before.
+    expect(MCP_OAUTH_REDIRECT_ALLOWLIST).toBe('https://claude.ai/api/mcp/auth_callback');
     expect(sorted(rest)).toBe(sorted(baseline));
   });
 

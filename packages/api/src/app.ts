@@ -82,7 +82,7 @@ import { plaidRouter } from './routes/plaid.routes.js';
 import { aiRouter } from './routes/ai.routes.js';
 import { shareRouter } from './routes/share.routes.js';
 import { chatRouter } from './routes/chat.routes.js';
-import { oauthRouter } from './routes/oauth.routes.js';
+import { oauthRouter, oauthWellKnownRouter } from './routes/oauth.routes.js';
 import { storageRouter } from './routes/storage.routes.js';
 import { payrollImportRouter } from './routes/payroll-import.routes.js';
 import { importsRouter } from './routes/imports.routes.js';
@@ -687,6 +687,8 @@ app.use('/api/v1/chat', chatRouter);
 // (token/revoke endpoints hit the DB per call). Reuse the global limiter
 // so anonymous callers get the same 300/min/IP budget as everything else.
 serverOnly.use('/oauth', globalLimiter, oauthRouter);
+// Discovery documents an MCP client reads before sign-in (RFC 9728, RFC 8414).
+serverOnly.use('/.well-known', globalLimiter, oauthWellKnownRouter);
 serverOnly.use('/api/v1/settings/storage', storageRouter);
 app.use('/api/v1/payroll-import', payrollImportRouter);
 app.use('/api/v1/imports', importsRouter);
@@ -755,10 +757,19 @@ serverOnly.use('/api/portal/bill-captures', portalBillCapturesPublicRouter);
 // re-mounts the portal routers for a linked client (docs/vibe-pm-integration.md).
 serverOnly.use('/api/peer/pm', peerPmRouter);
 
-// MCP Server endpoint
+// MCP Server endpoint. Outside /api/v1, so it takes the staff IP allowlist
+// and the global limiter here: an office that fences staff to its own
+// addresses must not have that fence open at /mcp.
+serverOnly.use('/mcp', globalLimiter, staffIpAllowlist());
 serverOnly.post('/mcp', async (req, res) => {
   const { handleMcpRequest } = await import('./mcp/server.js');
   await handleMcpRequest(req, res);
+});
+// No SSE stream and no session to end: GET and DELETE are refused, as the
+// transport asks of a server that offers neither.
+serverOnly.use('/mcp', async (req, res) => {
+  const { handleMcpMethodNotAllowed } = await import('./mcp/server.js');
+  handleMcpMethodNotAllowed(req, res);
 });
 
 // Public auth methods endpoint (no auth required — for login page rendering)
@@ -820,7 +831,8 @@ if (env.NODE_ENV === 'production' && !isDesktop()) {
   app.use(express.static(webDistPath));
   // SPA fallback: serve index.html for any non-API route
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/') || req.path.startsWith('/oauth') || req.path === '/health' || req.path === '/mcp') {
+    if (req.path.startsWith('/api/') || (req.path.startsWith('/oauth/') && req.path !== '/oauth/consent') || req.path.startsWith('/.well-known/')
+      || req.path === '/health' || req.path === '/mcp') {
       return next();
     }
     res.sendFile(path.join(webDistPath, 'index.html'));

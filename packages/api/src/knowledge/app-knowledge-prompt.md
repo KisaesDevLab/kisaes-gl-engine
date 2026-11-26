@@ -2654,31 +2654,63 @@ matching against existing transactions.
 
 ### MCP Server (AI Assistant Integration)
 Vibe MyBooks includes an MCP (Model Context Protocol) server at **`/mcp`**
-that lets external AI assistants (Claude, GPT, etc.) interact with your
-accounting data. MCP supports **both read and write operations** subject
-to the key's scopes.
+that lets external AI assistants (Claude and others) work in your books:
+enter transactions, work the bank feed, reconcile accounts, run reports.
+It follows the MCP 2025-11-25 specification (JSON-RPC over HTTP POST).
 
 Enable MCP:
 1. System-wide under **Admin → MCP / API Access →**
 2. Per-company under **Settings → Company Profile → API & MCP Access →**
    (off by default — must be explicitly enabled for each company)
+3. To let people sign in from Claude instead of pasting a key, also turn on
+   **OAuth sign-in** under **Admin → MCP / API Access →**
 
-**Tool groups (79+ tools):** context, chart of accounts, contacts,
+**Two ways to connect:**
+- **Sign in (OAuth)** — in Claude, add a custom connector with the URL
+  `https://your-instance/mcp`. Claude sends you to Vibe MyBooks to sign in
+  and approve. The connector then acts as you. Claude's connectors call
+  from Anthropic's servers, so the instance must be reachable from the
+  internet at a public HTTPS address.
+- **API key** — generate a key under **Settings → API Keys →** and send it
+  as `Authorization: Bearer <key>`. For Claude Desktop on an instance that
+  is only reachable inside the office, run the `mcp-remote` bridge from
+  `claude_desktop_config.json` with that header; it connects from the
+  user's own computer.
+
+**Firm staff and clients:** a staff member connects once, as themselves, and
+reaches every client they have been given access to (Firm → Staff → Tenant
+access). `list_companies` shows those clients with the person's role in
+each. What they can do in a client through MCP is exactly what their role
+and permission template allow in the app: read-only in a client is
+read-only through MCP, whatever the key or sign-in was granted. Revoking a
+person's access to a client takes effect on their next call. Each connection
+keeps its own active client (`set_active_company`), and every result names
+the client it ran in. A client with accounts hidden from the caller
+(sensitive accounts) cannot be opened through MCP by that caller.
+
+**Tool groups (89 tools):** clients, chart of accounts, contacts,
 transactions (including void), invoices, bills and AP, bill payments,
 vendor credits, customer payments, checks, recurring, budgets, dashboard,
-bank feed, reconciliation, attachments, items, tags, search, and
-financial reports.
+bank feed, reconciliation (start, read the worksheet, tick lines, auto-clear
+against a statement, complete, discard, undo), attachments, items, tags,
+search, and financial reports. Each tool publishes a JSON Schema for its
+arguments; lists such as journal lines are arrays.
 
 **Resources (read-only snapshots):** `kisbooks://companies`, and under
-`kisbooks://company/{id}/`: chart-of-accounts, contacts,
+`kisbooks://company/{company_id}/`: chart-of-accounts, contacts,
 recent-transactions, bank-feed/pending, invoices/overdue, bills/payable,
 bill-payments, vendor-credits, recurring, budgets, checks/print-queue,
 reconciliations, items, tags, dashboard.
 
-**Scopes gate each tool:** `all`, `read`, `write`, `reports`, `invoicing`,
-`banking`. Assign scopes when generating the key. Every MCP call is
-audited (tool, company, sanitized parameters, status, duration) —
-view under **Admin → MCP Audit Log**.
+**Scopes gate each tool:** `read`, `write`, `reports`, `invoicing`,
+`banking` (and `all`, for API keys). Assign scopes when generating the key
+or approving the sign-in. A tool also needs the matching permission in the
+client's books (for example Banking for the bank feed and reconciliation).
+A failed call comes back as an error result that starts with a code, such
+as `PERMISSION_DENIED`, `MCP_DISABLED` or `COMPANY_REQUIRED`. Entries in a
+closed period are refused (the closing-date password cannot be given
+through MCP). Every MCP call is audited (tool, client, sanitized
+parameters, status, duration) — view under **Admin → MCP Audit Log**.
 
 ### Tax1099.com E-Filing (Firms)
 Firms can e-file 1099s with the IRS through Tax1099.com (Zenwork). A firm admin
@@ -2693,11 +2725,19 @@ refresh its status from the same panel. Vendors missing a TIN or address are
 skipped and listed in the submission result so you can fix them and resubmit.
 
 ### OAuth 2.0
-Vibe MyBooks supports OAuth 2.0 for third-party application authentication
-(authorization code flow). Third-party apps redirect users to a consent
-screen showing the requesting app and requested scopes; users can then
-authorize or deny. Authorized apps appear under
-**Settings → Connected Apps**, where users can revoke access.
+Vibe MyBooks is an OAuth 2.1 authorization server for its MCP endpoint
+(authorization code with PKCE; discovery at
+`/.well-known/oauth-protected-resource` and
+`/.well-known/oauth-authorization-server`). It is off until an
+administrator turns on **OAuth sign-in** under **Admin → MCP / API Access →**.
+A connector registers itself, sends the user to a consent screen showing the
+requesting app, where it will send the sign-in and the requested scopes, and
+the user approves or declines. An app that registers itself may only redirect
+to the user's own computer or to an address the operator allows
+(`MCP_OAUTH_REDIRECT_ALLOWLIST`, by default Claude's connector callback).
+Access tokens last one hour and are renewed with a rotating refresh token.
+Authorized apps appear under **Settings → Connected Apps**, where users can
+revoke access.
 
 
 ## Screen Catalog (auto-generated)

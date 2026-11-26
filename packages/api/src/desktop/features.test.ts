@@ -90,6 +90,7 @@ describe('serverOnly', () => {
   it('table prefixes are unique and well-formed', () => {
     const prefixes = DESKTOP_UNMOUNTED.map((f) => f.prefix);
     expect(new Set(prefixes).size).toBe(prefixes.length);
-    for (const p of prefixes) expect(p).toMatch(/^\/[a-z0-9/-]+$/);
+    // Lower-case path segments; a leading dot only for /.well-known (RFC 8615).
+    for (const p of prefixes) expect(p).toMatch(/^\/\.?[a-z0-9/-]+$/);
   });
 });

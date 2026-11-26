@@ -3,97 +3,99 @@
 // See LICENSE and NOTICE.md for terms.
 
 import { describe, it, expect } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { RESOURCE_KEYS } from '@kis-books/shared';
+import './tools.js';
+import { listTools } from './registry.js';
 
 // Regression guard for MCP tool authorization.
 //
-// Every registered tool must enforce a scope. We do this by reading the
-// server.ts source and asserting that for each `registerTool(` call, the
-// body of the handler either:
-//   (a) calls `checkScope(auth, ...)` somewhere, or
-//   (b) is explicitly allow-listed below as scope-agnostic.
-//
-// A future tool that forgets both fails this test loudly at CI time, so
-// "missing authorization check" can't slip past review silently. That's the
-// whole point — the M10 audit finding wasn't about an existing hole, it
-// was about drift risk. This catches the drift.
+// The dispatcher (server.ts) checks, before a handler runs, the token scope
+// and the client-level permission each tool DECLARES. So the drift risk is
+// a tool declared without them, or with the wrong kind. This reads the
+// registry itself: a future tool that declares nothing cannot be registered
+// as a company tool at all (the type requires both), and the checks below
+// catch the remaining ways to get it wrong.
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_SRC = fs.readFileSync(path.join(__dirname, 'server.ts'), 'utf-8');
+// Tools that need no scope: they only show or switch the caller's own
+// context and cause nothing the bearer is not already allowed to do.
+const SESSION_TOOLS = ['get_active_company', 'list_companies', 'set_active_company'];
+// Tools that act on the caller's own bank connections, not in one client.
+const USER_TOOLS = ['get_bank_connections', 'sync_bank_connection'];
+// The only tool that needs membership of the client and nothing more.
+const MEMBERSHIP_ONLY = ['get_company_info'];
 
-// Tools that legitimately need no scope (they only expose or switch a
-// user's own context and can't cause any side effect the bearer isn't
-// already authorized to perform).
-const SCOPE_EXEMPT = new Set([
-  'list_companies',
-  'set_active_company',
-  'get_active_company',
-]);
+const SCOPES = ['read', 'write', 'reports', 'banking', 'invoicing'];
 
-interface ToolBlock {
-  name: string;
-  body: string;
-}
+describe('MCP tool registry', () => {
+  const tools = listTools();
 
-function extractToolBlocks(src: string): ToolBlock[] {
-  const blocks: ToolBlock[] = [];
-  // Walk the source by finding each registerTool(' literal opener, then
-  // scanning forward with a brace/paren depth counter to find the matching
-  // close of the registerTool call. This is more robust than a regex for
-  // nested parens inside the handler body.
-  const opener = /registerTool\(\s*'([^']+)'/g;
-  for (let m = opener.exec(src); m; m = opener.exec(src)) {
-    const name = m[1]!;
-    const start = m.index + m[0].length;
-    let i = start;
-    let depthParen = 1;
-    let inStr: string | null = null;
-    let inTpl = false;
-    while (i < src.length) {
-      const ch = src[i]!;
-      const prev = src[i - 1];
-      if (inStr) {
-        if (ch === inStr && prev !== '\\') inStr = null;
-      } else if (inTpl) {
-        if (ch === '`' && prev !== '\\') inTpl = false;
-      } else if (ch === '"' || ch === "'") {
-        inStr = ch;
-      } else if (ch === '`') {
-        inTpl = true;
-      } else if (ch === '(') {
-        depthParen++;
-      } else if (ch === ')') {
-        depthParen--;
-        if (depthParen === 0) {
-          blocks.push({ name, body: src.slice(start, i) });
-          break;
-        }
-      }
-      i++;
-    }
-  }
-  return blocks;
-}
-
-describe('MCP tool scope enforcement', () => {
-  const blocks = extractToolBlocks(SERVER_SRC);
-
-  it('parses every registered tool', () => {
-    // Sanity: if the parser misses blocks the whole test is meaningless.
-    // Keep this in sync with the tool count — it should only ever grow.
-    expect(blocks.length).toBeGreaterThanOrEqual(79);
+  it('registers every tool', () => {
+    // Keep in step with the tool count; it should only ever grow.
+    expect(tools.length).toBeGreaterThanOrEqual(89);
+    expect(new Set(tools.map((t) => t.name)).size).toBe(tools.length);
   });
 
-  it('every tool either calls checkScope or is explicitly scope-exempt', () => {
+  it('only the listed tools run without a scope or outside a client', () => {
+    expect(tools.filter((t) => t.kind === 'session').map((t) => t.name).sort()).toEqual(SESSION_TOOLS);
+    expect(tools.filter((t) => t.kind === 'user').map((t) => t.name).sort()).toEqual(USER_TOOLS);
+  });
+
+  it('every company tool declares a scope and the permission it needs in the client\'s books', () => {
     const offenders: string[] = [];
-    for (const { name, body } of blocks) {
-      if (SCOPE_EXEMPT.has(name)) continue;
-      if (!/\bcheckScope\s*\(\s*auth\s*,/.test(body)) {
-        offenders.push(name);
-      }
+    for (const t of tools) {
+      if (t.kind === 'session') continue;
+      if (!SCOPES.includes(t.scope)) offenders.push(`${t.name}: scope`);
+      if (t.kind !== 'company') continue;
+      if (t.access.resources.some((r) => !RESOURCE_KEYS.includes(r))) offenders.push(`${t.name}: unknown resource`);
+      if (t.access.resources.length === 0 && !MEMBERSHIP_ONLY.includes(t.name)) offenders.push(`${t.name}: no resource`);
+      // A tool that changes something needs full access, and says so to the client.
+      if (t.annotations.readOnlyHint !== (t.access.action === 'read')) offenders.push(`${t.name}: read/write mismatch`);
     }
-    expect(offenders, `Tools missing checkScope: ${offenders.join(', ')}`).toEqual([]);
+    expect(offenders).toEqual([]);
+  });
+
+  it('a read-scoped token can never reach a tool that writes', () => {
+    const writesOnReadScope = tools
+      .filter((t) => t.kind === 'company' && t.access.action !== 'read' && (t.scope === 'read' || t.scope === 'reports'))
+      .map((t) => t.name);
+    expect(writesOnReadScope).toEqual([]);
+  });
+
+  it('publishes a valid JSON Schema for every tool', () => {
+    const problems: string[] = [];
+    const check = (name: string, schema: unknown, path: string) => {
+      if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) {
+        problems.push(`${name} ${path}: not a schema object`);
+        return;
+      }
+      const node = schema as Record<string, unknown>;
+      const props = node['properties'];
+      if (props !== undefined) {
+        if (typeof props !== 'object' || props === null) problems.push(`${name} ${path}: properties`);
+        else for (const [key, value] of Object.entries(props)) check(name, value, `${path}.${key}`);
+      }
+      if (node['items'] !== undefined) check(name, node['items'], `${path}[]`);
+      for (const key of ['anyOf', 'oneOf', 'allOf']) {
+        const list = node[key];
+        if (Array.isArray(list)) list.forEach((s, i) => check(name, s, `${path}.${key}${i}`));
+      }
+    };
+    for (const t of tools) {
+      expect(t.inputSchema['type'], t.name).toBe('object');
+      expect(t.inputSchema['$schema'], t.name).toBeUndefined();
+      expect(t.name).toMatch(/^[a-z0-9_]{1,64}$/);
+      expect(t.annotations.title.length, t.name).toBeGreaterThan(0);
+      check(t.name, t.inputSchema, '$');
+    }
+    expect(problems).toEqual([]);
+  });
+
+  it('accepts string-only clients: a JSON-encoded list, a numeric string, "true"', () => {
+    const bills = tools.find((t) => t.name === 'list_bills')!;
+    expect(bills.input.parse({ limit: '25', overdue_only: 'true', contact_id: '' })).toEqual({ limit: 25, overdue_only: true });
+    const tag = tools.find((t) => t.name === 'tag_transaction')!;
+    const id = '11111111-1111-4111-8111-111111111111';
+    expect(tag.input.parse({ transaction_id: id, tag_ids: JSON.stringify([id]) })).toEqual({ transaction_id: id, tag_ids: [id] });
+    expect(() => tag.input.parse({ transaction_id: 'not-an-id', tag_ids: [] })).toThrow();
   });
 });
