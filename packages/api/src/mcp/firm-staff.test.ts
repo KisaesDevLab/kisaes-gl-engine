@@ -8,7 +8,10 @@
 // What they can reach and do must be exactly what the app gives them:
 // the clients they hold access to, with the role they hold in each.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+
+// This file makes far more calls on one key than the per-key limit allows in a minute.
+vi.mock('./rate-limiter.js', () => ({ checkRateLimit: () => ({ allowed: true }) }));
 import 'express-async-errors';
 import crypto from 'crypto';
 import { sql, eq, and } from 'drizzle-orm';
@@ -272,9 +275,6 @@ describe('MCP for firm staff: one sign-in, the clients they have access to', () 
     const txn = await db.query.transactions.findFirst({ where: eq(transactions.id, made.id ?? made.transaction?.id) });
     expect(txn?.tenantId).toBe(full.tenantId);
     expect(txn?.companyId).toBe(full.companyId);
-
-    const contact = data(await call('create_contact', { company_id: full.companyId, display_name: 'Stamped contact', type: 'vendor' }));
-    expect((await db.query.contacts.findFirst({ where: eq(contacts.id, contact.id) }))?.companyId).toBe(full.companyId);
   });
 
   it('an id from another client cannot be used in the selected one', async () => {

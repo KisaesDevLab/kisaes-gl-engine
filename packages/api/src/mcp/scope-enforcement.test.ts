@@ -20,7 +20,8 @@ import { listTools } from './registry.js';
 // context and cause nothing the bearer is not already allowed to do.
 const SESSION_TOOLS = ['get_active_company', 'list_companies', 'set_active_company'];
 // Tools that act on the caller's own bank connections, not in one client.
-const USER_TOOLS = ['get_bank_connections', 'sync_bank_connection'];
+// None today: the bank connection tools run in a client like every other tool.
+const USER_TOOLS: string[] = [];
 // The only tool that needs membership of the client and nothing more.
 const MEMBERSHIP_ONLY = ['get_company_info'];
 

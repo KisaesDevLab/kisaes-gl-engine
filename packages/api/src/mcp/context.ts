@@ -108,12 +108,15 @@ export function getActiveCompany(sessionKey: string): string | undefined {
 /**
  * One entry per company the user can open, in every tenant they reach.
  *
- * A write is stamped with, and checked against, the company it names, the
- * way the app does it. Reads still cover the whole client file (the
- * tenant), so two gates apply to the file as a whole:
- *  - an accountant excluded from any company in a file
- *    (accountant_company_exclusions) does not get that file at all;
- *  - MCP is on for a company only while every company in its file has it on.
+ * A company the accountant is excluded from (accountant_company_exclusions)
+ * is not offered, as middleware/company.ts skips it. A write is stamped
+ * with, and checked against, the company it names, the way the app does it.
+ *
+ * Most reads still cover the whole client file (the tenant). So MCP is on
+ * for a company only while every company in its file has it on. Known gap,
+ * unchanged from before: an accountant excluded from one company of a file
+ * can still read that company's figures through the tenant-wide read tools
+ * of a sibling company (list_attachments is the exception, it is scoped).
  */
 export async function getUserCompanies(userId: string): Promise<McpClientCompany[]> {
   const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
@@ -149,16 +152,14 @@ export async function getUserCompanies(userId: string): Promise<McpClientCompany
     mcpEnabled: companies.mcpEnabled, createdAt: companies.createdAt,
   }).from(companies).where(inArray(companies.tenantId, tenantIds)).orderBy(companies.createdAt);
 
-  const closedFiles = new Set<string>();
   const mcpOffIn = new Map<string, string>();
   for (const row of rows) {
-    if (excluded.has(row.id)) closedFiles.add(row.tenantId);
     if (row.mcpEnabled !== true && !mcpOffIn.has(row.tenantId)) mcpOffIn.set(row.tenantId, row.businessName);
   }
 
   const out: McpClientCompany[] = [];
   for (const row of rows) {
-    if (scratchIds.has(row.tenantId) || closedFiles.has(row.tenantId)) continue;
+    if (scratchIds.has(row.tenantId) || excluded.has(row.id)) continue;
     const offIn = mcpOffIn.get(row.tenantId);
     out.push({
       id: row.id,
