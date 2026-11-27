@@ -932,14 +932,18 @@ export async function generateShareLink(tenantId: string, invoiceId: string, use
 
 export async function sendInvoice(tenantId: string, invoiceId: string, userId?: string, companyId?: string) {
   const txn = await getInvoice(tenantId, invoiceId, companyId);
+  if (txn.status === 'void') throw AppError.badRequest('A void invoice can’t be sent', 'INVOICE_VOID');
 
+  // Only a draft becomes "sent". A partly paid or paid invoice keeps its
+  // status: setting it back to "sent" would show a paid invoice as unpaid.
+  const invoiceStatus = txn.invoiceStatus === 'draft' ? 'sent' : txn.invoiceStatus;
   await db.update(transactions).set({
-    invoiceStatus: 'sent',
+    invoiceStatus,
     sentAt: new Date(),
     updatedAt: new Date(),
   }).where(and(eq(transactions.tenantId, tenantId), eq(transactions.id, invoiceId)));
   await auditLog(tenantId, 'update', 'invoice', invoiceId,
-    { invoiceStatus: txn.invoiceStatus }, { invoiceStatus: 'sent', via: 'send_invoice' }, userId);
+    { invoiceStatus: txn.invoiceStatus }, { invoiceStatus, via: 'send_invoice' }, userId);
 }
 
 /**

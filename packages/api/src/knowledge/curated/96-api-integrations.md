@@ -122,6 +122,17 @@ closed period are refused (the closing-date password cannot be given
 through MCP). Every MCP call is audited (tool, client, sanitized
 parameters, status, duration) — view under **Admin → MCP Audit Log**.
 
+**A client file with more than one company:** reports and the transaction,
+invoice, bill and bank feed lists show the company named. A transaction,
+bill, bank feed item or recurring schedule that belongs to another company
+of the file is refused (`WRONG_COMPANY` or not found), and nothing is
+changed. The chart of accounts, contacts, tags and the dashboard figures
+cover the whole file, as they do in the app; so does reconciliation, which
+follows the bank account. A file with one company is not filtered at all.
+
+**send_invoice** marks an invoice as sent. It does not email the invoice;
+email it from the invoice in the app.
+
 ### Tax1099.com E-Filing (Firms)
 Firms can e-file 1099s with the IRS through Tax1099.com (Zenwork). A firm admin
 configures the integration under **Firm → Settings** — enter the Tax1099 API

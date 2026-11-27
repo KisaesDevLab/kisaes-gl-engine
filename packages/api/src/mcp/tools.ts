@@ -12,7 +12,7 @@
 // can only send strings.
 
 import { z, type ZodTypeAny } from 'zod';
-import { and, desc, eq, ilike, sql } from 'drizzle-orm';
+import { and, desc, eq, ilike, inArray, isNull, or, sql, type AnyColumn } from 'drizzle-orm';
 import {
   createBillSchema, createCashSaleSchema, createDepositSchema, createExpenseSchema, createInvoiceSchema,
   createJournalEntrySchema, createTransferSchema, createVendorCreditSchema, payBillsSchema,
@@ -20,19 +20,80 @@ import {
 } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import {
-  accounts, bankFeedItems, companies, contacts, journalLines, reconciliations, transactions,
+  accounts, bankConnections, bankFeedItems, companies, contacts, journalLines, reconciliations, recurringSchedules, transactions,
 } from '../db/schema/index.js';
 import { env } from '../config/env.js';
 import { escapeLike } from '../utils/sql-like.js';
 import { getActiveCompany, getUserCompanies, resolveClient, setActiveCompany, clearActiveCompany } from './context.js';
 import {
   McpToolError, companyTool, date, id, jsonArray, money, optBool, optDate, optId, optInt, optText,
-  sessionTool, text, userTool,
+  sessionTool, text, userTool, type ToolContext,
 } from './registry.js';
 
 const FIN_REPORT = ['reports', 'financial_reports'] as const;
 const AR_REPORT = ['reports', 'invoices'] as const;
 const AP_REPORT = ['reports', 'bills'] as const;
+
+// ─── One company of a client file ───────────────────────────────
+//
+// A client file (tenant) can hold more than one company. A row stamped with
+// a company is that company's; a row with no company belongs to the whole
+// file (the chart of accounts, contacts, tags, older rows). A tool runs in
+// the company it was called for: it lists that company's rows and the
+// file's, as the app's screens do, and it refuses to act on a row stamped
+// with a sibling company. What the app itself keeps file-wide stays so
+// here: accounts, contacts, tags, recurring schedules and the dashboard.
+//
+// A read hands the services ctx.readCompanyId, which is set only when the
+// file holds more than one company. In a one-company file nothing is
+// filtered, so rows written before company stamps existed (or by an older
+// MCP build, which did not stamp) still count: the report builders match a
+// company exactly and would otherwise drop them.
+
+/** The selected company's rows, and the file's. */
+const inCompany = (column: AnyColumn, ctx: ToolContext) => or(isNull(column), eq(column, ctx.companyId));
+
+function assertSameCompany(what: string, rowCompanyId: string | null | undefined, ctx: ToolContext): void {
+  if (rowCompanyId && rowCompanyId !== ctx.companyId) {
+    throw new McpToolError(
+      'WRONG_COMPANY',
+      `This ${what} belongs to another company in the same client file, not ${ctx.companyName}. `
+        + 'Nothing was changed. Call the tool with that company\'s company_id (list_companies shows them).',
+    );
+  }
+}
+
+/** A transaction id that is missing is left to the service to report. */
+async function transactionInCompany(ctx: ToolContext, transactionId: string): Promise<void> {
+  const [row] = await db.select({ companyId: transactions.companyId }).from(transactions)
+    .where(and(eq(transactions.tenantId, ctx.tenantId), eq(transactions.id, transactionId))).limit(1);
+  assertSameCompany('transaction', row?.companyId, ctx);
+}
+
+/** A feed item is its own company's, or else its bank connection's. */
+async function feedItemsInCompany(ctx: ToolContext, feedItemIds: string[]): Promise<void> {
+  if (feedItemIds.length === 0) return;
+  const rows = await db.select({ own: bankFeedItems.companyId, connection: bankConnections.companyId })
+    .from(bankFeedItems)
+    .leftJoin(bankConnections, eq(bankConnections.id, bankFeedItems.bankConnectionId))
+    .where(and(eq(bankFeedItems.tenantId, ctx.tenantId), inArray(bankFeedItems.id, feedItemIds)));
+  for (const row of rows) assertSameCompany('bank feed item', row.own ?? row.connection, ctx);
+}
+
+async function accountInCompany(ctx: ToolContext, accountId: string): Promise<void> {
+  const [row] = await db.select({ companyId: accounts.companyId }).from(accounts)
+    .where(and(eq(accounts.tenantId, ctx.tenantId), eq(accounts.id, accountId))).limit(1);
+  assertSameCompany('account', row?.companyId, ctx);
+}
+
+/** A reconciliation is its own company's, or else its account's. */
+async function reconciliationInCompany(ctx: ToolContext, reconciliationId: string): Promise<void> {
+  const [row] = await db.select({ own: reconciliations.companyId, account: accounts.companyId })
+    .from(reconciliations)
+    .leftJoin(accounts, eq(accounts.id, reconciliations.accountId))
+    .where(and(eq(reconciliations.tenantId, ctx.tenantId), eq(reconciliations.id, reconciliationId))).limit(1);
+  assertSameCompany('reconciliation', row?.own ?? row?.account, ctx);
+}
 
 /** The published shape of one field of a shared request schema (unwrapping a refined object). */
 function fieldOf(schema: ZodTypeAny, key: string): ZodTypeAny {
@@ -131,6 +192,7 @@ companyTool('get_account_balance', {
   input: { account_id: id('The account') },
   scope: 'read', resource: 'accounts', mode: 'read',
   handler: async (p, ctx) => {
+    await accountInCompany(ctx, p.account_id);
     const account = await db.query.accounts.findFirst({ where: and(eq(accounts.tenantId, ctx.tenantId), eq(accounts.id, p.account_id)) });
     if (!account) throw new McpToolError('NOT_FOUND', 'Account not found');
     return { id: account.id, name: account.name, balance: account.balance, accountType: account.accountType };
@@ -146,7 +208,7 @@ companyTool('list_contacts', {
   scope: 'read', resource: 'contacts', mode: 'read',
   handler: async (p, ctx) => {
     const { list } = await import('../services/contacts.service.js');
-    return list(ctx.tenantId, { limit: 200, offset: 0, contactType: p.type });
+    return list(ctx.tenantId, { limit: 200, offset: 0, contactType: p.type }, ctx.readCompanyId);
   },
 });
 
@@ -191,7 +253,7 @@ companyTool('list_transactions', {
   },
   scope: 'read', resource: 'transactions', mode: 'read',
   handler: async (p, ctx) => {
-    const conds = [eq(transactions.tenantId, ctx.tenantId)];
+    const conds = [eq(transactions.tenantId, ctx.tenantId), inCompany(transactions.companyId, ctx)];
     if (p.type) conds.push(sql`${transactions.txnType}::text = ${p.type}`);
     return db.select().from(transactions).where(and(...conds)).orderBy(desc(transactions.txnDate)).limit(p.limit ?? 50);
   },
@@ -205,6 +267,7 @@ companyTool('get_transaction', {
   handler: async (p, ctx) => {
     const txn = await db.query.transactions.findFirst({ where: and(eq(transactions.tenantId, ctx.tenantId), eq(transactions.id, p.transaction_id)) });
     if (!txn) throw new McpToolError('NOT_FOUND', 'Transaction not found');
+    assertSameCompany('transaction', txn.companyId, ctx);
     const txnLines = await db.select().from(journalLines).where(eq(journalLines.transactionId, txn.id));
     return { ...txn, lines: txnLines };
   },
@@ -255,6 +318,7 @@ companyTool('void_transaction', {
   },
   scope: 'write', resource: 'transactions', mode: 'write', destructive: true,
   handler: async (p, ctx) => {
+    await transactionInCompany(ctx, p.transaction_id);
     const { voidTransaction } = await import('../services/ledger.service.js');
     await voidTransaction(ctx.tenantId, p.transaction_id, p.reason || 'Voided via MCP', ctx.userId, { companyId: ctx.companyId });
     return { voided: true };
@@ -308,7 +372,7 @@ companyTool('search', {
   scope: 'read', resource: ['transactions', 'contacts'], mode: 'read',
   handler: async (p, ctx) => {
     const q = `%${escapeLike(p.query)}%`;
-    const txns = await db.select().from(transactions).where(and(eq(transactions.tenantId, ctx.tenantId), ilike(transactions.memo, q))).limit(20);
+    const txns = await db.select().from(transactions).where(and(eq(transactions.tenantId, ctx.tenantId), inCompany(transactions.companyId, ctx), ilike(transactions.memo, q))).limit(20);
     const ctcts = await db.select().from(contacts).where(and(eq(contacts.tenantId, ctx.tenantId), ilike(contacts.displayName, q))).limit(20);
     return { transactions: txns, contacts: ctcts };
   },
@@ -336,6 +400,7 @@ companyTool('tag_transaction', {
   },
   scope: 'write', resource: 'transactions', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await transactionInCompany(ctx, p.transaction_id);
     // ADR 0XX §4 — the split-level model is line-authoritative. replaceTags
     // routes 0 or 1 tag through setTransactionLineTag; 2 or more keep the
     // header-level junction so clients that batch-tagged do not regress.
@@ -354,6 +419,7 @@ companyTool('set_transaction_tag', {
   },
   scope: 'write', resource: 'transactions', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await transactionInCompany(ctx, p.transaction_id);
     const { setTransactionLineTag } = await import('../services/tags.service.js');
     const tagId = p.tag_id ?? null;
     await setTransactionLineTag(ctx.tenantId, p.transaction_id, tagId);
@@ -370,7 +436,7 @@ companyTool('list_items', {
   scope: 'read', resource: 'items', mode: 'read',
   handler: async (_p, ctx) => {
     const { list } = await import('../services/items.service.js');
-    return list(ctx.tenantId, { limit: 200, offset: 0 });
+    return list(ctx.tenantId, { limit: 200, offset: 0 }, ctx.readCompanyId);
   },
 });
 
@@ -402,7 +468,7 @@ companyTool('list_invoices', {
   input: { status: optText('Only this invoice status (draft, sent, partial, paid, void)') },
   scope: 'read', resource: 'invoices', mode: 'read',
   handler: async (p, ctx) => {
-    const conds = [eq(transactions.tenantId, ctx.tenantId), sql`${transactions.txnType}::text = 'invoice'`];
+    const conds = [eq(transactions.tenantId, ctx.tenantId), inCompany(transactions.companyId, ctx), sql`${transactions.txnType}::text = 'invoice'`];
     if (p.status) conds.push(eq(transactions.invoiceStatus, p.status));
     return db.select().from(transactions).where(and(...conds)).orderBy(desc(transactions.txnDate)).limit(100);
   },
@@ -431,13 +497,21 @@ companyTool('create_invoice', {
 });
 
 companyTool('send_invoice', {
-  title: 'Email an invoice',
-  description: 'Sends an invoice to the customer by email. Confirm with the user first.',
+  // The name is kept for clients that already call it. It has never sent
+  // mail: the app emails an invoice with the PDF its own page renders,
+  // which this server cannot produce. So it says what it does.
+  title: 'Mark an invoice as sent',
+  description: 'Marks an invoice as sent. It does NOT email the invoice: no message goes to the customer. '
+    + 'To email it, the user opens the invoice in the app and uses Send there. Never tell the user an email was sent.',
   input: { invoice_id: id('The invoice') },
-  scope: 'invoicing', resource: 'invoices', mode: 'write', openWorld: true,
+  scope: 'invoicing', resource: 'invoices', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
     const { sendInvoice } = await import('../services/invoice.service.js');
-    return sendInvoice(ctx.tenantId, p.invoice_id, ctx.userId, ctx.companyId);
+    await sendInvoice(ctx.tenantId, p.invoice_id, ctx.userId, ctx.companyId);
+    return {
+      invoice_id: p.invoice_id, marked_sent: true, emailed: false,
+      note: 'The invoice is marked as sent. No email was sent; send it from the invoice in the app.',
+    };
   },
 });
 
@@ -483,7 +557,7 @@ companyTool('get_overdue_summary', {
   scope: 'read', resource: 'invoices', mode: 'read',
   handler: async (_p, ctx) => {
     const overdue = await db.select().from(transactions).where(and(
-      eq(transactions.tenantId, ctx.tenantId), sql`${transactions.txnType}::text = 'invoice'`,
+      eq(transactions.tenantId, ctx.tenantId), inCompany(transactions.companyId, ctx), sql`${transactions.txnType}::text = 'invoice'`,
       eq(transactions.invoiceStatus, 'sent'), sql`due_date < CURRENT_DATE`,
     ));
     const totalOverdue = overdue.reduce((s, i) => s + parseFloat(i.balanceDue || '0'), 0);
@@ -552,7 +626,13 @@ companyTool('list_bank_feed_items', {
   input: { status: optText('Feed status: pending (default), categorized, matched, excluded') },
   scope: 'banking', resource: 'banking', mode: 'read',
   handler: async (p, ctx) => db.select().from(bankFeedItems)
-    .where(and(eq(bankFeedItems.tenantId, ctx.tenantId), eq(bankFeedItems.status, p.status || 'pending')))
+    .where(and(
+      eq(bankFeedItems.tenantId, ctx.tenantId), eq(bankFeedItems.status, p.status || 'pending'),
+      // This company's items: stamped with it, or unstamped on a connection that is not a sibling's.
+      sql`(${bankFeedItems.companyId} = ${ctx.companyId} OR (${bankFeedItems.companyId} IS NULL AND NOT EXISTS (
+        SELECT 1 FROM bank_connections bc WHERE bc.id = ${bankFeedItems.bankConnectionId}
+          AND bc.company_id IS NOT NULL AND bc.company_id <> ${ctx.companyId})))`,
+    ))
     .orderBy(desc(bankFeedItems.feedDate)).limit(100),
 });
 
@@ -562,6 +642,7 @@ companyTool('find_feed_match_candidates', {
   input: { feed_item_id: id('The bank feed item') },
   scope: 'banking', resource: 'banking', mode: 'read',
   handler: async (p, ctx) => {
+    await feedItemsInCompany(ctx, [p.feed_item_id]);
     const { findMatchCandidates } = await import('../services/bank-feed.service.js');
     return findMatchCandidates(ctx.tenantId, p.feed_item_id);
   },
@@ -579,6 +660,7 @@ companyTool('categorize_feed_item', {
   },
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
+    await feedItemsInCompany(ctx, [p.feed_item_id]);
     const { categorize } = await import('../services/bank-feed.service.js');
     return categorize(
       ctx.tenantId,
@@ -598,6 +680,7 @@ companyTool('match_feed_item', {
   },
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
+    await Promise.all([feedItemsInCompany(ctx, [p.feed_item_id]), transactionInCompany(ctx, p.transaction_id)]);
     const { match } = await import('../services/bank-feed.service.js');
     await match(ctx.tenantId, p.feed_item_id, p.transaction_id);
     return { matched: true };
@@ -610,6 +693,7 @@ companyTool('exclude_feed_item', {
   input: { feed_item_id: id('The bank feed item') },
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
+    await feedItemsInCompany(ctx, [p.feed_item_id]);
     const { exclude } = await import('../services/bank-feed.service.js');
     await exclude(ctx.tenantId, p.feed_item_id, ctx.userId);
     return { excluded: true };
@@ -622,6 +706,7 @@ companyTool('bulk_approve_feed_items', {
   input: { feed_item_ids: idList('Bank feed items to approve', 500) },
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
+    await feedItemsInCompany(ctx, p.feed_item_ids);
     const { bulkApprove } = await import('../services/bank-feed.service.js');
     return bulkApprove(ctx.tenantId, p.feed_item_ids, ctx.userId, ctx.companyId);
   },
@@ -636,6 +721,7 @@ companyTool('bulk_set_bank_feed_tag', {
   },
   scope: 'banking', resource: 'banking', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await feedItemsInCompany(ctx, p.feed_item_ids);
     const { bulkSetTag } = await import('../services/bank-feed.service.js');
     return bulkSetTag(ctx.tenantId, p.feed_item_ids, p.tag_id ?? null);
   },
@@ -655,6 +741,7 @@ companyTool('get_reconciliation_status', {
   input: { account_id: id('The bank or credit card account') },
   scope: 'read', resource: 'banking', mode: 'read',
   handler: async (p, ctx) => {
+    await accountInCompany(ctx, p.account_id);
     const last = await db.select().from(reconciliations)
       .where(and(eq(reconciliations.tenantId, ctx.tenantId), eq(reconciliations.accountId, p.account_id)))
       .orderBy(desc(reconciliations.statementDate)).limit(1);
@@ -668,6 +755,7 @@ companyTool('get_reconciliation_history', {
   input: { account_id: id('The bank or credit card account') },
   scope: 'read', resource: 'banking', mode: 'read',
   handler: async (p, ctx) => {
+    await accountInCompany(ctx, p.account_id);
     const { getHistory } = await import('../services/reconciliation.service.js');
     return getHistory(ctx.tenantId, p.account_id);
   },
@@ -687,6 +775,7 @@ companyTool('start_reconciliation', {
   },
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
+    await accountInCompany(ctx, p.account_id);
     const { start } = await import('../services/reconciliation.service.js');
     const input = startReconciliationSchema.parse({
       accountId: p.account_id, statementDate: p.statement_date, statementEndingBalance: p.statement_ending_balance,
@@ -708,6 +797,7 @@ companyTool('get_reconciliation', {
   },
   scope: 'banking', resource: 'banking', mode: 'read',
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { getReconciliationView } = await import('../services/reconciliation.service.js');
     return getReconciliationView(ctx.tenantId, p.reconciliation_id, p.view);
   },
@@ -735,6 +825,7 @@ companyTool('update_reconciliation_lines', {
   },
   scope: 'banking', resource: 'banking', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { applyLineUpdates, getReconciliationSummary } = await import('../services/reconciliation.service.js');
     const updates = (p.lines as Array<{ journal_line_id: string; is_cleared: boolean }>)
       .map((l) => ({ journalLineId: l.journal_line_id, isCleared: l.is_cleared }));
@@ -755,6 +846,7 @@ companyTool('update_reconciliation', {
   },
   scope: 'banking', resource: 'banking', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { applyHeaderUpdate, getReconciliationSummary } = await import('../services/reconciliation.service.js');
     const input = updateReconciliationSchema.parse({
       statementDate: p.statement_date, statementEndingBalance: p.statement_ending_balance,
@@ -771,6 +863,7 @@ companyTool('refresh_reconciliation', {
   input: { reconciliation_id: reconId },
   scope: 'banking', resource: 'banking', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { refreshLines } = await import('../services/reconciliation.service.js');
     return refreshLines(ctx.tenantId, p.reconciliation_id, {});
   },
@@ -782,6 +875,7 @@ companyTool('auto_clear_reconciliation', {
   input: { reconciliation_id: reconId },
   scope: 'banking', resource: 'banking', mode: 'write', idempotent: true,
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { autoClearStatement } = await import('../services/reconciliation.service.js');
     return autoClearStatement(ctx.tenantId, p.reconciliation_id, ctx.userId);
   },
@@ -794,6 +888,7 @@ companyTool('complete_reconciliation', {
   input: { reconciliation_id: reconId },
   scope: 'banking', resource: 'banking', mode: 'write',
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { complete, getReconciliationSummary } = await import('../services/reconciliation.service.js');
     await complete(ctx.tenantId, p.reconciliation_id, ctx.userId);
     return { message: 'Reconciliation complete', reconciliation: await getReconciliationSummary(ctx.tenantId, p.reconciliation_id) };
@@ -806,6 +901,7 @@ companyTool('cancel_reconciliation', {
   input: { reconciliation_id: reconId },
   scope: 'banking', resource: 'banking', mode: 'write', destructive: true,
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     const { cancel } = await import('../services/reconciliation.service.js');
     await cancel(ctx.tenantId, p.reconciliation_id, ctx.userId);
     return { message: 'Reconciliation canceled' };
@@ -822,6 +918,7 @@ companyTool('undo_reconciliation', {
   },
   scope: 'banking', resource: 'banking', mode: 'write', destructive: true,
   handler: async (p, ctx) => {
+    await reconciliationInCompany(ctx, p.reconciliation_id);
     // A company-admin act, as on the REST route (U-190).
     if (!ctx.isSuperAdmin && ctx.role !== 'owner') {
       throw new McpToolError('RECONCILE_ADMIN_REQUIRED', 'Only a company administrator can undo a reconciliation');
@@ -846,7 +943,7 @@ companyTool('run_profit_loss', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildProfitAndLoss } = await import('../services/report.service.js');
-    return buildProfitAndLoss(ctx.tenantId, p.start_date, p.end_date, p.basis ?? 'accrual', null, p.tag_id ?? null);
+    return buildProfitAndLoss(ctx.tenantId, p.start_date, p.end_date, p.basis ?? 'accrual', ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -857,7 +954,7 @@ companyTool('run_balance_sheet', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildBalanceSheet } = await import('../services/report.service.js');
-    return buildBalanceSheet(ctx.tenantId, p.as_of_date, 'accrual', null, p.tag_id ?? null);
+    return buildBalanceSheet(ctx.tenantId, p.as_of_date, 'accrual', ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -868,7 +965,7 @@ companyTool('run_balance_sheet_basis', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildBalanceSheet } = await import('../services/report.service.js');
-    return buildBalanceSheet(ctx.tenantId, p.as_of_date, p.basis ?? 'accrual');
+    return buildBalanceSheet(ctx.tenantId, p.as_of_date, p.basis ?? 'accrual', ctx.readCompanyId);
   },
 });
 
@@ -879,7 +976,7 @@ companyTool('run_trial_balance', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildTrialBalance } = await import('../services/report.service.js');
-    return buildTrialBalance(ctx.tenantId, p.start_date, p.end_date, null, p.tag_id ?? null);
+    return buildTrialBalance(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -890,7 +987,7 @@ companyTool('run_general_ledger', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildGeneralLedger } = await import('../services/report.service.js');
-    return buildGeneralLedger(ctx.tenantId, p.start_date, p.end_date, null, p.tag_id ?? null);
+    return buildGeneralLedger(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -901,7 +998,7 @@ companyTool('run_cash_flow', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildCashFlowStatement } = await import('../services/report.service.js');
-    return buildCashFlowStatement(ctx.tenantId, p.start_date, p.end_date, null, p.tag_id ?? null);
+    return buildCashFlowStatement(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -912,7 +1009,7 @@ companyTool('run_expense_by_category', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildExpenseByCategory } = await import('../services/report.service.js');
-    return buildExpenseByCategory(ctx.tenantId, p.start_date, p.end_date, null, p.tag_id ?? null);
+    return buildExpenseByCategory(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -923,7 +1020,7 @@ companyTool('run_expense_by_vendor', {
   scope: 'reports', resource: AP_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildExpenseByVendor } = await import('../services/report.service.js');
-    return buildExpenseByVendor(ctx.tenantId, p.start_date, p.end_date, null, p.tag_id ?? null);
+    return buildExpenseByVendor(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -934,7 +1031,7 @@ companyTool('run_ar_aging', {
   scope: 'reports', resource: AR_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildARAgingSummary } = await import('../services/report.service.js');
-    return buildARAgingSummary(ctx.tenantId, p.as_of_date, null, p.tag_id ?? null);
+    return buildARAgingSummary(ctx.tenantId, p.as_of_date, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -945,7 +1042,7 @@ companyTool('run_customer_balance', {
   scope: 'reports', resource: AR_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildCustomerBalanceSummary } = await import('../services/report.service.js');
-    return buildCustomerBalanceSummary(ctx.tenantId, null, p.tag_id ?? null);
+    return buildCustomerBalanceSummary(ctx.tenantId, ctx.readCompanyId, p.tag_id ?? null);
   },
 });
 
@@ -956,7 +1053,7 @@ companyTool('run_vendor_balance', {
   scope: 'reports', resource: AP_REPORT, mode: 'read',
   handler: async (_p, ctx) => {
     const { buildVendorBalanceSummary } = await import('../services/report.service.js');
-    return buildVendorBalanceSummary(ctx.tenantId);
+    return buildVendorBalanceSummary(ctx.tenantId, ctx.readCompanyId);
   },
 });
 
@@ -967,7 +1064,7 @@ companyTool('run_1099_vendor_summary', {
   scope: 'reports', resource: AP_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { build1099VendorSummary } = await import('../services/report.service.js');
-    return build1099VendorSummary(ctx.tenantId, p.year);
+    return build1099VendorSummary(ctx.tenantId, p.year, ctx.readCompanyId);
   },
 });
 
@@ -978,7 +1075,7 @@ companyTool('run_sales_tax_liability', {
   scope: 'reports', resource: ['reports', 'sales_tax'], mode: 'read',
   handler: async (p, ctx) => {
     const { buildSalesTaxLiability } = await import('../services/report.service.js');
-    return buildSalesTaxLiability(ctx.tenantId, p.start_date, p.end_date);
+    return buildSalesTaxLiability(ctx.tenantId, p.start_date, p.end_date, ctx.readCompanyId);
   },
 });
 
@@ -991,12 +1088,13 @@ companyTool('run_check_register', {
   },
   scope: 'reports', resource: ['reports', 'banking'], mode: 'read',
   handler: async (p, ctx) => {
+    await accountInCompany(ctx, p.account_id);
     const { buildCheckRegister } = await import('../services/report.service.js');
     return buildCheckRegister(
       ctx.tenantId,
       p.account_id,
       p.start_date && p.end_date ? { startDate: p.start_date, endDate: p.end_date } : undefined,
-      null,
+      ctx.readCompanyId,
       p.tag_id ?? null,
     );
   },
@@ -1047,7 +1145,7 @@ companyTool('list_bills', {
       billStatus: p.status, contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date,
       overdueOnly: p.overdue_only, limit: p.limit ?? 50, offset: 0,
     });
-    return listBills(ctx.tenantId, filters, undefined);
+    return listBills(ctx.tenantId, filters, ctx.readCompanyId);
   },
 });
 
@@ -1058,7 +1156,7 @@ companyTool('get_bill', {
   scope: 'read', resource: 'bills', mode: 'read',
   handler: async (p, ctx) => {
     const { getBill } = await import('../services/bill.service.js');
-    return getBill(ctx.tenantId, p.bill_id);
+    return getBill(ctx.tenantId, p.bill_id, ctx.readCompanyId);
   },
 });
 
@@ -1108,7 +1206,7 @@ companyTool('get_payable_bills', {
   scope: 'read', resource: 'bills', mode: 'read',
   handler: async (p, ctx) => {
     const { getPayableBills } = await import('../services/bill.service.js');
-    return getPayableBills(ctx.tenantId, { contactId: p.contact_id, dueOnOrBefore: p.due_on_or_before });
+    return getPayableBills(ctx.tenantId, { contactId: p.contact_id, dueOnOrBefore: p.due_on_or_before, companyId: ctx.readCompanyId, companyIncludesNull: true });
   },
 });
 
@@ -1125,7 +1223,7 @@ companyTool('list_bill_payments', {
   handler: async (p, ctx) => {
     const { listBillPayments } = await import('../services/bill-payment.service.js');
     return listBillPayments(ctx.tenantId, {
-      contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, limit: p.limit ?? 50, offset: 0,
+      contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, limit: p.limit ?? 50, offset: 0, companyId: ctx.readCompanyId,
     });
   },
 });
@@ -1183,7 +1281,7 @@ companyTool('list_vendor_credits', {
     return listVendorCredits(ctx.tenantId, {
       contactId: p.contact_id, startDate: p.start_date, endDate: p.end_date, search: p.search,
       limit: p.limit ?? 50, offset: 0,
-    });
+    }, ctx.readCompanyId);
   },
 });
 
@@ -1215,7 +1313,7 @@ companyTool('get_available_vendor_credits', {
   scope: 'read', resource: 'vendor_credits', mode: 'read',
   handler: async (p, ctx) => {
     const { getAvailableCredits } = await import('../services/vendor-credit.service.js');
-    return getAvailableCredits(ctx.tenantId, p.vendor_id);
+    return getAvailableCredits(ctx.tenantId, p.vendor_id, ctx.readCompanyId);
   },
 });
 
@@ -1237,7 +1335,7 @@ companyTool('list_checks', {
     return listChecks(ctx.tenantId, {
       bankAccountId: p.bank_account_id, printStatus: p.print_status,
       startDate: p.start_date, endDate: p.end_date, limit: p.limit ?? 50, offset: 0,
-    });
+    }, ctx.readCompanyId);
   },
 });
 
@@ -1277,7 +1375,7 @@ companyTool('get_check_print_queue', {
   scope: 'read', resource: 'checks', mode: 'read',
   handler: async (p, ctx) => {
     const { getPrintQueue } = await import('../services/check.service.js');
-    return getPrintQueue(ctx.tenantId, p.bank_account_id);
+    return getPrintQueue(ctx.tenantId, p.bank_account_id, ctx.readCompanyId);
   },
 });
 
@@ -1300,6 +1398,10 @@ companyTool('post_recurring_now', {
   input: { schedule_id: id('The recurring schedule') },
   scope: 'write', resource: 'recurring', mode: 'write',
   handler: async (p, ctx) => {
+    // A schedule posts into its own company, whichever one was named.
+    const [schedule] = await db.select({ companyId: recurringSchedules.companyId }).from(recurringSchedules)
+      .where(and(eq(recurringSchedules.tenantId, ctx.tenantId), eq(recurringSchedules.id, p.schedule_id))).limit(1);
+    assertSameCompany('recurring schedule', schedule?.companyId, ctx);
     const { postNext } = await import('../services/recurring.service.js');
     return postNext(ctx.tenantId, p.schedule_id);
   },
@@ -1314,7 +1416,7 @@ companyTool('list_budgets', {
   scope: 'read', resource: 'budgets', mode: 'read',
   handler: async (_p, ctx) => {
     const { list } = await import('../services/budget.service.js');
-    return list(ctx.tenantId);
+    return list(ctx.tenantId, { companyId: ctx.readCompanyId });
   },
 });
 
@@ -1325,8 +1427,8 @@ companyTool('get_budget', {
   scope: 'read', resource: 'budgets', mode: 'read',
   handler: async (p, ctx) => {
     const { getById, getLines } = await import('../services/budget.service.js');
-    const budget = await getById(ctx.tenantId, p.budget_id);
-    const budgetLines = await getLines(ctx.tenantId, p.budget_id);
+    const budget = await getById(ctx.tenantId, p.budget_id, ctx.readCompanyId);
+    const budgetLines = await getLines(ctx.tenantId, p.budget_id, ctx.readCompanyId);
     return { budget, lines: budgetLines };
   },
 });
@@ -1339,14 +1441,14 @@ companyTool('run_budget_vs_actual', {
   scope: 'reports', resource: FIN_REPORT, mode: 'read',
   handler: async (p, ctx) => {
     const { buildBudgetVsActual, runTagScopedBudgetVsActuals, getById } = await import('../services/budget.service.js');
-    const budget = await getById(ctx.tenantId, p.budget_id);
+    const budget = await getById(ctx.tenantId, p.budget_id, ctx.readCompanyId);
     const tagId = (budget as { tagId?: string | null }).tagId ?? null;
     // Tag-scoped path is the ADR 0XW semantic and only applies when the
     // budget itself is tag-scoped AND the feature flag is on. Otherwise the
     // period aggregate, so clients of tenants with TAG_BUDGETS_V1 off do
     // not regress.
-    if (tagId && env.TAG_BUDGETS_V1) return runTagScopedBudgetVsActuals(ctx.tenantId, p.budget_id);
-    return buildBudgetVsActual(ctx.tenantId, p.budget_id, p.start_date, p.end_date);
+    if (tagId && env.TAG_BUDGETS_V1) return runTagScopedBudgetVsActuals(ctx.tenantId, p.budget_id, ctx.readCompanyId);
+    return buildBudgetVsActual(ctx.tenantId, p.budget_id, p.start_date, p.end_date, ctx.readCompanyId);
   },
 });
 

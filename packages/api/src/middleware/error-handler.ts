@@ -52,6 +52,12 @@ export function errorHandler(
     return;
   }
   if (bpErr.type === 'entity.parse.failed') {
+    // The MCP endpoint speaks JSON-RPC: its clients read a parse error in
+    // that shape (-32700), not the REST one.
+    if (_req.path === '/mcp') {
+      res.status(400).json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error: the request body is not valid JSON' } });
+      return;
+    }
     res.status(400).json({
       error: { message: 'Request body could not be parsed as JSON.', code: 'INVALID_JSON' },
     });

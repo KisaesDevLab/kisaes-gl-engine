@@ -15,7 +15,7 @@
 import crypto from 'crypto';
 import type { Request, Response } from 'express';
 import { ZodError } from 'zod';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, or, sql } from 'drizzle-orm';
 import type { McpAuthContext, McpScope } from '@kis-books/shared';
 import { db } from '../db/index.js';
 import { accounts, bankFeedItems, contacts, reconciliations, transactions } from '../db/schema/index.js';
@@ -72,6 +72,10 @@ interface ResourceDef {
 
 const view = (...resources: ToolAccess['resources']): ToolAccess => ({ resources, action: 'read' });
 
+// A resource shows the company it was asked for: its rows and the rows of
+// the client file that carry no company, as the tools do (tools.ts).
+const ofCompany = (c: McpClientContext) => or(isNull(transactions.companyId), eq(transactions.companyId, c.companyId));
+
 const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   'chart-of-accounts': {
     name: 'Chart of Accounts', description: 'Full COA for a company', scope: 'read', access: view('accounts'),
@@ -83,28 +87,33 @@ const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   },
   'recent-transactions': {
     name: 'Recent Transactions', description: 'Last 50 transactions', scope: 'read', access: view('transactions'),
-    read: (c) => db.select().from(transactions).where(eq(transactions.tenantId, c.tenantId)).orderBy(desc(transactions.txnDate)).limit(50),
+    read: (c) => db.select().from(transactions).where(and(eq(transactions.tenantId, c.tenantId), ofCompany(c))).orderBy(desc(transactions.txnDate)).limit(50),
   },
   'bank-feed/pending': {
     name: 'Pending Bank Feed', description: 'Pending bank feed items', scope: 'banking', access: view('banking'),
-    read: (c) => db.select().from(bankFeedItems).where(and(eq(bankFeedItems.tenantId, c.tenantId), eq(bankFeedItems.status, 'pending'))).limit(100),
+    read: (c) => db.select().from(bankFeedItems).where(and(
+      eq(bankFeedItems.tenantId, c.tenantId), eq(bankFeedItems.status, 'pending'),
+      sql`(${bankFeedItems.companyId} = ${c.companyId} OR (${bankFeedItems.companyId} IS NULL AND NOT EXISTS (
+        SELECT 1 FROM bank_connections bc WHERE bc.id = ${bankFeedItems.bankConnectionId}
+          AND bc.company_id IS NOT NULL AND bc.company_id <> ${c.companyId})))`,
+    )).limit(100),
   },
   'invoices/overdue': {
     name: 'Overdue Invoices', description: 'Overdue invoices', scope: 'read', access: view('invoices'),
     read: (c) => db.select().from(transactions)
-      .where(and(eq(transactions.tenantId, c.tenantId), sql`${transactions.txnType}::text = 'invoice'`, sql`due_date < CURRENT_DATE`)).limit(50),
+      .where(and(eq(transactions.tenantId, c.tenantId), ofCompany(c), sql`${transactions.txnType}::text = 'invoice'`, sql`due_date < CURRENT_DATE`)).limit(50),
   },
   'bills/payable': {
     name: 'Payable Bills', description: 'Unpaid bills with balance due', scope: 'read', access: view('bills'),
-    read: async (c) => (await import('../services/bill.service.js')).getPayableBills(c.tenantId, {}),
+    read: async (c) => (await import('../services/bill.service.js')).getPayableBills(c.tenantId, { companyId: c.readCompanyId, companyIncludesNull: true }),
   },
   'bill-payments': {
     name: 'Bill Payments', description: 'Recent bill payments', scope: 'read', access: view('pay_bills'),
-    read: async (c) => (await import('../services/bill-payment.service.js')).listBillPayments(c.tenantId, { limit: 100, offset: 0 }),
+    read: async (c) => (await import('../services/bill-payment.service.js')).listBillPayments(c.tenantId, { limit: 100, offset: 0, companyId: c.readCompanyId }),
   },
   'vendor-credits': {
     name: 'Vendor Credits', description: 'Vendor credits with remaining balance', scope: 'read', access: view('vendor_credits'),
-    read: async (c) => (await import('../services/vendor-credit.service.js')).listVendorCredits(c.tenantId, { limit: 100, offset: 0 }),
+    read: async (c) => (await import('../services/vendor-credit.service.js')).listVendorCredits(c.tenantId, { limit: 100, offset: 0 }, c.readCompanyId),
   },
   recurring: {
     name: 'Recurring Schedules', description: 'Active recurring transactions', scope: 'read', access: view('recurring'),
@@ -112,11 +121,11 @@ const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   },
   budgets: {
     name: 'Budgets', description: 'Budgets defined for this company', scope: 'read', access: view('budgets'),
-    read: async (c) => (await import('../services/budget.service.js')).list(c.tenantId),
+    read: async (c) => (await import('../services/budget.service.js')).list(c.tenantId, { companyId: c.readCompanyId }),
   },
   'checks/print-queue': {
     name: 'Check Print Queue', description: 'Checks queued for printing', scope: 'read', access: view('checks'),
-    read: async (c) => (await import('../services/check.service.js')).getPrintQueue(c.tenantId),
+    read: async (c) => (await import('../services/check.service.js')).getPrintQueue(c.tenantId, undefined, c.readCompanyId),
   },
   reconciliations: {
     name: 'Reconciliations', description: 'Reconciliation history', scope: 'read', access: view('banking'),
@@ -125,7 +134,7 @@ const COMPANY_RESOURCES: Record<string, ResourceDef> = {
   },
   items: {
     name: 'Items', description: 'Products / services catalog', scope: 'read', access: view('items'),
-    read: async (c) => (await import('../services/items.service.js')).list(c.tenantId, { limit: 200, offset: 0 }),
+    read: async (c) => (await import('../services/items.service.js')).list(c.tenantId, { limit: 200, offset: 0 }, c.readCompanyId),
   },
   tags: {
     name: 'Tags', description: 'Tag groups and tags', scope: 'read', access: view('tags'),

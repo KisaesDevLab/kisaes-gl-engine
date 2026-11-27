@@ -17,7 +17,8 @@ import crypto from 'crypto';
 import { sql, eq, and } from 'drizzle-orm';
 import { db, pool } from '../db/index.js';
 import {
-  accounts, apiKeys, auditLog, companies, contacts, mcpConfig, mcpRequestLog, reconciliations, transactions, userTenantAccess, users,
+  accounts, apiKeys, auditLog, bankConnections, bankFeedItems, companies, contacts, journalLines, mcpConfig, mcpRequestLog, reconciliations, transactions,
+  userTenantAccess, users,
 } from '../db/schema/index.js';
 import * as authService from '../services/auth.service.js';
 import * as expenseService from '../services/expense.service.js';
@@ -472,5 +473,141 @@ describe('MCP reconciliation, start to finish', () => {
     expect(failure(started), failure(started)).toBeUndefined();
     expect(failure(await call('cancel_reconciliation', { ...args, reconciliation_id: data(started).id }))).toBeUndefined();
     expect(await db.select().from(reconciliations).where(eq(reconciliations.tenantId, firm.tenantId))).toHaveLength(0);
+  });
+});
+
+// A client file (tenant) can hold more than one company. Naming one of them
+// must mean that one: its figures, its lists, and no change to a sibling's
+// records. Found by walking the released build with a two-company file.
+describe('MCP in a client file with two companies', () => {
+  let file: Client;
+  let secondId = '';
+  let revenueId = '';
+
+  beforeAll(async () => {
+    file = await provision('Echo');
+    await grant(file, 'accountant');
+    const first = await db.query.companies.findFirst({ where: eq(companies.id, file.companyId) });
+    const { id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...rest } = first!;
+    const [second] = await db.insert(companies).values({ ...rest, businessName: 'Echo Two Co', mcpEnabled: true }).returning();
+    secondId = second!.id;
+    const all = await db.query.accounts.findMany({ where: eq(accounts.tenantId, file.tenantId) });
+    revenueId = all.find((a) => a.accountType === 'revenue')!.id;
+  }, 60000);
+
+  const sale = async (companyId: string, price: string) => data(await call('create_cash_sale', {
+    company_id: companyId, date: '2026-03-01', payment_account_id: file.bankAccountId,
+    lines: [{ accountId: revenueId, quantity: '1', unitPrice: price }],
+  }));
+  const revenue = async (companyId: string) => Number(
+    data(await call('run_profit_loss', { company_id: companyId, start_date: '2026-01-01', end_date: '2026-12-31' })).totalRevenue,
+  );
+
+  it('a report and a list show the company asked for, not the whole file', async () => {
+    const a = await sale(file.companyId, '100.00');
+    const b = await sale(secondId, '900.00');
+    expect((await db.query.transactions.findFirst({ where: eq(transactions.id, b.id) }))?.companyId).toBe(secondId);
+
+    expect(await revenue(file.companyId)).toBe(100);
+    expect(await revenue(secondId)).toBe(900);
+
+    const listed = data(await call('list_transactions', { company_id: secondId })).map((t: { id: string }) => t.id);
+    expect(listed).toContain(b.id);
+    expect(listed).not.toContain(a.id);
+    const viaResource = await post(staffKey, {
+      jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: `kisbooks://company/${secondId}/recent-transactions` },
+    });
+    const rows = JSON.parse(viaResource.body.result.contents[0].text).map((t: { id: string }) => t.id);
+    expect(rows).toContain(b.id);
+    expect(rows).not.toContain(a.id);
+  });
+
+  it('refuses to read or change a record of the sibling company, and changes nothing', async () => {
+    const a = await sale(file.companyId, '10.00');
+    const attempts: Array<[string, Record<string, unknown>]> = [
+      ['get_transaction', { transaction_id: a.id }],
+      ['void_transaction', { transaction_id: a.id, reason: 'wrong company' }],
+      ['tag_transaction', { transaction_id: a.id, tag_ids: [crypto.randomUUID()] }],
+      ['set_transaction_tag', { transaction_id: a.id }],
+    ];
+    for (const [tool, args] of attempts) {
+      expect(failure(await call(tool, { company_id: secondId, ...args })), tool).toMatch(/^WRONG_COMPANY/);
+    }
+    expect((await db.query.transactions.findFirst({ where: eq(transactions.id, a.id) }))?.status).toBe('posted');
+    // The company it belongs to can.
+    expect(failure(await call('void_transaction', { company_id: file.companyId, transaction_id: a.id, reason: 'right company' }))).toBeUndefined();
+  });
+
+  it('a bank feed item is listed and acted on only in its own company', async () => {
+    const [connection] = await db.insert(bankConnections).values({
+      tenantId: file.tenantId, companyId: file.companyId, accountId: file.bankAccountId,
+    }).returning();
+    // One stamped with the company, one that only its connection places.
+    const [stamped] = await db.insert(bankFeedItems).values({
+      tenantId: file.tenantId, companyId: file.companyId, bankConnectionId: connection!.id, feedDate: '2026-03-02', amount: '4.0000', description: 'stamped',
+    }).returning();
+    const [unstamped] = await db.insert(bankFeedItems).values({
+      tenantId: file.tenantId, bankConnectionId: connection!.id, feedDate: '2026-03-02', amount: '5.0000', description: 'unstamped',
+    }).returning();
+
+    const idsIn = async (companyId: string) => data(await call('list_bank_feed_items', { company_id: companyId })).map((f: { id: string }) => f.id);
+    expect(await idsIn(file.companyId)).toEqual(expect.arrayContaining([stamped!.id, unstamped!.id]));
+    expect(await idsIn(secondId)).toEqual([]);
+
+    for (const item of [stamped!, unstamped!]) {
+      expect(failure(await call('exclude_feed_item', { company_id: secondId, feed_item_id: item.id }))).toMatch(/^WRONG_COMPANY/);
+      expect(failure(await call('categorize_feed_item', { company_id: secondId, feed_item_id: item.id, account_id: file.expenseAccountId }))).toMatch(/^WRONG_COMPANY/);
+      expect(failure(await call('bulk_set_bank_feed_tag', { company_id: secondId, feed_item_ids: [item.id] }))).toMatch(/^WRONG_COMPANY/);
+    }
+    const after = await db.query.bankFeedItems.findMany({ where: eq(bankFeedItems.tenantId, file.tenantId) });
+    expect(after.map((f) => f.status)).toEqual(['pending', 'pending']);
+    expect(failure(await call('exclude_feed_item', { company_id: file.companyId, feed_item_id: stamped!.id }))).toBeUndefined();
+  });
+
+  it('send_invoice marks an invoice sent, says no email went out, and leaves a paid invoice paid', async () => {
+    const customer = data(await call('create_contact', { company_id: file.companyId, display_name: 'Echo Customer', type: 'customer' }));
+    const invoice = data(await call('create_invoice', {
+      company_id: file.companyId, customer_id: customer.id, date: '2026-03-03',
+      lines: [{ accountId: revenueId, description: 'work', quantity: '1', unitPrice: '50.00' }],
+    }));
+    const sent = data(await call('send_invoice', { company_id: file.companyId, invoice_id: invoice.id }));
+    expect(sent).toMatchObject({ marked_sent: true, emailed: false });
+    const status = async () => (await db.query.transactions.findFirst({ where: eq(transactions.id, invoice.id) }))?.invoiceStatus;
+    expect(await status()).toBe('sent');
+
+    const paid = await call('record_payment', {
+      company_id: file.companyId, customer_id: customer.id, amount: '50.00', date: '2026-03-04', deposit_to: file.bankAccountId,
+      applications: [{ invoiceId: invoice.id, amount: '50.00' }],
+    });
+    expect(failure(paid)).toBeUndefined();
+    expect(await status()).toBe('paid');
+    expect(failure(await call('send_invoice', { company_id: file.companyId, invoice_id: invoice.id }))).toBeUndefined();
+    expect(await status()).toBe('paid');
+  });
+});
+
+// The report builders match a company exactly. A file with one company must
+// not be filtered at all, or every row written before company stamps existed
+// (and everything an MCP build before 0.9.242 wrote) drops out of its reports.
+describe('MCP in a client file with one company', () => {
+  it('counts rows that carry no company stamp', async () => {
+    const all = await db.query.accounts.findMany({ where: eq(accounts.tenantId, full.tenantId) });
+    const revenueId = all.find((a) => a.accountType === 'revenue')!.id;
+    const revenue = async () => Number(
+      data(await call('run_profit_loss', { company_id: full.companyId, start_date: '2026-01-01', end_date: '2026-12-31' })).totalRevenue,
+    );
+    const before = await revenue();
+    const sale = data(await call('create_cash_sale', {
+      company_id: full.companyId, date: '2026-05-01', payment_account_id: full.bankAccountId,
+      lines: [{ accountId: revenueId, quantity: '1', unitPrice: '250.00' }],
+    }));
+    expect(await revenue()).toBe(before + 250);
+
+    await db.update(transactions).set({ companyId: null }).where(eq(transactions.id, sale.id));
+    await db.update(journalLines).set({ companyId: null }).where(eq(journalLines.transactionId, sale.id));
+    expect(await revenue()).toBe(before + 250);
+    const listed = data(await call('list_transactions', { company_id: full.companyId, limit: 1000 })).map((t: { id: string }) => t.id);
+    expect(listed).toContain(sale.id);
+    expect(failure(await call('get_transaction', { company_id: full.companyId, transaction_id: sale.id }))).toBeUndefined();
   });
 });

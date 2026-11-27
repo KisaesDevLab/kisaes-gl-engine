@@ -32,6 +32,13 @@ export interface McpClientContext {
   companyId: string;
   companyName: string;
   tenantId: string;
+  /**
+   * The company to filter a read by. Set when the client file holds more
+   * than one company; otherwise undefined, because the whole file is then
+   * this company, rows that carry no company stamp included (the report
+   * builders match a company exactly and would leave those rows out).
+   */
+  readCompanyId: string | undefined;
   /** The caller's role in this client's tenant. */
   role: string;
   isSuperAdmin: boolean;
